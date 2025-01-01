@@ -44,16 +44,16 @@ await Bun.file(`./dist/${pkg.name}/package.json`).write(
       version: version,
       description: "Sleepy Code: Where Models and Agents Co-Evolve",
       license: "MIT",
-      author: "Xiaomi Sleepy Team",
-      homepage: "https://mimo.xiaomi.com/coder",
+      author: "Sleepy AI",
+      homepage: "https://www.sleepyai.org",
       repository: {
         type: "git",
-        url: "git+https://github.com/XiaomiMiMo/MiMo-Code.git",
+        url: "git+https://github.com/TahsinArafat/sleepy-ai.git",
       },
       bugs: {
-        url: "https://github.com/XiaomiMiMo/MiMo-Code/issues",
+        url: "https://github.com/TahsinArafat/sleepy-ai/issues",
       },
-      keywords: ["ai", "cli", "code", "xiaomi", "sleepy", "sleepycode"],
+      keywords: ["ai", "cli", "code", "sleepy", "sleepycode"],
       bin: {
         sleepy: "./bin/sleepy",
       },

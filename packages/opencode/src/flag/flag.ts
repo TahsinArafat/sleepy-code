@@ -19,15 +19,11 @@ function number(key: string) {
 
 const SLEEPYCODE_EXPERIMENTAL = truthy("SLEEPYCODE_EXPERIMENTAL")
 
-// Defaults to false. When enabled, sleepycode runs in pure-sleepy mode:
-//   — does NOT inherit Claude Code's settings (CLAUDE.md, ~/.claude/skills, etc.)
-//   — does NOT pick up provider API keys from environment variables
-//   — falls back to the sleepy-auto model as the default
-// Set SLEEPYCODE_SLEEPY_ONLY=true to disable .claude inheritance and env-based
-// provider auto-detection.
-const SLEEPYCODE_SLEEPY_ONLY = truthy("SLEEPYCODE_SLEEPY_ONLY")
+// Defaults to false. When enabled, sleepycode does not inherit Claude Code's
+// settings (CLAUDE.md, ~/.claude/skills, etc.) and does not pick up provider
+// API keys from environment variables.
 const SLEEPYCODE_DISABLE_CLAUDE_CODE_ENV = truthy("SLEEPYCODE_DISABLE_CLAUDE_CODE")
-const SLEEPYCODE_DISABLE_CLAUDE_CODE = SLEEPYCODE_SLEEPY_ONLY || SLEEPYCODE_DISABLE_CLAUDE_CODE_ENV
+const SLEEPYCODE_DISABLE_CLAUDE_CODE = SLEEPYCODE_DISABLE_CLAUDE_CODE_ENV
 
 const SLEEPYCODE_DISABLE_EXTERNAL_SKILLS = truthy("SLEEPYCODE_DISABLE_EXTERNAL_SKILLS")
 const SLEEPYCODE_DISABLE_CLAUDE_CODE_SKILLS =
@@ -82,8 +78,7 @@ export const Flag = {
   // bounds the decoded byte size of a single image. Values must be positive integers.
   SLEEPYCODE_MAX_PROMPT_IMAGES: number("SLEEPYCODE_MAX_PROMPT_IMAGES"),
   SLEEPYCODE_MAX_PROMPT_IMAGE_SIZE: number("SLEEPYCODE_MAX_PROMPT_IMAGE_SIZE"),
-  SLEEPYCODE_SLEEPY_ONLY,
-  SLEEPYCODE_DISABLE_PROVIDER_ENV: SLEEPYCODE_SLEEPY_ONLY || truthy("SLEEPYCODE_DISABLE_PROVIDER_ENV"),
+  SLEEPYCODE_DISABLE_PROVIDER_ENV: truthy("SLEEPYCODE_DISABLE_PROVIDER_ENV"),
   SLEEPYCODE_DISABLE_CLAUDE_CODE,
   get SLEEPYCODE_DISABLE_CLAUDE_CODE_MCP() {
     // MCP compatibility stays on in sleepy-only mode so users can reuse Claude Code
@@ -140,7 +135,7 @@ export const Flag = {
 
   // Defaults to true — all channels share a single sleepycode.db. The per-channel
   // DB isolation (sleepycode-{channel}.db) is unnecessary for sleepycode since we
-  // don't ship multiple release channels yet. Use SLEEPY_HOME to isolate dev
+  // don't ship multiple release channels yet. Use SLEEPYCODE_HOME to isolate dev
   // environments instead. Set SLEEPYCODE_DISABLE_CHANNEL_DB=false to restore
   // per-channel isolation.
   SLEEPYCODE_DISABLE_CHANNEL_DB: !falsy("SLEEPYCODE_DISABLE_CHANNEL_DB"),

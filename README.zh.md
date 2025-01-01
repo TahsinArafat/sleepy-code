@@ -1,8 +1,8 @@
 <h1 align="center">SleepyCode</h1>
 
-<p align="center">
+<!-- <p align="center">
   <img src="assets/readme/sleepycode-banner.png" alt="SleepyCode" width="700">
-</p>
+</p> -->
 
 <p align="center"><strong>Sleepy Code: Where Models and Agents Co-Evolve</strong></p>
 
@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://mimo.xiaomi.com/zh/sleepycode">官网</a> | <a href="https://mimo.xiaomi.com/zh/blog/sleepy-code-long-horizon">博客</a>
+  <a href="https://www.sleepyai.org">官网</a> | <a href="https://www.sleepyai.org/blog">博客</a>
 </p>
 
 ---
@@ -26,7 +26,7 @@ SleepyCode 是一个终端原生的 AI 编程助手。它能读写代码、执�
 
 ```bash
 # 一键安装
-curl -fsSL https://mimo.xiaomi.com/install | bash
+curl -fsSL https://www.sleepyai.org/install | bash
 
 # 或通过 npm 安装
 npm install -g @sleepy-ai/cli
@@ -70,7 +70,7 @@ sudo apt install xsel
 
 除了 SleepyCode，小米 Sleepy 模型也能在 Cursor、Cline、Zed 等各种 Agent 和编程工具里使用。
 
-**[awesome-sleepy-agent](https://github.com/XiaomiMiMo/awesome-sleepy-agent)** 收集了这些工具接入 Sleepy 模型的配置教程，想换个工具试试 Sleepy 的话可以去看看。也欢迎把你自己的接入方式提 PR 分享出来。
+**[awesome-sleepy-agent](https://github.com/XiaomiSleepy/awesome-sleepy-agent)** 收集了这些工具接入 Sleepy 模型的配置教程，想换个工具试试 Sleepy 的话可以去看看。也欢迎把你自己的接入方式提 PR 分享出来。
 
 ---
 
@@ -159,7 +159,7 @@ export PULSE_SERVER=tcp:127.0.0.1:4713
 ```jsonc
 {
   "voice": {
-    "control_model": "openrouter/xiaomi/mimo-v2.5"
+    "control_model": "openrouter/xiaomi/sleepy-v2.5"
   }
 }
 ```
@@ -174,14 +174,14 @@ export PULSE_SERVER=tcp:127.0.0.1:4713
         "apiKey": "sk-..."
       },
       "models": {
-        "xiaomi/mimo-v2.5-asr": { "name": "Sleepy-V2.5-ASR" },
-        "xiaomi/mimo-v2.5": { "name": "Sleepy-V2.5" }
+        "xiaomi/sleepy-v2.5-asr": { "name": "Sleepy-V2.5-ASR" },
+        "xiaomi/sleepy-v2.5": { "name": "Sleepy-V2.5" }
       }
     }
   },
   "voice": {
-    "asr_model": "internal/xiaomi/mimo-v2.5-asr",
-    "control_model": "internal/xiaomi/mimo-v2.5"
+    "asr_model": "internal/xiaomi/sleepy-v2.5-asr",
+    "control_model": "internal/xiaomi/sleepy-v2.5"
   }
 }
 ```
@@ -273,5 +273,5 @@ SleepyCode 基于 [OpenCode](https://github.com/anomalyco/opencode) fork 构建�
 源代码基于 [MIT 许可证](./LICENSE) 开源。
 
 使用 SleepyCode 还需遵守[使用限制](./USE_RESTRICTIONS.md)。
-使用小米 Sleepy 托管服务须遵守 [Sleepy 服务条款](https://platform.xiaomimimo.com/docs/terms/user-agreement)。
+使用 Sleepy 托管服务须遵守 [Sleepy 服务条款](https://www.sleepyai.org/terms)。
 使用 Sleepy 名称、标志和商标须遵守 Sleepy 商标政策。

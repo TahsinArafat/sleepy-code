@@ -454,7 +454,7 @@ export const dict = {
   // Sleepy Auto (free) — TUI login dialog
   "tui.dialog.login.sleepy_free": "Sleepy Auto (free)",
   "tui.dialog.login.sleepy_free.desc": "Canal anonyme gratuit — aucune connexion requise",
-  "tui.dialog.login.sleepy_free.success": "Sleepy Auto (free) est prêt — modèle par défaut défini sur sleepy/sleepy-auto",
+  "tui.dialog.login.sleepy_free.success": "Sleepy Auto (free) est prêt — modèle par défaut défini sur sleepy-auto",
   "tui.dialog.login.sleepy_free.unavailable": "Fournisseur Sleepy Auto (free) non chargé",
   "tui.dialog.login.flow.title": "Connexion Sleepy",
   "tui.dialog.login.flow.placeholder": "Collez le code (ou attendez le rappel du navigateur)",
@@ -472,7 +472,7 @@ export const dict = {
   "cli.providers.sleepy_free.verifying": "Vérification du canal Sleepy Auto (free)...",
   "cli.providers.sleepy_free.ready": "Canal Sleepy Auto (free) prêt",
   "cli.providers.sleepy_free.failed": "Échec de la vérification de Sleepy Auto (free)",
-  "cli.providers.sleepy_free.default_set": "Modèle par défaut défini sur sleepy/sleepy-auto (contexte 1M, gratuit)",
+  "cli.providers.sleepy_free.default_set": "Modèle par défaut défini sur sleepy-auto (contexte 1M, gratuit)",
   "cli.providers.sleepy_free.usage_hint":
     "Aucune connexion requise — exécutez simplement sleepy. Pour les modèles payants/premium, choisissez plutôt la connexion navigateur Sleepy.",
   "cli.providers.sleepy_login.decrypt_retry": "Échec du déchiffrement, veuillez réessayer ({remaining} tentatives restantes)",

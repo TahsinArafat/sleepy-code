@@ -18,6 +18,21 @@ function getLastModel(sessionID: SessionID) {
   return undefined
 }
 
+function getLastActiveAgent(sessionID: SessionID) {
+  for (const item of MessageV2.stream(sessionID, { agentID: "*" })) {
+    if (
+      item.info.role === "user" &&
+      item.info.agent &&
+      item.info.agent !== "plan" &&
+      !item.info.agent.includes("stack")
+    ) {
+      return item.info.agent
+    }
+  }
+  return "build"
+}
+
+
 export const PlanEnterTool = Tool.define(
   "plan_enter",
   Effect.gen(function* () {
@@ -30,7 +45,7 @@ export const PlanEnterTool = Tool.define(
       parameters: z.object({}),
       execute: (_params: {}, ctx: Tool.Context) =>
         Effect.gen(function* () {
-          if (ctx.agent === "plan") {
+          if (ctx.agent === "plan" || ctx.agent.includes("stack")) {
             return {
               title: "Already in plan mode",
               output: "You are already in plan mode. This tool is only effective outside of plan mode.",
@@ -110,7 +125,7 @@ export const PlanExitTool = Tool.define(
       parameters: z.object({}),
       execute: (_params: {}, ctx: Tool.Context) =>
         Effect.gen(function* () {
-          if (ctx.agent !== "plan") {
+          if (ctx.agent !== "plan" && !ctx.agent.includes("stack")) {
             return {
               title: "Not in plan mode",
               output: "You are not in plan mode. This tool is only effective in plan mode.",
@@ -155,7 +170,7 @@ export const PlanExitTool = Tool.define(
             sessionID: ctx.sessionID,
             role: "user",
             time: { created: Date.now() },
-            agent: "build",
+            agent: getLastActiveAgent(ctx.sessionID),
             model,
           }
           yield* session.updateMessage(msg)

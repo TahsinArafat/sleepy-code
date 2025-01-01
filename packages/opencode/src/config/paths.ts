@@ -27,14 +27,26 @@ export const directories = Effect.fn("ConfigPaths.directories")(function* (direc
   return unique([
     Global.Path.config,
     ...(!Flag.SLEEPYCODE_DISABLE_PROJECT_CONFIG
-      ? yield* afs.up({
-          targets: [".sleepycode"],
-          start: directory,
-          stop: worktree,
-        })
+      ? [
+          ...(yield* afs.up({
+            targets: [".sleepycode"],
+            start: directory,
+            stop: worktree,
+          })),
+          ...(yield* afs.up({
+            targets: [".sleepy"],
+            start: directory,
+            stop: worktree,
+          })),
+        ]
       : []),
     ...(yield* afs.up({
       targets: [".sleepycode"],
+      start: Global.Path.home,
+      stop: Global.Path.home,
+    })),
+    ...(yield* afs.up({
+      targets: [".sleepy"],
       start: Global.Path.home,
       stop: Global.Path.home,
     })),

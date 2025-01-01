@@ -9,7 +9,7 @@ import { Provider } from "@/provider"
 import DESCRIPTION from "./websearch.txt"
 
 const WEBFETCH_FALLBACK =
-  "Web search unavailable. Use `webfetch` with a relevant URL instead, or enable the Web Search plugin at https://platform.xiaomimimo.com/console/plugin."
+  "Web search unavailable. Use `webfetch` with a relevant URL instead, or enable the Web Search plugin at https://www.sleepyai.org/dashboard/admin/providers."
 const MAX_TIMEOUT = 120 * 1000 // 2 minutes
 
 const Parameters = z.object({
@@ -63,10 +63,10 @@ export const WebSearchTool = Tool.define(
           const timeout = params.timeout === undefined ? undefined : Math.min(params.timeout * 1000, MAX_TIMEOUT)
 
           const result =
-            model?.providerID === "xiaomi"
+            model?.providerID === "sleepy"
               ? yield* Effect.catchCause(
                   Effect.gen(function* () {
-                    const info = yield* auth.get("xiaomi")
+                    const info = yield* auth.get("sleepy")
                     if (!info || info.type !== "api") return undefined
                     return yield* SleepyWebsearch.call(
                       http,

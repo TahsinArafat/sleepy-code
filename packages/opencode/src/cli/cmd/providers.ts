@@ -266,7 +266,7 @@ async function sleepyLogin() {
       return yield* plugin.list()
     }),
   )
-  const sleepyHook = hooks.findLast((h) => h.auth?.provider === "xiaomi")
+  const sleepyHook = hooks.findLast((h) => h.auth?.provider === "sleepy")
   if (!sleepyHook?.auth) {
     prompts.log.error("Sleepy auth plugin not found")
     return
@@ -288,7 +288,7 @@ async function sleepyLogin() {
 
     if (raceResult.source === "browser") {
       if (raceResult.data.type === "success" && "key" in raceResult.data) {
-        await put("xiaomi", {
+        await put("sleepy", {
           type: "api",
           key: raceResult.data.key,
           ...(raceResult.data.metadata ? { metadata: raceResult.data.metadata } : {}),
@@ -304,7 +304,7 @@ async function sleepyLogin() {
 
     const callbackResult = await authorize.callback(raceResult.input)
     if (callbackResult.type === "success" && "key" in callbackResult) {
-      await put("xiaomi", {
+      await put("sleepy", {
         type: "api",
         key: callbackResult.key,
         ...(callbackResult.metadata ? { metadata: callbackResult.metadata } : {}),
@@ -530,7 +530,7 @@ export const ProvidersLoginCommand = cmd({
         const loginExt = await loadLoginExtension()
         const loginExtIds = loginExt ? [loginExt.id, ...(loginExt.aliases ?? [])] : []
         let provider: string
-        if (args.provider === "xiaomi") {
+        if (args.provider === "sleepy") {
           await sleepyLogin()
           return
         } else if (loginExt && args.provider && loginExtIds.includes(args.provider)) {
@@ -550,7 +550,7 @@ export const ProvidersLoginCommand = cmd({
           const choice = await prompts.select({
             message: t("cli.providers.select"),
             options: [
-              { label: "Sleepy", value: "xiaomi", hint: t("cli.providers.sleepy.recommended_hint") },
+              { label: "Sleepy", value: "sleepy", hint: t("cli.providers.sleepy.recommended_hint") },
               ...(loginExt?.menu
                 ? [{ label: loginExt.menu.label, value: loginExt.id, hint: loginExt.menu.hint }]
                 : []),
@@ -559,7 +559,7 @@ export const ProvidersLoginCommand = cmd({
           })
           if (prompts.isCancel(choice)) throw new UI.CancelledError()
 
-          if (choice === "xiaomi") {
+          if (choice === "sleepy") {
             await sleepyLogin()
             return
           }
@@ -694,7 +694,7 @@ export const ProvidersWhoamiCommand = cmd({
     const info = await AppRuntime.runPromise(
       Effect.gen(function* () {
         const auth = yield* Auth.Service
-        return yield* auth.get("xiaomi")
+        return yield* auth.get("sleepy")
       }),
     )
     if (!info) {

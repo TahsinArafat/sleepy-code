@@ -3,21 +3,21 @@ import { RealtimeVAD, type VADSegment } from "../../../src/cli/cmd/tui/util/vad"
 
 describe("voice", () => {
   describe("resolveVoiceConfig", () => {
-    test("returns xiaomi defaults when no config provided", async () => {
+    test("returns sleepy defaults when no config provided", async () => {
       const { resolveVoiceConfig } = await import("../../../src/cli/cmd/tui/util/voice")
       const result = resolveVoiceConfig(undefined)
-      expect(result.asr.providerID).toBe("xiaomi")
+      expect(result.asr.providerID).toBe("sleepy")
       expect(result.asr.model).toBe("sleepy-v2.5-asr")
-      expect(result.control.providerID).toBe("xiaomi")
+      expect(result.control.providerID).toBe("sleepy")
       expect(result.control.model).toBe("sleepy-v2.5")
     })
 
-    test("returns xiaomi defaults when config is empty object", async () => {
+    test("returns sleepy defaults when config is empty object", async () => {
       const { resolveVoiceConfig } = await import("../../../src/cli/cmd/tui/util/voice")
       const result = resolveVoiceConfig({})
-      expect(result.asr.providerID).toBe("xiaomi")
+      expect(result.asr.providerID).toBe("sleepy")
       expect(result.asr.model).toBe("sleepy-v2.5-asr")
-      expect(result.control.providerID).toBe("xiaomi")
+      expect(result.control.providerID).toBe("sleepy")
       expect(result.control.model).toBe("sleepy-v2.5")
     })
 
@@ -26,29 +26,29 @@ describe("voice", () => {
       const result = resolveVoiceConfig({ asr_model: "newapi/sleepy-v2.5-asr" })
       expect(result.asr.providerID).toBe("newapi")
       expect(result.asr.model).toBe("sleepy-v2.5-asr")
-      expect(result.control.providerID).toBe("xiaomi")
+      expect(result.control.providerID).toBe("sleepy")
       expect(result.control.model).toBe("sleepy-v2.5")
     })
 
     test("parses custom control_model correctly", async () => {
       const { resolveVoiceConfig } = await import("../../../src/cli/cmd/tui/util/voice")
-      const result = resolveVoiceConfig({ control_model: "openrouter/xiaomi/mimo-v2.5" })
-      expect(result.asr.providerID).toBe("xiaomi")
+      const result = resolveVoiceConfig({ control_model: "openrouter/xiaomi/sleepy-v2.5" })
+      expect(result.asr.providerID).toBe("sleepy")
       expect(result.asr.model).toBe("sleepy-v2.5-asr")
       expect(result.control.providerID).toBe("openrouter")
-      expect(result.control.model).toBe("xiaomi/mimo-v2.5")
+      expect(result.control.model).toBe("xiaomi/sleepy-v2.5")
     })
 
     test("supports both custom asr and control", async () => {
       const { resolveVoiceConfig } = await import("../../../src/cli/cmd/tui/util/voice")
       const result = resolveVoiceConfig({
         asr_model: "newapi/sleepy-v2.5-asr",
-        control_model: "openrouter/xiaomi/mimo-v2.5",
+        control_model: "openrouter/xiaomi/sleepy-v2.5",
       })
       expect(result.asr.providerID).toBe("newapi")
       expect(result.asr.model).toBe("sleepy-v2.5-asr")
       expect(result.control.providerID).toBe("openrouter")
-      expect(result.control.model).toBe("xiaomi/mimo-v2.5")
+      expect(result.control.model).toBe("xiaomi/sleepy-v2.5")
     })
 
     test("handles model IDs with multiple slashes", async () => {
@@ -61,7 +61,7 @@ describe("voice", () => {
     test("treats no-slash model ID as model with default provider", async () => {
       const { resolveVoiceConfig } = await import("../../../src/cli/cmd/tui/util/voice")
       const result = resolveVoiceConfig({ asr_model: "sleepy-v2.5-asr" })
-      expect(result.asr.providerID).toBe("xiaomi")
+      expect(result.asr.providerID).toBe("sleepy")
       expect(result.asr.model).toBe("sleepy-v2.5-asr")
     })
   })
@@ -78,7 +78,7 @@ describe("voice", () => {
       const { resolveCredentials } = await import("../../../src/cli/cmd/tui/util/voice")
       const result = resolveCredentials(
         [makeProvider("openrouter", { key: "sk-or-123", modelUrl: "https://openrouter.ai/api/v1" })],
-        { providerID: "openrouter", model: "xiaomi/mimo-v2.5" },
+        { providerID: "openrouter", model: "xiaomi/sleepy-v2.5" },
       )
       expect(result).toEqual({ apiKey: "sk-or-123", baseUrl: "https://openrouter.ai/api/v1" })
     })
@@ -96,7 +96,7 @@ describe("voice", () => {
       const { resolveCredentials } = await import("../../../src/cli/cmd/tui/util/voice")
       const result = resolveCredentials(
         [makeProvider("openrouter", { key: "sk-or-123", modelUrl: "https://openrouter.ai/api/v1" })],
-        { providerID: "openrouter", model: "xiaomi/mimo-v2.5" },
+        { providerID: "openrouter", model: "xiaomi/sleepy-v2.5" },
       )
       expect("apiKey" in result && result.baseUrl).toBe("https://openrouter.ai/api/v1")
     })
@@ -116,7 +116,7 @@ describe("voice", () => {
       expect(result).toEqual({ error: "no_key", providerID: "internal", model: "m" })
     })
 
-    test("returns no_url for non-xiaomi provider without baseURL", async () => {
+    test("returns no_url for non-sleepy provider without baseURL", async () => {
       const { resolveCredentials } = await import("../../../src/cli/cmd/tui/util/voice")
       const result = resolveCredentials(
         [makeProvider("custom", { key: "sk-x" })],
@@ -125,13 +125,13 @@ describe("voice", () => {
       expect(result).toEqual({ error: "no_url", providerID: "custom", model: "m" })
     })
 
-    test("falls back to hardcoded URL only for xiaomi", async () => {
+    test("falls back to hardcoded URL only for sleepy", async () => {
       const { resolveCredentials } = await import("../../../src/cli/cmd/tui/util/voice")
       const result = resolveCredentials(
-        [makeProvider("xiaomi", { key: "sk-x" })],
-        { providerID: "xiaomi", model: "sleepy-v2.5-asr" },
+        [makeProvider("sleepy", { key: "sk-x" })],
+        { providerID: "sleepy", model: "sleepy-v2.5-asr" },
       )
-      expect(result).toEqual({ apiKey: "sk-x", baseUrl: "https://api.xiaomimimo.com/v1" })
+      expect(result).toEqual({ apiKey: "sk-x", baseUrl: "https://www.sleepyai.org/api/v1" })
     })
   })
 

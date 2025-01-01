@@ -3,7 +3,7 @@
 <p align="center"><strong>Sleepy Code: Where Models and Agents Co-Evolve</strong></p>
 
 <p align="center">
-  <a href="https://mimo.xiaomi.com/coder">Website</a> | <a href="https://mimo.xiaomi.com/en/blog/sleepy-code-long-horizon">Blog</a> | <a href="https://github.com/XiaomiMiMo/MiMo-Code">GitHub</a>
+  <a href="https://www.sleepyai.org">Website</a> | <a href="https://www.sleepyai.org/blog">Blog</a> | <a href="https://github.com/TahsinArafat/sleepy-ai">GitHub</a>
 </p>
 
 ---
@@ -18,7 +18,7 @@ Sleepy Auto is built in as a free-for-limited-time channel, so you can start wit
 
 ```bash
 # One-line install
-curl -fsSL https://mimo.xiaomi.com/install | bash
+curl -fsSL https://www.sleepyai.org/install | bash
 
 # Or install via npm
 npm install -g @sleepy-ai/cli
@@ -29,7 +29,7 @@ sleepy
 
 The first launch guides you through configuration automatically. Supported options:
 - **Sleepy Auto (free for a limited time)** — anonymous channel, zero configuration
-- **Xiaomi Sleepy Platform** — OAuth login
+- **Sleepy Platform** — OAuth login
 - **Import from Claude Code** — migrate existing authentication in one step
 - **Custom Provider** — add any OpenAI-compatible API in the TUI
 
@@ -141,8 +141,8 @@ Max Mode (parallel best-of-N reasoning with judge selection) can be enabled via 
 
 ## License
 
-Source code is licensed under the [MIT License](https://github.com/XiaomiMiMo/MiMo-Code/blob/main/LICENSE).
+Source code is licensed under the [MIT License](https://github.com/XiaomiSleepy/Sleepy-Code/blob/main/LICENSE).
 
-Use of SleepyCode is also subject to the [Use Restrictions](https://github.com/XiaomiMiMo/MiMo-Code/blob/main/USE_RESTRICTIONS.md).
-Use of Xiaomi Sleepy-hosted services is subject to the [Sleepy Terms of Service](https://platform.xiaomimimo.com/docs/terms/user-agreement).
+Use of SleepyCode is also subject to the [Use Restrictions](https://github.com/XiaomiSleepy/Sleepy-Code/blob/main/USE_RESTRICTIONS.md).
+Use of Sleepy-hosted services is subject to the [Sleepy Terms of Service](https://www.sleepyai.org/terms).
 Use of the Sleepy name, logo, and trademarks is subject to the Sleepy Trademark Policy.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { Script } from "@sleepy-ai/script"
+import { Script } from "@mimo-ai/script"
 import { $ } from "bun"
 
 const output = [`version=${Script.version}`]

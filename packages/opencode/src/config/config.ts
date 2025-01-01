@@ -365,11 +365,11 @@ const InfoSchema = Schema.Struct({
     Schema.Struct({
       asr_model: Schema.optional(ConfigModelID).annotate({
         description:
-          "Model to use for voice ASR transcription in provider/model format. Defaults to xiaomi/mimo-v2.5-asr.",
+          "Model to use for voice ASR transcription in provider/model format. Defaults to sleepy/sleepy-v2.5-asr.",
       }),
       control_model: Schema.optional(ConfigModelID).annotate({
         description:
-          "Model to use for voice control (multimodal) in provider/model format. Defaults to xiaomi/mimo-v2.5.",
+          "Model to use for voice control (multimodal) in provider/model format. Defaults to sleepy/sleepy-v2.5.",
       }),
     }),
   ).annotate({ description: "Voice input provider and model configuration." }),
@@ -759,6 +759,9 @@ export const layer = Layer.effect(
           for (const file of yield* ConfigPaths.files("sleepycode", ctx.directory, ctx.worktree).pipe(Effect.orDie)) {
             yield* merge(file, yield* loadFile(file), "local")
           }
+          for (const file of yield* ConfigPaths.files("sleepy", ctx.directory, ctx.worktree).pipe(Effect.orDie)) {
+            yield* merge(file, yield* loadFile(file), "local")
+          }
         }
 
         result.agent = result.agent || {}
@@ -779,7 +782,7 @@ export const layer = Layer.effect(
         }
 
         for (const dir of directories) {
-          if (dir.endsWith(".sleepycode") || dir === Flag.SLEEPYCODE_CONFIG_DIR) {
+          if (dir.endsWith(".sleepycode") || dir === Flag.SLEEPYCODE_CONFIG_DIR || dir === Global.Path.config) {
             for (const file of ["sleepycode.json", "sleepycode.jsonc"]) {
               const source = path.join(dir, file)
               log.debug(`loading config from ${source}`)

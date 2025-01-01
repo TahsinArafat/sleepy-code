@@ -620,7 +620,7 @@ export function Prompt(props: PromptProps) {
           const nonTextParts = store.prompt.parts.filter((p) => p.type !== "text")
 
           const value = text
-          const content = await Editor.open({ value, renderer })
+          const content = await Editor.open({ value, renderer, cwd: sync.path.directory || process.cwd() })
           if (!content) return
 
           input.setText(content)
@@ -1640,8 +1640,8 @@ export function Prompt(props: PromptProps) {
                           >
                             {local.model.parsed().model}
                           </text>
-                          {/* Hide provider label for sleepy-auto since model name already contains "Sleepy" */}
-                          <Show when={!(local.model.current()?.providerID === "sleepy" && local.model.current()?.modelID === "sleepy-auto")}>
+          {/* Hide provider label for sleepy-auto since model name already contains "Sleepy" */}
+          <Show when={!(local.model.current()?.providerID === "sleepy" && local.model.current()?.modelID === "sleepy-auto")}>
                             <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>
                               {currentProviderLabel()}
                             </text>

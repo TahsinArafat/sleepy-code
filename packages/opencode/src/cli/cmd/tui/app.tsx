@@ -1,7 +1,10 @@
 import { render, TimeToFirstDraw, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import * as Clipboard from "@tui/util/clipboard"
 import * as Selection from "@tui/util/selection"
-import { createCliRenderer, MouseButton, type CliRendererConfig } from "@opentui/core"
+import { Global } from "@/global"
+import fs from "fs"
+import path from "path"
+import { createCliRenderer, MouseButton, TextAttributes, type CliRendererConfig } from "@opentui/core"
 import { RouteProvider, useRoute } from "@tui/context/route"
 import {
   Switch,
@@ -20,6 +23,7 @@ import semver from "semver"
 import { DialogProvider, useDialog } from "@tui/ui/dialog"
 import { DialogSleepyLogin } from "@tui/component/dialog-sleepy-login"
 import { ErrorComponent } from "@tui/component/error-component"
+
 import { PluginRouteMissing } from "@tui/component/plugin-route-missing"
 import { ProjectProvider } from "@tui/context/project"
 import { useEvent } from "@tui/context/event"
@@ -67,7 +71,7 @@ import { TuiConfigProvider, useTuiConfig } from "./context/tui-config"
 import { TuiConfig } from "@/cli/cmd/tui/config/tui"
 import { createTuiApi, TuiPluginRuntime, type RouteMap } from "./plugin"
 import { FormatError, FormatUnknownError } from "@/cli/error"
-import { isPlainTerminal } from "./util/terminal"
+import { isPlainTerminal, isWindowsTerminal } from "./util/terminal"
 
 import type { EventSource } from "./context/sdk"
 import { DialogVariant } from "./component/dialog-variant"
@@ -330,19 +334,19 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     if (!terminalTitleEnabled() || Flag.SLEEPYCODE_DISABLE_TERMINAL_TITLE) return
 
     if (route.data.type === "home") {
-      renderer.setTerminalTitle("SleepyCode")
+      renderer.setTerminalTitle("Sleepy Code")
       return
     }
 
     if (route.data.type === "session") {
       const session = sync.session.get(route.data.sessionID)
       if (!session || SessionApi.isDefaultTitle(session.title)) {
-        renderer.setTerminalTitle("SleepyCode")
+        renderer.setTerminalTitle("Sleepy Code")
         return
       }
 
       const title = session.title.length > 40 ? session.title.slice(0, 37) + "..." : session.title
-      renderer.setTerminalTitle(`MC | ${title}`)
+      renderer.setTerminalTitle(`SC | ${title}`)
       return
     }
 
@@ -424,6 +428,16 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     seededNeverAsk = true
     local.neverAsk.set(true)
   })
+
+  const [isAuthenticated, setAuthenticated] = createSignal(false)
+  createEffect(() => {
+    void sync.status
+    if (!ready() || sync.status === "loading") return
+    setAuthenticated(fs.existsSync(path.join(Global.Path.config, "gateway.json")))
+  })
+
+  // Show Home/onboarding when not authenticated (with login dialog on top)
+  const showHome = createMemo(() => ready() && (isAuthenticated() || route.data.type === "home" || route.data.type === "session"))
 
   command.register(() => [
     {
@@ -636,11 +650,16 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         name: "logout",
       },
       onSelect: async () => {
-        await sdk.client.auth.remove({ providerID: "xiaomi" })
+        const configPath = path.join(Global.Path.config, "gateway.json")
+        if (fs.existsSync(configPath)) {
+          fs.unlinkSync(configPath)
+        }
+        await sdk.client.auth.remove({ providerID: "sleepy" })
+        setAuthenticated(false)
         await sdk.client.instance.dispose()
         await sync.bootstrap()
+        route.navigate({ type: "home" })
         toast.show({ message: t("tui.command.logout.toast"), variant: "info" })
-        dialog.clear()
       },
       category: "provider",
     },
@@ -772,7 +791,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         aliases: ["docs"],
       },
       onSelect: () => {
-        open("https://mimo.xiaomi.com/coder/docs").catch(() => {})
+        open("https://www.sleepyai.org").catch(() => {})
         dialog.clear()
       },
       category: "system",
@@ -1109,7 +1128,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           return
         }
 
-        promptRef.current?.paste()
+        if (!isWindowsTerminal()) promptRef.current?.paste()
         evt.preventDefault()
         evt.stopPropagation()
       }}
@@ -1123,14 +1142,16 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         <TimeToFirstDraw />
       </Show>
       <Show when={ready()}>
-        <Switch>
-          <Match when={route.data.type === "home"}>
-            <Home />
-          </Match>
-          <Match when={route.data.type === "session"}>
-            <Session />
-          </Match>
-        </Switch>
+        <Show when={showHome()}>
+          <Switch>
+            <Match when={route.data.type === "home"}>
+              <Home />
+            </Match>
+            <Match when={route.data.type === "session"}>
+              <Session />
+            </Match>
+          </Switch>
+        </Show>
       </Show>
       {plugin()}
       <TuiPluginRuntime.Slot name="app" />

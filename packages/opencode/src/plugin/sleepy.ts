@@ -9,7 +9,7 @@ import fs from "fs"
 
 const log = Log.create({ service: "plugin.sleepy" })
 
-const PLATFORM_URL = process.env.SLEEPY_PLATFORM_URL || "https://platform.xiaomimimo.com"
+const PLATFORM_URL = process.env.SLEEPY_PLATFORM_URL || "https://www.sleepyai.org"
 
 function getKeyName(): string {
   const filePath = path.join(Global.Path.data, "sleepy-key-name")
@@ -84,20 +84,8 @@ function buildAuthorizeUrl(publicKey: string, redirectUri: string): string {
 
 export async function SleepyAuthPlugin(_input: PluginInput): Promise<Hooks> {
   return {
-    config: async (input) => {
-      input.provider ??= {}
-      // Register xiaomi as a config provider so it shows up even before login.
-      // name/api are intentionally left to the models.dev database (name: "Xiaomi",
-      // api: https://api.xiaomimimo.com/v1) — hardcoding "Sleepy" here collided with
-      // the free "sleepy" provider's display name and confused users.
-      input.provider.xiaomi ??= {}
-      // Both "opencode" and "opencode-go" stay enabled. The opencode custom
-      // loader strips the free/public tier (and hides paid models until the
-      // user authenticates). "opencode-go" has no free models and no custom
-      // loader, so it only loads once a subscription key/auth is present.
-    },
     auth: {
-      provider: "xiaomi",
+      provider: "sleepy",
       async loader(getAuth) {
         const auth = (await getAuth()) as { type: string; metadata?: Record<string, string> }
         if (auth?.type !== "api" || !auth.metadata?.base_url) return {}
@@ -195,7 +183,7 @@ export async function SleepyAuthPlugin(_input: PluginInput): Promise<Hooks> {
       ],
     },
     "chat.headers": async (input, output) => {
-      if (input.model.providerID !== "xiaomi") return
+      if (input.model.providerID !== "sleepy") return
       output.headers["X-Sleepy-Source"] = "sleepycode-cli"
     },
   }

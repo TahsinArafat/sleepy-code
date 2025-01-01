@@ -7,7 +7,7 @@ import path from "path"
 const worker = path.join(import.meta.dir, "fixture", "global-paths-worker.ts")
 
 async function tmpdir() {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "sleepycode-home-test-"))
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "sleepy-home-test-"))
   return {
     path: dir,
     async [Symbol.asyncDispose]() {
@@ -136,8 +136,8 @@ describe("SLEEPY_HOME end-to-end", () => {
     })
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    // Paths should reflect XDG layout (ends with "/sleepycode"), not SLEEPY_HOME layout
-    expect(result.paths.config).toBe(path.join(tmp.path, "config", "sleepycode"))
-    expect(result.paths.data).toBe(path.join(tmp.path, "data", "sleepycode"))
+    // Paths should reflect XDG layout (ends with "/sleepy"), not SLEEPY_HOME layout
+    expect(result.paths.config).toBe(path.join(tmp.path, "config", "sleepy"))
+    expect(result.paths.data).toBe(path.join(tmp.path, "data", "sleepy"))
   })
 })

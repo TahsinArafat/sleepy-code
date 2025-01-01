@@ -1,13 +1,16 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "version": "0.1.4",
+  "version": "0.1.17",
   "name": "@sleepy-ai/cli",
   "type": "module",
   "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
   "publishConfig": {
     "access": "public"
   },
-  "private": true,
+  "private": false,
   "scripts": {
     "prepare": "effect-language-service patch || true",
     "typecheck": "tsgo --noEmit",
@@ -120,10 +123,6 @@
     "@hono/zod-validator": "catalog:",
     "@jitl/quickjs-singlefile-mjs-release-sync": "0.32.0",
     "@lydell/node-pty": "catalog:",
-    "@sleepy-ai/plugin": "workspace:*",
-    "@sleepy-ai/script": "workspace:*",
-    "@sleepy-ai/sdk": "workspace:*",
-    "@sleepy-ai/ui": "workspace:*",
     "@modelcontextprotocol/sdk": "1.27.1",
     "@npmcli/arborist": "9.4.0",
     "@npmcli/config": "10.8.1",
@@ -140,6 +139,10 @@
     "@opentui/solid": "0.1.101",
     "@parcel/watcher": "2.5.1",
     "@pierre/diffs": "catalog:",
+    "@sleepy-ai/plugin": "workspace:*",
+    "@sleepy-ai/script": "workspace:*",
+    "@sleepy-ai/sdk": "workspace:*",
+    "@sleepy-ai/ui": "workspace:*",
     "@solid-primitives/event-bus": "1.1.2",
     "@solid-primitives/i18n": "2.2.1",
     "@solid-primitives/scheduled": "1.5.2",

@@ -402,7 +402,7 @@ export const dict = {
   // Sleepy Auto (free) — TUI login dialog
   "tui.dialog.login.sleepy_free": "Sleepy Auto (free)",
   "tui.dialog.login.sleepy_free.desc": "ログイン不要の匿名無料チャネル",
-  "tui.dialog.login.sleepy_free.success": "Sleepy Auto (free) の準備完了 — デフォルトモデルを sleepy/sleepy-auto に設定しました",
+  "tui.dialog.login.sleepy_free.success": "Sleepy Auto (free) の準備完了 — デフォルトモデルを sleepy-auto に設定しました",
   "tui.dialog.login.sleepy_free.unavailable": "Sleepy Auto (free) プロバイダーが読み込まれていません",
   "tui.dialog.login.flow.title": "Sleepy ログイン",
   "tui.dialog.login.flow.placeholder": "コードを貼り付け（またはブラウザコールバックを待機）",
@@ -420,7 +420,7 @@ export const dict = {
   "cli.providers.sleepy_free.verifying": "Sleepy Auto (free) チャネルを検証中...",
   "cli.providers.sleepy_free.ready": "Sleepy Auto (free) チャネル準備完了",
   "cli.providers.sleepy_free.failed": "Sleepy Auto (free) の自己診断に失敗",
-  "cli.providers.sleepy_free.default_set": "デフォルトモデルを sleepy/sleepy-auto に設定（1M コンテキスト、無料）",
+  "cli.providers.sleepy_free.default_set": "デフォルトモデルを sleepy-auto に設定（1M コンテキスト、無料）",
   "cli.providers.sleepy_free.usage_hint":
     "ログイン不要 — そのまま sleepy を実行できます。有料/上位モデルを利用する場合は Sleepy ブラウザログインを選択してください。",
   "cli.providers.sleepy_login.decrypt_retry": "復号に失敗しました、再試行してください（残り {remaining} 回）",

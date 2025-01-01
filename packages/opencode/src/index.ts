@@ -41,6 +41,9 @@ import { PluginCommand } from "./cli/cmd/plug"
 import { Heap } from "./cli/heap"
 import { drizzle } from "drizzle-orm/bun-sqlite"
 import { ensureProcessMetadata } from "./util/sleepy-process"
+import { LoginCommand } from "./cli/cmd/login"
+import { InitCommand } from "./cli/cmd/init"
+import { DoctorCommand } from "./cli/cmd/doctor"
 
 const processMetadata = ensureProcessMetadata("main")
 
@@ -60,7 +63,7 @@ const args = hideBin(process.argv)
 
 function show(out: string) {
   const text = out.trimStart()
-  if (!text.startsWith("sleepy ")) {
+    if (!text.startsWith("sleepy ")) {
     process.stderr.write(UI.logo() + EOL + EOL)
     process.stderr.write(text)
     return
@@ -117,7 +120,7 @@ const cli = yargs(args)
       run_id: processMetadata.runID,
     })
 
-    const marker = path.join(Global.Path.data, "sleepycode.db")
+    const marker = path.join(Global.Path.data, "sleepy.db")
     if (!(await Filesystem.exists(marker))) {
       const tty = process.stderr.isTTY
       process.stderr.write("Performing one time database migration, may take a few minutes..." + EOL)
@@ -192,6 +195,9 @@ const cli = yargs(args)
   .command(SessionCommand)
   .command(PluginCommand)
   .command(DbCommand)
+  .command(LoginCommand)
+  .command(InitCommand)
+  .command(DoctorCommand)
   .fail((msg, err) => {
     if (
       msg?.startsWith("Unknown argument") ||

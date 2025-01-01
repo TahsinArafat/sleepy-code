@@ -242,8 +242,10 @@ const live: Layer.Layer<
       const system: string[] = []
       system.push(
         [
-          // use agent prompt otherwise provider prompt
-          ...(input.agent.prompt ? [input.agent.prompt] : SystemPrompt.provider(input.model)),
+          // use provider prompt, and append agent prompt if present for non-hidden primary agents
+          ...(input.agent.prompt && (input.agent.hidden || input.agent.mode === "subagent")
+            ? [input.agent.prompt]
+            : [...SystemPrompt.provider(input.model), ...(input.agent.prompt ? [input.agent.prompt] : [])]),
           // any custom prompt passed into this call
           ...input.system,
           // any custom prompt from last user message

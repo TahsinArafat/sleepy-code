@@ -29,9 +29,13 @@ jobs:
       - name: Setup Bun
         uses: ./.github/actions/setup-bun
 
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
+
       - name: Configure git identity
         run: |
-          git config --global user.email "ci@sleepy.ai"
+          git config --global user.email "ci@sleepyai.org"
           git config --global user.name "sleepy-ci"
 
       - name: Run unit tests (shard ${{ matrix.shard }})

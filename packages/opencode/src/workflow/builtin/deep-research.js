@@ -299,8 +299,7 @@ const judged = (await parallel(
           label: "j" + n + ":" + fact.statement.slice(0, 40),
           phase: "Crosscheck",
           schema: RULING_SHAPE,
-          model: "lite",
-        })
+          })
       )
     ).then(rulings => {
       // A null ruling (skip or agent error) counts as an abstention.

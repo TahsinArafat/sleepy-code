@@ -1,4 +1,5 @@
 import z from "zod"
+import fsNode from "fs/promises"
 import os from "os"
 import fuzzysort from "fuzzysort"
 import { Config } from "../config"
@@ -29,6 +30,7 @@ import { withStatics } from "@/util/schema"
 
 import * as ProviderTransform from "./transform"
 import { ModelID, ProviderID } from "./schema"
+import { createSessionChecker } from "./session-check"
 
 const log = Log.create({ service: "provider" })
 const DEFAULT_CONTEXT_WINDOW = 1_000_000
@@ -97,6 +99,46 @@ function wrapSSE(res: Response, ms: number, ctl: AbortController) {
     status: res.status,
     statusText: res.statusText,
   })
+}
+
+interface GatewayModel {
+  modelId: string
+  name: string
+  omniRouteModelId?: string
+  contextWindow?: number
+  maxOutputLimit?: number
+  inputPrice?: number
+  outputPrice?: number
+  cacheReadPrice?: number
+  cacheWritePrice?: number
+}
+
+async function fetchModels(endpoint: string, token: string): Promise<GatewayModel[]> {
+  try {
+    const res = await fetch(`${endpoint}/api/v1/models`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!res.ok) return []
+    const json = await res.json()
+    if (json && json.data && Array.isArray(json.data)) {
+      return json.data as GatewayModel[]
+    }
+    return []
+  } catch {
+    return []
+  }
+}
+
+async function tryRefreshStartup(
+  dashboardUrl: string,
+  refreshToken: string,
+): Promise<{ access_token: string; refresh_token: string; expires_in: number } | null> {
+  const res = await fetch(`${dashboardUrl}/api/auth/token/refresh`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  })
+  return res.ok ? res.json() : null
 }
 
 type BundledSDK = {
@@ -409,8 +451,8 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         autoload: false,
         options: {
           headers: {
-            "HTTP-Referer": "https://mimo.xiaomi.com/coder/",
-            "X-Title": "sleepycode",
+            "HTTP-Referer": "https://www.sleepyai.org/",
+            "X-Title": "sleepy-code",
             "X-Source": "sleepycode",
           },
         },
@@ -420,8 +462,8 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         autoload: false,
         options: {
           headers: {
-            "HTTP-Referer": "https://mimo.xiaomi.com/coder/",
-            "X-Title": "sleepycode",
+            "HTTP-Referer": "https://www.sleepyai.org/",
+            "X-Title": "sleepy-code",
             "X-OpenRouter-Categories": "programming,programming-app,cli-agent",
           },
         },
@@ -431,8 +473,8 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         autoload: false,
         options: {
           headers: {
-            "HTTP-Referer": "https://mimo.xiaomi.com/coder/",
-            "X-Title": "sleepycode",
+            "HTTP-Referer": "https://www.sleepyai.org/",
+            "X-Title": "sleepy-code",
           },
         },
       }),
@@ -441,8 +483,8 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         autoload: false,
         options: {
           headers: {
-            "http-referer": "https://mimo.xiaomi.com/coder/",
-            "x-title": "sleepycode",
+            "http-referer": "https://www.sleepyai.org/",
+            "x-title": "sleepy-code",
           },
         },
       }),
@@ -539,8 +581,8 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         autoload: false,
         options: {
           headers: {
-            "HTTP-Referer": "https://mimo.xiaomi.com/coder/",
-            "X-Title": "sleepycode",
+            "HTTP-Referer": "https://www.sleepyai.org/",
+            "X-Title": "sleepy-code",
           },
         },
       }),
@@ -824,8 +866,8 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         autoload: false,
         options: {
           headers: {
-            "HTTP-Referer": "https://mimo.xiaomi.com/coder/",
-            "X-Title": "sleepycode",
+            "HTTP-Referer": "https://www.sleepyai.org/",
+            "X-Title": "sleepy-code",
           },
         },
       }),
@@ -1092,6 +1134,133 @@ const layer: Layer.Layer<
         const modelsDev = yield* Effect.promise(() => ModelsDev.get())
         const database = mapValues(modelsDev, fromModelsDevProvider)
 
+        let sleepyCredentials: { token: string; dashboardUrl: string } | null = null
+
+        // Inject Sleepy Gateway provider from ~/.sleepy/gateway.json if credentials exist
+        try {
+          const sleepyConfigPath = path.join(Global.Path.config, "gateway.json")
+          const sleepyConfigRaw = yield* Effect.promise(() =>
+            fsNode.readFile(sleepyConfigPath, "utf-8").catch(() => null as string | null),
+          )
+          if (sleepyConfigRaw) {
+            const sleepyConfig = JSON.parse(sleepyConfigRaw)
+            const endpoint = sleepyConfig.endpoint
+            let token = sleepyConfig.access_token || sleepyConfig.token
+            const dashboardUrl = sleepyConfig.dashboard_url || "https://www.sleepyai.org"
+
+            if (token && sleepyConfig.refresh_token && sleepyConfig.expires_at && Date.now() > sleepyConfig.expires_at) {
+              const refreshed = yield* Effect.promise(() =>
+                tryRefreshStartup(dashboardUrl, sleepyConfig.refresh_token).catch(() => null),
+              )
+              if (refreshed) {
+                token = refreshed.access_token
+                const updated = {
+                  ...sleepyConfig,
+                  access_token: refreshed.access_token,
+                  refresh_token: refreshed.refresh_token,
+                  expires_at: Date.now() + (refreshed.expires_in ?? 3600) * 1000,
+                }
+                const tmpPath = sleepyConfigPath + ".tmp"
+                yield* Effect.promise(() =>
+                  fsNode.writeFile(tmpPath, JSON.stringify(updated, null, 2)).then(() => fsNode.rename(tmpPath, sleepyConfigPath)).catch((err) => {
+                    log.error("failed to persist refreshed token — next startup will re-refresh", { error: err.message })
+                  }),
+                )
+              } else {
+                yield* Effect.promise(() => fsNode.unlink(sleepyConfigPath).catch(() => {}))
+                token = null
+              }
+            }
+
+            if (endpoint && token) {
+              sleepyCredentials = { token, dashboardUrl }
+              const sleepyProviderID = ProviderID.make("sleepy")
+              const baseUrl = `${dashboardUrl}/api/v1`
+              const authHeader = { Authorization: `Bearer ${token}` }
+
+              const fetchedModels = yield* Effect.promise(() => fetchModels(dashboardUrl, token))
+
+              let sleepyModels: Record<string, Model> = {}
+
+              if (fetchedModels.length > 0) {
+                for (const m of fetchedModels) {
+                  sleepyModels[m.modelId] = {
+                    id: ModelID.make(m.modelId),
+                    providerID: sleepyProviderID,
+                    name: m.name,
+                    family: "sleepy",
+                    api: {
+                      id: m.omniRouteModelId || m.modelId,
+                      url: baseUrl,
+                      npm: "@ai-sdk/openai-compatible",
+                    },
+                    status: "active",
+                    headers: authHeader,
+                    options: {},
+                    cost: {
+                      input: m.inputPrice ?? 0.0015,
+                      output: m.outputPrice ?? 0.005,
+                      cache: {
+                        read: m.cacheReadPrice ?? 0.00075,
+                        write: m.cacheWritePrice ?? 0.0015,
+                      },
+                    },
+                    limit: {
+                      context: m.contextWindow ?? 128000,
+                      output: m.maxOutputLimit ?? 4096,
+                    },
+                    capabilities: {
+                      temperature: true,
+                      reasoning: true,
+                      attachment: true,
+                      toolcall: true,
+                      input: { text: true, audio: false, image: true, video: false, pdf: true },
+                      output: { text: true, audio: false, image: false, video: false, pdf: false },
+                      interleaved: false,
+                    },
+                    release_date: "",
+                    variants: {},
+                  }
+                }
+              } else {
+                // No models fetched — provider registered but empty.
+                // User must login so models can be fetched from the dashboard API.
+                sleepyModels = {}
+              }
+
+              database[sleepyProviderID] = {
+                id: sleepyProviderID,
+                source: "config",
+                name: "Sleepy Gateway",
+                env: [],
+                options: {
+                  baseURL: baseUrl,
+                  headers: {
+                    Authorization: authHeader,
+                  },
+                },
+                models: sleepyModels,
+              }
+              log.info("sleepy provider injected from config", { endpoint, dashboardUrl })
+
+              // Start background session polling — checks every 10 minutes if the session is still valid.
+              // Proactively refreshes tokens before expiry to prevent mid-session logouts.
+              const checker = createSessionChecker({
+                dashboardUrl,
+                token,
+                configPath: sleepyConfigPath,
+                onRefreshed(newToken) {
+                  token = newToken
+                  authHeader.Authorization = `Bearer ${newToken}`
+                },
+              })
+              checker.start()
+            }
+          }
+        } catch {
+          // Config file missing or malformed — silently skip sleepy provider injection
+        }
+
         const providers: Record<ProviderID, Info> = {} as Record<ProviderID, Info>
         const languages = new Map<string, LanguageModelV3>()
         const modelLoaders: {
@@ -1128,6 +1297,11 @@ const layer: Layer.Layer<
 
         // load plugins first so config() hook runs before reading cfg.provider
         const plugins = yield* plugin.list()
+
+        // promote sleepy provider from database to providers if injected
+        if (database[ProviderID.make("sleepy")]) {
+          mergeProvider(ProviderID.make("sleepy"), {})
+        }
 
         // now read config providers - includes any modifications from plugin config() hook
         const configProviders = Object.entries(cfg.provider ?? {})
@@ -1412,6 +1586,79 @@ const layer: Layer.Layer<
           }
 
           log.info("found", { providerID })
+        }
+
+        if (sleepyCredentials) {
+          const { token, dashboardUrl } = sleepyCredentials
+          setInterval(async () => {
+            const freshModels = await fetchModels(dashboardUrl, token)
+            if (freshModels.length === 0) return
+
+            const sleepy = providers[ProviderID.make("sleepy")]
+            if (!sleepy) return
+
+            const sleepyProviderID = ProviderID.make("sleepy")
+            const baseUrl = `${dashboardUrl}/api/v1`
+            const authHeader = { Authorization: `Bearer ${token}` }
+
+            for (const m of freshModels) {
+              const existing = sleepy.models[m.modelId]
+              if (existing) {
+                existing.name = m.name
+                existing.api.id = m.omniRouteModelId || m.modelId
+                existing.cost = {
+                  input: m.inputPrice ?? 0.0015,
+                  output: m.outputPrice ?? 0.005,
+                  cache: {
+                    read: m.cacheReadPrice ?? 0.00075,
+                    write: m.cacheWritePrice ?? 0.0015,
+                  },
+                }
+                existing.limit = {
+                  context: m.contextWindow ?? 128000,
+                  output: m.maxOutputLimit ?? 4096,
+                }
+              } else {
+                sleepy.models[m.modelId] = {
+                  id: ModelID.make(m.modelId),
+                  providerID: sleepyProviderID,
+                  name: m.name,
+                  family: "sleepy",
+                  api: {
+                    id: m.omniRouteModelId || m.modelId,
+                    url: baseUrl,
+                    npm: "@ai-sdk/openai-compatible",
+                  },
+                  status: "active",
+                  headers: authHeader,
+                  options: {},
+                  cost: {
+                    input: m.inputPrice ?? 0.0015,
+                    output: m.outputPrice ?? 0.005,
+                    cache: {
+                      read: m.cacheReadPrice ?? 0.00075,
+                      write: m.cacheWritePrice ?? 0.0015,
+                    },
+                  },
+                  limit: {
+                    context: m.contextWindow ?? 128000,
+                    output: m.maxOutputLimit ?? 4096,
+                  },
+                  capabilities: {
+                    temperature: true,
+                    reasoning: true,
+                    attachment: true,
+                    toolcall: true,
+                    input: { text: true, audio: false, image: true, video: false, pdf: true },
+                    output: { text: true, audio: false, image: false, video: false, pdf: false },
+                    interleaved: false,
+                  },
+                  release_date: "",
+                  variants: {},
+                }
+              }
+            }
+          }, 30 * 1000).unref()
         }
 
         return {
@@ -1714,11 +1961,6 @@ const layer: Layer.Layer<
         if (!provider) continue
         if (!provider.models[entry.modelID]) continue
         return { providerID: entry.providerID, modelID: entry.modelID }
-      }
-
-      const sleepy = s.providers[ProviderID.make("sleepy")]
-      if (sleepy?.models[ModelID.make("sleepy-auto")]) {
-        return { providerID: sleepy.id, modelID: ModelID.make("sleepy-auto") }
       }
 
       const provider = Object.values(s.providers).find((p) => !cfg.provider || Object.keys(cfg.provider).includes(p.id))

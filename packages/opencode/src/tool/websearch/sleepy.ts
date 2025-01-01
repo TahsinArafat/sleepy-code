@@ -1,10 +1,10 @@
 import { Duration, Effect, Schema, Stream } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 
-const DEFAULT_BASE_URL = "https://api.xiaomimimo.com/v1"
+const DEFAULT_BASE_URL = "https://www.sleepyai.org/api/v1"
 
 export const QUOTA_EXCEEDED =
-  "Web search quota exhausted (free tier limit reached). Top up or manage your plan at https://platform.xiaomimimo.com/console/plugin, or use `webfetch` with a relevant URL instead."
+  "Web search quota exhausted (free tier limit reached). Top up or manage your plan at https://www.sleepyai.org/dashboard/admin/providers, or use `webfetch` with a relevant URL instead."
 
 const Annotation = Schema.Struct({
   type: Schema.optional(Schema.NullOr(Schema.String)),
@@ -108,7 +108,7 @@ export const call = (
       ),
       Effect.timeoutOrElse({
         duration: timeout,
-        orElse: () => Effect.die(new Error("xiaomi web_search request timed out")),
+        orElse: () => Effect.die(new Error("sleepy web_search request timed out")),
       }),
     )
 

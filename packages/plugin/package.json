@@ -3,10 +3,16 @@
   "name": "@sleepy-ai/plugin",
   "version": "0.1.4",
   "description": "Plugin SDK for extending SleepyCode",
-  "keywords": ["sleepy", "sleepycode", "ai", "plugin", "coding-assistant"],
+  "keywords": [
+    "sleepy",
+    "sleepycode",
+    "ai",
+    "plugin",
+    "coding-assistant"
+  ],
   "type": "module",
   "license": "MIT",
-  "author": "Xiaomi Sleepy Team",
+  "author": "Xiaomi MiMo Team",
   "homepage": "https://mimo.xiaomi.com/coder",
   "repository": {
     "type": "git",

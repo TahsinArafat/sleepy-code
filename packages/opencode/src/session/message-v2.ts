@@ -1104,6 +1104,14 @@ export function fromError(
         },
         { cause: e },
       ).toObject()
+    // A TypeError (e.g. "j.map is not a function" from non-array content)
+    // is a programming defect, not a transient API failure. Surface it as a
+    // named error so it is diagnosable instead of collapsing to UnknownError.
+    case e instanceof TypeError:
+      return new NamedError.Unknown(
+        { message: `TypeError: ${errorMessage(e)}` },
+        { cause: e },
+      ).toObject()
     case e instanceof Error:
       return new NamedError.Unknown({ message: errorMessage(e) }, { cause: e }).toObject()
     default:

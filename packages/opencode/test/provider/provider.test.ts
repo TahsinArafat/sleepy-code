@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test"
-import { mkdir } from "fs/promises"
+import { mkdir, writeFile, unlink } from "fs/promises"
 import path from "path"
 
 import { tmpdir } from "../fixture/fixture"
@@ -12,6 +12,7 @@ import { Env } from "../../src/env"
 import { Effect } from "effect"
 import { AppRuntime } from "../../src/effect/app-runtime"
 import { makeRuntime } from "../../src/effect/run-service"
+import { Global } from "../../src/global"
 
 const env = makeRuntime(Env.Service, Env.defaultLayer)
 const set = (k: string, v: string) => env.runSync((svc) => svc.set(k, v))
@@ -2606,5 +2607,83 @@ test("plugin config enabled and disabled providers are honored", async () => {
       expect(providers[ProviderID.openai]).toBeUndefined()
     },
   })
+})
+
+const SLEEPY_CONFIG_PATH = path.join(Global.Path.config, "gateway.json")
+
+async function writeSleepyConfig(config: { endpoint: string; token: string }) {
+  await writeFile(SLEEPY_CONFIG_PATH, JSON.stringify(config, null, 2))
+}
+
+async function removeSleepyConfig() {
+  await unlink(SLEEPY_CONFIG_PATH).catch(() => {})
+}
+
+
+test("sleepy provider absent when config.json missing", async () => {
+  await removeSleepyConfig()
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(path.join(dir, "sleepycode.json"), JSON.stringify({ $schema: "https://opencode.ai/config.json" }))
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const providers = await list()
+      expect(providers[ProviderID.make("sleepy")]).toBeUndefined()
+    },
+  })
+})
+
+test("sleepy provider absent when config.json has no credentials", async () => {
+  await writeSleepyConfig({ endpoint: "", token: "" })
+  try {
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(path.join(dir, "sleepycode.json"), JSON.stringify({ $schema: "https://opencode.ai/config.json" }))
+      },
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const providers = await list()
+        expect(providers[ProviderID.make("sleepy")]).toBeUndefined()
+      },
+    })
+  } finally {
+    await removeSleepyConfig()
+  }
+})
+
+
+test("defaultModel respects config model over sleepy fallback", async () => {
+  await writeSleepyConfig({ endpoint: "https://www.sleepyai.org", token: "test-token" })
+  try {
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "sleepycode.json"),
+          JSON.stringify({
+            $schema: "https://opencode.ai/config.json",
+            model: "anthropic/claude-sonnet-4-20250514",
+          }),
+        )
+      },
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      init: async () => {
+        set("ANTHROPIC_API_KEY", "test-api-key")
+      },
+      fn: async () => {
+        const model = await defaultModel()
+        expect(String(model.providerID)).toBe("anthropic")
+        expect(String(model.modelID)).toBe("claude-sonnet-4-20250514")
+      },
+    })
+  } finally {
+    await removeSleepyConfig()
+  }
 })
 

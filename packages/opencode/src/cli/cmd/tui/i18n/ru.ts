@@ -466,7 +466,7 @@ export const dict = {
   // Sleepy Auto (free) — TUI login dialog
   "tui.dialog.login.sleepy_free": "Sleepy Auto (free)",
   "tui.dialog.login.sleepy_free.desc": "Анонимный бесплатный канал — вход не требуется",
-  "tui.dialog.login.sleepy_free.success": "Sleepy Auto (free) готов — модель по умолчанию: sleepy/sleepy-auto",
+  "tui.dialog.login.sleepy_free.success": "Sleepy Auto (free) готов — модель по умолчанию: sleepy-auto",
   "tui.dialog.login.sleepy_free.unavailable": "Провайдер Sleepy Auto (free) не загружен",
   "tui.dialog.login.flow.title": "Вход в Sleepy",
   "tui.dialog.login.flow.placeholder": "Вставьте код (или дождитесь обратного вызова браузера)",
@@ -484,7 +484,7 @@ export const dict = {
   "cli.providers.sleepy_free.verifying": "Проверка канала Sleepy Auto (free)...",
   "cli.providers.sleepy_free.ready": "Канал Sleepy Auto (free) готов",
   "cli.providers.sleepy_free.failed": "Не удалось проверить Sleepy Auto (free)",
-  "cli.providers.sleepy_free.default_set": "Модель по умолчанию: sleepy/sleepy-auto (контекст 1M, бесплатно)",
+  "cli.providers.sleepy_free.default_set": "Модель по умолчанию: sleepy-auto (контекст 1M, бесплатно)",
   "cli.providers.sleepy_free.usage_hint":
     "Вход не требуется — просто запустите sleepy. Для платных/премиум-моделей выберите вход через браузер Sleepy.",
   "cli.providers.sleepy_login.decrypt_retry": "Ошибка расшифровки, повторите попытку (осталось попыток: {remaining})",
