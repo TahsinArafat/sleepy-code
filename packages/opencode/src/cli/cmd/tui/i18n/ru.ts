@@ -26,6 +26,7 @@ export const dict = {
   "tui.prompt.placeholder.normal": 'Спросите что угодно... "{{example}}"',
   "tui.prompt.placeholder.shell": 'Выполните команду... "{{example}}"',
   "tui.prompt.ghost": "{{prediction}}  (Tab — принять)",
+  "tui.paste.image.fallback_path": "Модель не поддерживает изображения — вместо этого вставлен путь к изображению. Используйте /modalities для включения",
   "tui.home.placeholder.example.todo": "Исправь TODO в кодовой базе",
   "tui.home.placeholder.example.stack": "Какой технологический стек у этого проекта?",
   "tui.home.placeholder.example.tests": "Почини сломанные тесты",
@@ -44,28 +45,38 @@ export const dict = {
 
   // Tips
   "tui.tips.label": "Подсказка",
-  "tui.tips.plain_terminal": "Рекомендуем использовать iTerm или терминал VS Code",
+  "tui.tips.plain_terminal": "Стандартный терминал Mac имеет ограничения рендеринга. Используйте iTerm2 или терминал VS Code",
   "tui.tips.attach_file":
     "Введите {highlight}@{/highlight}, а затем имя файла, чтобы выполнить нечёткий поиск и прикрепить файлы",
   "tui.tips.shell_prefix":
     "Начните сообщение с {highlight}!{/highlight}, чтобы выполнить shell-команду напрямую (например, {highlight}!ls -la{/highlight})",
   "tui.tips.tab_agent":
     "Нажмите {highlight}Tab{/highlight} или {highlight}Shift+Tab{/highlight}, чтобы переключаться между агентами Build, Plan и Compose",
+  "tui.tips.tab_agent_orchestrator":
+    "Нажмите {highlight}Tab{/highlight} или {highlight}Shift+Tab{/highlight}, чтобы переключаться между агентами Build, Plan, Compose и Orchestrator",
   "tui.tips.theme_mode":
     "Выполните {highlight}/dark{/highlight} для тёмного режима или {highlight}/light{/highlight} для светлого",
   "tui.tips.doc": "Выполните {highlight}/doc{/highlight}, чтобы открыть пользовательскую документацию",
   "tui.tips.free_models": "Бесплатные модели доступны ограниченное время — попробуйте их сейчас!",
+  "tui.tips.free_api_sunset":
+    "Сервис бесплатного API завершён. Выполните {highlight}/login{/highlight}, чтобы войти. Оформите подписку на Sleepy Token Plan или настройте сторонний API для использования Sleepy Code.",
+  "tui.tips.multi_skills":
+    "Комбинируйте несколько {highlight}/skill-name{/highlight} в одном сообщении, чтобы использовать несколько Skills одновременно",
+  "tui.tips.ask_slash_commands":
+    "Ищете команду? Спросите {highlight}Какие slash-команды я могу использовать?{/highlight} прямо в чате",
   "tui.tips.background":
     "Выполните {highlight}/background{/highlight}, чтобы установить произвольное изображение в качестве фона главной страницы",
+  "tui.tips.vivid":
+    "Выполните {highlight}/vivid{/highlight}, чтобы при необходимости переключаться между расширенным и минимальным оформлением",
+  "tui.tips.compose_next":
+    "Попробуйте {highlight}/compose-next{/highlight} вместо агента Compose для передовых моделей",
   "tui.tips.undo":
     "Используйте {highlight}/undo{/highlight}, чтобы отменить последнее сообщение и изменения файлов",
   "tui.tips.redo":
     "Используйте {highlight}/redo{/highlight}, чтобы вернуть ранее отменённые сообщения и изменения",
-  "tui.tips.share":
-    "Выполните {highlight}/share{/highlight}, чтобы получить публичную ссылку на диалог на opencode.ai",
   "tui.tips.drag_drop": "Перетащите изображения или PDF в терминал, чтобы добавить их в контекст",
   "tui.tips.paste_image":
-    "Нажмите {highlight}Ctrl+V{/highlight}, чтобы вставить изображение из буфера обмена в строку ввода",
+    "Нажмите {highlight}Ctrl+V{/highlight}, чтобы вставить изображение из буфера обмена (в macOS используйте Ctrl+V, а не Cmd+V — терминал перехватывает Cmd+V)",
   "tui.tips.editor":
     "Нажмите {highlight}Ctrl+X E{/highlight} или {highlight}/editor{/highlight}, чтобы редактировать сообщения во внешнем редакторе",
   "tui.tips.init":
@@ -179,8 +190,6 @@ export const dict = {
     "Выполните {highlight}sleepy auth list{/highlight}, чтобы увидеть всех настроенных провайдеров",
   "tui.tips.agent_create":
     "Выполните {highlight}sleepy agent create{/highlight}, чтобы создать агента в пошаговом режиме",
-  "tui.tips.github_trigger":
-    "Используйте {highlight}/opencode{/highlight} в issue/PR на GitHub, чтобы запускать AI-действия",
   "tui.tips.github_install":
     "Выполните {highlight}sleepy github install{/highlight}, чтобы настроить GitHub-workflow",
   "tui.tips.github_oc":
@@ -232,8 +241,6 @@ export const dict = {
     "Включите {highlight}scroll_acceleration{/highlight} в {highlight}tui.json{/highlight} для плавной прокрутки",
   "tui.tips.username_toggle":
     "Переключайте отображение имени пользователя через палитру команд ({highlight}Ctrl+P{/highlight})",
-  "tui.tips.docker":
-    "Выполните {highlight}docker run -it --rm ghcr.io/anomalyco/opencode{/highlight} для контейнерного запуска",
   "tui.tips.zen":
     "Используйте {highlight}/connect{/highlight} с Sleepy Code для подобранных и протестированных моделей",
   "tui.tips.agents_md":
@@ -274,6 +281,54 @@ export const dict = {
   "tui.slash.deep-research.description":
     "глубокий многоисточниковый проверенный отчёт (запускает workflow deep-research)",
 
+  // Built-in bundled skill descriptions (user-facing, decoupled from SKILL.md description which targets the LLM)
+  "tui.skill.docx-official.description": "Создание, редактирование и чтение файлов Microsoft Word (.docx)",
+  "tui.skill.xlsx-official.description": "Создание, редактирование и чтение книг Microsoft Excel (.xlsx)",
+  "tui.skill.pdf-official.description": "Создание, редактирование, преобразование и чтение PDF-файлов",
+  "tui.skill.pptx-official.description": "Создание, редактирование и чтение презентаций Microsoft PowerPoint (.pptx)",
+  "tui.skill.sleepycode.description": "Самодокументация функций, конфигурации и команд SleepyCode",
+  "tui.skill.evolve.description": "Перепишите любой свой слой — инструменты, hooks, знания, workflows и даже UI",
+  "tui.skill.frontend-design.description": "Руководство по выразительному, осмысленному визуальному дизайну UI",
+  "tui.skill.loop.description": "Запланировать запуск промпта с периодичностью",
+  "tui.skill.html-to-video-pipeline.description": "Магический инструмент для коротких видео — создавайте короткие видео с помощью HTML",
+  "tui.skill.arxiv.description": "Поиск, цитирование, загрузка и отслеживание статей arXiv",
+  "tui.skill.skill-creator.description": "Создание, проверка и улучшение skills агента",
+  "tui.skill.research-paper-writing.description": "Написание, полировка и рецензирование научных статей",
+  "tui.skill.playwright.description": "Автоматизация реальных сценариев браузера из терминала",
+  "tui.skill.codex.description": "Автономный запуск Codex CLI в скриптах, CI, Docker и Kubernetes",
+  "tui.skill.claude-code.description": "Делегирование задач программирования Claude Code CLI",
+  "tui.skill.grok-build.description": "Работа с Grok Build из командной строки",
+  "tui.skill.design-blueprint.description":
+    "Создать проектную спецификацию (DESIGN.md + Decision Trace) до макетов",
+  "tui.skill.super-research.description":
+    "Автономные исследования — эксперименты, обзоры, количественный анализ, бенчмарки, RCA, абляция, воспроизведение и написание статей",
+  "tui.skill.deep-research.description":
+    "Глубокое многоисточниковое исследование с перекрёстной проверкой и цитированием",
+  "tui.skill.modern-python-toolchain.description":
+    "Настройка Python-проекта с uv, ruff и pyright",
+  "tui.skill.data-analytics.description":
+    "Анализ данных о продукте и бизнесе, проектирование KPI, создание дашбордов и отчётов",
+  "tui.skill.product-design.description":
+    "Исследование, аудит, прототипирование и проверка дизайна продукта и UX",
+  "tui.skill.sales.description":
+    "Подготовка встреч, исследование клиентов, планирование сделок и работа с системами продаж",
+  "tui.skill.compose:ask.description": "Запросить у пользователя решение или уточнение",
+  "tui.skill.compose:brainstorm.description": "Исследовать требования и дизайн перед реализацией",
+  "tui.skill.compose:debug.description": "Системная отладка перед предложением исправлений",
+  "tui.skill.compose:execute.description": "Выполнить план реализации с контрольными точками",
+  "tui.skill.compose:feedback.description": "Обработать отзывы код-ревью с технической строгостью",
+  "tui.skill.compose:merge.description": "Интегрировать завершённую работу — merge, PR или очистка",
+  "tui.skill.compose:parallel.description": "Выполнять независимые задачи параллельно",
+  "tui.skill.compose:plan.description": "Создать пошаговый план реализации из спецификации",
+  "tui.skill.compose:report.description": "Свести результаты реализации в итоговый отчёт",
+  "tui.skill.compose:review.description": "Проверить соответствие требованиям перед merge",
+  "tui.skill.compose:subagent.description": "Делегировать независимые задачи субагентам",
+  "tui.skill.compose:tdd.description": "Разработка через тестирование — тесты перед кодом",
+  "tui.skill.compose:verify.description": "Запустить проверку и подтвердить успешный результат",
+  "tui.skill.compose:worktree.description": "Создать изолированное рабочее пространство",
+  "tui.skill.compose-next.description":
+    "Новое поколение оркестрации: сквозная работа над фичей (grill, spec, реализация, проверка, ревью, финализация) для сильных моделей",
+
   // Language switching
   "tui.command.language.switch.title": "Сменить язык",
   "tui.command.language.switch.description": "Изменить язык интерфейса",
@@ -284,6 +339,8 @@ export const dict = {
   // App-level commands
   "tui.command.session.list.title": "Сменить сессию",
   "tui.command.session.new.title": "Новая сессия",
+  "tui.command.session.recover.title": "Продолжить прерванный ход",
+  "tui.session.recovering": "восстановление",
   "tui.command.workflow.list.title": "Рабочие процессы",
   "tui.command.model.list.title": "Сменить модель",
   "tui.command.model.cycle_recent.title": "Цикл моделей",
@@ -291,16 +348,37 @@ export const dict = {
   "tui.command.model.cycle_favorite.title": "Цикл избранных моделей",
   "tui.command.model.cycle_favorite_reverse.title": "Цикл избранных моделей (в обратном порядке)",
   "tui.command.agent.list.title": "Сменить агента",
+  "tui.command.modalities.title": "Настроить входные модальности",
+  "tui.modalities.title": "Входные модальности — {{model}}",
+  "tui.modalities.saved": "Входные модальности обновлены: {{modalities}}",
+  "tui.modalities.no_model": "Модель не выбрана",
+  "tui.modalities.hint.toggle": "переключить",
+  "tui.modalities.hint.save": "сохранить",
   "tui.command.mcp.list.title": "Переключить MCP",
   "tui.command.never_ask.title_on": "Без вопросов: ВКЛ (авто-решение, кроме запросов разрешений) — нажмите для выключения",
   "tui.command.never_ask.title_off": "Без вопросов: ВЫКЛ — нажмите для включения (авто-решение, кроме запросов разрешений)",
   "tui.command.never_ask.toast_on":
     "Без вопросов ВКЛ — я не буду спрашивать; сам выберу лучший вариант, пока вы не выключите (/never-ask). Запросы разрешений по-прежнему требуют вашего подтверждения.",
   "tui.command.never_ask.toast_off": "Без вопросов ВЫКЛ — я снова буду спрашивать вас в точках принятия решений.",
+  "tui.command.skip_permissions.title_on": "Пропуск разрешений: ВКЛ (авто-одобрение запросов) — нажмите для выключения",
+  "tui.command.skip_permissions.title_off": "Пропуск разрешений: ВЫКЛ — нажмите для включения (авто-одобрение запросов)",
+  "tui.command.skip_permissions.toast_on":
+    "Пропуск разрешений ВКЛ — запросы авто-одобряются (включая субагентов). Деструктивные команды всё ещё запрашивают подтверждение.",
+  "tui.command.skip_permissions.toast_off": "Пропуск разрешений ВЫКЛ — запросы снова требуют вашего подтверждения.",
+  "tui.command.permission_timeout.title": "Таймаут запроса разрешения",
+  "tui.permission_timeout.title": "Таймаут запроса разрешения",
+  "tui.permission_timeout.hint": "Сколько ждать подтверждения человека перед авто-отклонением.",
+  "tui.permission_timeout.option.never": "Никогда",
+  "tui.permission_timeout.option.never_description": "Ждать подтверждения бесконечно",
+  "tui.permission_timeout.option.tier_description": "Авто-отклонение через {{duration}}",
+  "tui.permission_timeout.toast_never": "Таймаут разрешений отключён — запросы ждут бесконечно.",
+  "tui.permission_timeout.toast_set": "Таймаут разрешений установлен на {{duration}}.",
   "tui.command.agent.cycle.title": "Цикл агентов",
   "tui.command.variant.cycle.title": "Цикл вариантов",
   "tui.command.variant.list.title": "Сменить вариант модели",
   "tui.command.agent.cycle.reverse.title": "Цикл агентов (в обратном порядке)",
+  "tui.agent.locked": "Невозможно сменить режим после входа в {{mode}}",
+  "tui.agent.locked.subset": "В этой сессии можно переключаться только между {{agents}}",
   "tui.command.provider.login.title": "Войти",
   "tui.command.provider.connect.title": "Подключить провайдера",
   "tui.command.provider.logout.title": "Выйти",
@@ -308,6 +386,10 @@ export const dict = {
   "tui.command.opencode.status.title": "Посмотреть статус",
   "tui.command.theme.switch.title": "Сменить тему",
   "tui.command.logo.switch.title": "Сменить дизайн логотипа",
+  "tui.command.visual_mode.title_on": "Расширенное оформление - перейти к минимальному",
+  "tui.command.visual_mode.title_off": "Минимальное оформление - перейти к расширенному",
+  "tui.visual_mode.enabled": "Расширенное оформление включено: звёздный фон и эффекты логотипа восстановлены; метеоры и анимация индикаторов зависят от настройки анимации",
+  "tui.visual_mode.disabled": "Расширенное оформление выключено: звёзды, метеоры и эффекты логотипа скрыты; индикаторы остаются неподвижными",
   "tui.dialog.logo.title": "Дизайн логотипа",
   "tui.dialog.logo.option.classic": "Классический (жирный)",
   "tui.dialog.logo.option.thin": "Тонкий (полублок)",
@@ -327,11 +409,15 @@ export const dict = {
   "tui.dialog.agreement.title": "Условия и конфиденциальность",
   "tui.dialog.agreement.message": "Ознакомьтесь и примите их, чтобы продолжить.",
   "tui.dialog.agreement.confirm": "Принять и продолжить",
+  "tui.dialog.free_api_sunset.title": "Сервис бесплатного API завершён",
+  "tui.dialog.free_api_sunset.message":
+    "Выполните /login, чтобы войти. Оформите подписку на Sleepy Token Plan или настройте сторонний API для использования Sleepy Code.",
   "tui.command.consent.revoke.title": "Отозвать согласие на бесплатную модель",
   "tui.consent.revoked": "Согласие на бесплатную модель отозвано — потребуется принять снова",
   "tui.dialog.select.placeholder": "Поиск",
   "tui.dialog.model.login_hint": "Подсказка: выполните /login для входа перед сменой модели",
-  "tui.model.sleepy_auto.name": "Sleepy Auto (Sleepy-V2.5, временно бесплатно)",
+  "tui.model.sleepy_auto.name": "Sleepy Auto (Sleepy-V2.5 бесплатно до 26 июля, 18:00 · UTC+8)",
+  "tui.model.sleepy_auto.sunset_name": "Sleepy Auto (Sleepy-V2.5)",
   "tui.dialog.token_plan.title": "Оформите Token Plan или подождите в очереди",
   "tui.dialog.token_plan.line1":
     "В бесплатном режиме запросы сейчас в очереди. Для стабильного и качественного сервиса",
@@ -358,6 +444,27 @@ export const dict = {
   "tui.dialog.export.hint.confirm_action": "для подтверждения",
   "tui.dialog.export.hint.options_action": "для параметров",
   "tui.toast.copied_to_clipboard": "Скопировано в буфер обмена",
+  "tui.toast.try_best.paused_other": "Обнаружен цикл try-best; сеанс {{session}} приостановлен.",
+  "tui.toast.try_best.handoff_failed": "Не удалось запустить передачу выбранному исполнителю.",
+  "tui.toast.try_best.continue_failed": "Не удалось продолжить сеанс",
+  "tui.toast.session.recover.started": "Продолжаем прерванный ход",
+  "tui.toast.session.recover.none": "Нет прерванного хода для продолжения",
+  "tui.toast.session.recover.failed": "Не удалось продолжить прерванный ход",
+  "tui.toast.session.recover.busy": "Сеанс ещё выполняется; повторите попытку после перехода в режим ожидания",
+  "tui.dialog.try_best.title": "Обнаружен цикл try-best — ход приостановлен",
+  "tui.dialog.try_best.reason.edit_repeat": "Почти одинаковые правки повторились {{count}} раз.",
+  "tui.dialog.try_best.reason.edit_repeat_path": "Почти одинаковые правки повторились {{count}} раз в {{path}}.",
+  "tui.dialog.try_best.reason.bash_retry":
+    "Одна и та же неудачная команда повторилась {{count}} раз без успешной правки.",
+  "tui.dialog.try_best.reason.action_streak":
+    "{{count}} последовательных действий типа «{{action}}» не дали заметного результата.",
+  "tui.dialog.try_best.action.edit": "правка",
+  "tui.dialog.try_best.action.verify": "проверка",
+  "tui.dialog.try_best.action.same_kind": "один тип",
+  "tui.dialog.try_best.handoff.title": "Передать работу {{target}}",
+  "tui.dialog.try_best.handoff.description": "Попросить Sleepy поручить незавершённую работу этому исполнителю",
+  "tui.dialog.try_best.continue.title": "Продолжить с {{model}}",
+  "tui.dialog.try_best.continue.description": "Попросить текущую модель отказаться от этого подхода и составить новый план",
   "tui.toast.instructions_loaded": "Загружено {{files}}",
   "tui.toast.update_available.title": "Доступно обновление",
   "tui.toast.update_available.confirm": "Доступна новая версия v{{version}}. Обновить сейчас?",
@@ -366,6 +473,7 @@ export const dict = {
   "tui.toast.update_available.success": "Обновлено до SleepyCode v{{version}}. Пожалуйста, перезапустите приложение.",
   "tui.toast.updated.title": "Автообновление выполнено",
   "tui.toast.updated.message": "Патч применён автоматически: v{{version}}. Перезапустите для использования новой версии. Отключите через autoupdate: false в конфигурации.",
+  "tui.toast.native_installer_tip": "Совет: рекомендуется нативный установщик (curl/PowerShell) для лучшего опыта установки и обновления.",
   "tui.sidebar.instructions": "Инструкции",
   "tui.sidebar.cwd": "Рабочий каталог",
   "tui.toast.unknown_error": "Произошла неизвестная ошибка",
@@ -390,6 +498,10 @@ export const dict = {
   "tui.command.session.timeline.title": "Перейти к сообщению",
   "tui.command.session.fork.title": "Разветвить сессию",
   "tui.command.session.compact.title": "Сжать сессию",
+  "tui.command.session.ask.title": "Задать побочный вопрос",
+  "tui.command.session.ask.description": "Задайте вопрос текущей сессии, не прерывая её",
+  "tui.command.session.ask.placeholder": "Задайте побочный вопрос…",
+  "tui.command.session.ask.busy": "Думаю…",
   "tui.command.session.unshare.title": "Отменить публикацию",
   "tui.command.session.undo.title": "Отменить предыдущее сообщение",
   "tui.command.session.redo.title": "Повторить",
@@ -490,14 +602,6 @@ export const dict = {
   "cli.providers.sleepy_login.decrypt_retry": "Ошибка расшифровки, повторите попытку (осталось попыток: {remaining})",
   "cli.providers.sleepy_login.decrypt_exhausted": "Ошибка расшифровки, превышено максимальное число попыток",
 
-  // Question i18n — plan_enter
-  "tui.question.plan_enter.question": "Переключиться в режим plan для структурированного планирования?",
-  "tui.question.plan_enter.header": "Вход в план",
-  "tui.question.plan_enter.option.0.label": "Да",
-  "tui.question.plan_enter.option.0.description": "Переключиться на агента plan для планирования в режиме чтения",
-  "tui.question.plan_enter.option.1.label": "Нет",
-  "tui.question.plan_enter.option.1.description": "Остаться в текущем режиме",
-
   // Question i18n — plan_exit
   "tui.question.plan_exit.question": "План {{plan}} завершён. Переключиться на агента build и начать реализацию?",
   "tui.question.plan_exit.header": "Выход из плана",
@@ -524,4 +628,13 @@ export const dict = {
   "trust.dangerous.advice_root": "Если нет весомой причины, НЕ доверяйте корню файловой системы.",
   "trust.dangerous.option.yes": "Я понимаю риски, доверять только в этой сессии",
   "trust.dangerous.option.no": "Выйти (рекомендуется)",
+  "skip_permissions.title": "ПРЕДУПРЕЖДЕНИЕ: режим обхода разрешений",
+  "skip_permissions.body":
+    "Вы запустили с --dangerously-skip-permissions. Sleepy Code будет читать, редактировать и выполнять файлы, а также запускать команды оболочки БЕЗ запроса подтверждения. Действуют только правила, которые вы явно запретили (deny) в конфигурации. Вы несёте полную ответственность за все его действия.",
+  "skip_permissions.plugin_warn":
+    "В этом режиме вредоносный запрос, файл или плагин может выполнить произвольные команды и изменить или похитить ваши данные без какого-либо подтверждения.",
+  "skip_permissions.root_warn":
+    "Вы работаете от имени root. Обход разрешений от имени root даёт модели неограниченный контроль над этой машиной.",
+  "skip_permissions.option.no": "Нет, выйти (рекомендуется)",
+  "skip_permissions.option.yes": "Да, я принимаю риски и хочу пропустить проверку разрешений",
 } satisfies Partial<Record<Keys, string>>

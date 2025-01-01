@@ -29,6 +29,7 @@ import { ConfigAgent } from "./agent"
 import { ConfigCommand } from "./command"
 import { ConfigCompose } from "./compose"
 import { ConfigFormatter } from "./formatter"
+import { SLEEPYCODE_GITIGNORE_ENTRIES } from "./gitignore"
 import { ConfigHistory } from "./history"
 import { ConfigLayout } from "./layout"
 import { ConfigLSP } from "./lsp"
@@ -40,7 +41,9 @@ import { ConfigPaths } from "./paths"
 import { ConfigPermission } from "./permission"
 import { ConfigPlugin } from "./plugin"
 import { ConfigProvider } from "./provider"
+import { ConfigRetry } from "./retry"
 import { ConfigServer } from "./server"
+import { ConfigLLMServer } from "./llm-server"
 import { ConfigSkills } from "./skills"
 import { ConfigVariable } from "./variable"
 import { Npm } from "@/npm"
@@ -92,6 +95,8 @@ const LogLevelRef = Schema.Any.annotate({ [ZodOverride]: Log.Level })
 
 const PositiveInt = Schema.Number.check(Schema.isInt()).check(Schema.isGreaterThan(0))
 const NonNegativeInt = Schema.Number.check(Schema.isInt()).check(Schema.isGreaterThanOrEqualTo(0))
+// Token count as a number or a shorthand string ("300K", "1.5M", "50%").
+const TokenQuantity = Schema.Union([NonNegativeInt, Schema.String])
 
 const InfoSchema = Schema.Struct({
   $schema: Schema.optional(Schema.String).annotate({
@@ -101,8 +106,11 @@ const InfoSchema = Schema.Struct({
   server: Schema.optional(ConfigServer.Server).annotate({
     description: "Server configuration for sleepy serve and web commands",
   }),
+  llmServer: Schema.optional(ConfigLLMServer.LLMServer).annotate({
+    description: "Token lifetime defaults for the temporary local LLM server (sleepy llm-server)",
+  }),
   command: Schema.optional(Schema.Record(Schema.String, ConfigCommand.Info)).annotate({
-    description: "Command configuration, see https://opencode.ai/docs/commands",
+    description: "Command configuration, see https://mimo.xiaomi.com/sleepycode/commands",
   }),
   skills: Schema.optional(ConfigSkills.Info).annotate({ description: "Additional skill folder paths" }),
   compose: Schema.optional(ConfigCompose.Info).annotate({ description: "Compose mode configuration" }),
@@ -114,6 +122,10 @@ const InfoSchema = Schema.Struct({
   snapshot: Schema.optional(Schema.Boolean).annotate({
     description:
       "Enable or disable snapshot tracking. When false, filesystem snapshots are not recorded and undoing or reverting will not undo/redo file changes. Defaults to true.",
+  }),
+  auto_worktree: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Enable the once-per-session Auto-Worktree Notice when a primary root session mutates a git main worktree. Defaults to false (notice is off). When true, inject the existing soft-hint system-reminder; when false or omitted, inject nothing. Scope is the notice only — conflict detection and experimental worktree auto-create are not gated by this flag.",
   }),
   // User-facing plugin config is stored as Specs; provenance gets attached later while configs are merged.
   plugin: Schema.optional(Schema.mutable(Schema.Array(ConfigPlugin.Spec))),
@@ -139,6 +151,10 @@ const InfoSchema = Schema.Struct({
   }),
   small_model: Schema.optional(ConfigModelID).annotate({
     description: "Small model to use for tasks like title generation in the format of provider/model",
+  }),
+  vision_model: Schema.optional(ConfigModelID).annotate({
+    description:
+      "Model to use for image/vision subagent tasks in the format of provider/model. If unset, a vision-capable model is chosen automatically (in-house models preferred, then cheapest).",
   }),
   model_groups: Schema.optional(
     Schema.Record(
@@ -188,9 +204,12 @@ const InfoSchema = Schema.Struct({
       }),
       [Schema.Record(Schema.String, AgentRef)],
     ),
-  ).annotate({ description: "Agent configuration, see https://opencode.ai/docs/agents" }),
+  ).annotate({ description: "Agent configuration, see https://mimo.xiaomi.com/sleepycode/agents" }),
   provider: Schema.optional(Schema.Record(Schema.String, ConfigProvider.Info)).annotate({
     description: "Custom provider configurations and model overrides",
+  }),
+  retry: Schema.optional(ConfigRetry.Info).annotate({
+    description: "Retry budgets for provider requests, streams, and long-running network recovery",
   }),
   mcp: Schema.optional(
     Schema.Record(
@@ -241,14 +260,24 @@ const InfoSchema = Schema.Struct({
       }),
       tail_turns: Schema.optional(NonNegativeInt).annotate({
         description:
-          "Number of recent user turns, including their following assistant/tool responses, to keep verbatim during compaction (default: 2)",
+          "Deprecated compatibility setting. Projected compaction now keeps only whole API rounds that arrive while compaction is running.",
       }),
       preserve_recent_tokens: Schema.optional(NonNegativeInt).annotate({
-        description: "Maximum number of tokens from recent turns to preserve verbatim after compaction",
+        description:
+          "Deprecated compatibility setting. Compression-time API rounds now use a fixed 40000-token hard budget.",
       }),
       reserved: Schema.optional(NonNegativeInt).annotate({
-        description: "Token buffer for compaction. Leaves enough window to avoid overflow during compaction.",
+        description:
+          "Token buffer for compaction. Leaves enough window to avoid overflow during compaction (default: up to 33000, capped by the model's maximum output).",
       }),
+      max_context: Schema.optional(Schema.Union([TokenQuantity, Schema.Record(Schema.String, TokenQuantity)])).annotate(
+        {
+          description:
+            'Compact earlier than the model window. A token count (300000), a shorthand string ("300K", "1M", "50%"), ' +
+            'or a map keyed by "<providerID>/<modelID>" with wildcards ("openai/gpt-5*"). Always clamped to the ' +
+            "model's real window — it can only lower the compaction trigger, never raise it. 0 means no budget.",
+        },
+      ),
     }),
   ),
   checkpoint: Schema.optional(
@@ -260,13 +289,9 @@ const InfoSchema = Schema.Struct({
       reserved: Schema.optional(NonNegativeInt).annotate({
         description: "Token buffer reserved for checkpoint operations. Default: 20000.",
       }),
-      max_writer_failures: Schema.optional(PositiveInt).annotate({
-        description:
-          "Maximum consecutive writer failures per session before checkpointing stops retrying until process restart. Default: 3.",
-      }),
       fork: Schema.optional(Schema.Boolean).annotate({
         description:
-          "Whether to fork the parent agent's message prefix into the writer session for prefix-cache reuse. Requires provider cache-breakpoint support. Default: false.",
+          "Whether to fork the parent agent's message prefix into the writer session for prefix-cache reuse. Requires provider cache-breakpoint support. Default: true.",
       }),
       push_caps: Schema.optional(
         Schema.Struct({
@@ -330,6 +355,10 @@ const InfoSchema = Schema.Struct({
   ),
   memory: Schema.optional(
     Schema.Struct({
+      disable_write: Schema.optional(Schema.Boolean).annotate({
+        description:
+          "Stop WRITING new memory. Default: false (memory is written). When true, no new memory is produced — session checkpoint.md, project MEMORY.md, notes.md and per-task progress.md are never written, the high-pressure 'save your learnings to memory' nudge is suppressed, and automatic dream/distill runs are skipped. Existing memory stays READABLE on demand: the builtin `memory` search tool keeps working and the files can still be read directly. What does stop is the AUTOMATIC injection — checkpoint rebuild is short-circuited to compaction while writing is off, and the memory dumps that a rebuild would have placed in context are only produced by that rebuild, so nothing is loaded on its own; an agent that wants memory has to search or read for it. Nothing is ever deleted — set it back to false to resume writing on top of the existing files.",
+      }),
       cc_index: Schema.optional(Schema.Boolean).annotate({
         description:
           "Index Claude Code memory (~/.claude/projects/<slug>/memory) and expose under scope='cc'. Default: false. Note: when enabled, every sleepycode agent (build/explore/subagents) can search these memories via the builtin `memory` tool — including CC's `type: user` (your role/preferences) and `type: feedback` (your guidance) categories. CC originally writes them for future CC sessions; flipping this on widens the consumer set to sleepycode agents on the same machine. Leave disabled (default) if you don't want personal context recallable from a prompt-injection-vulnerable agent.",
@@ -343,7 +372,7 @@ const InfoSchema = Schema.Struct({
     Schema.Struct({
       auto: Schema.optional(Schema.Boolean).annotate({
         description:
-          "Auto-trigger dream memory consolidation on new session start. Default: true.",
+          "Auto-trigger dream memory consolidation on new session start. Default: false.",
       }),
       interval_days: Schema.optional(NonNegativeInt).annotate({
         description: "Minimum days between automatic dream runs. Set to 0 to trigger on every new session. Default: 7.",
@@ -354,7 +383,7 @@ const InfoSchema = Schema.Struct({
     Schema.Struct({
       auto: Schema.optional(Schema.Boolean).annotate({
         description:
-          "Auto-trigger distill workflow packaging on new session start. Default: true.",
+          "Auto-trigger distill workflow packaging on new session start. Default: false.",
       }),
       interval_days: Schema.optional(NonNegativeInt).annotate({
         description: "Minimum days between automatic distill runs. Default: 30.",
@@ -386,6 +415,35 @@ const InfoSchema = Schema.Struct({
       continue_loop_on_deny: Schema.optional(Schema.Boolean).annotate({
         description: "Continue the agent loop when a tool call is denied",
       }),
+      try_best: Schema.optional(
+        Schema.Struct({
+          edit_window: Schema.optional(PositiveInt).annotate({
+            description: "Recent edit events to compare (default 12).",
+          }),
+          edit_similarity: Schema.optional(Schema.Number).annotate({
+            description: "Jaccard threshold for near-identical edit detection (default 0.8).",
+          }),
+          edit_matches: Schema.optional(PositiveInt).annotate({
+            description: "Prior similar edits required before pausing (default 2).",
+          }),
+          action_streak: Schema.optional(PositiveInt).annotate({
+            description: "Consecutive edit or verify actions without progress before pausing (default 4).",
+          }),
+        }),
+      ).annotate({ description: "Try-best loop detector thresholds." }),
+      loop_streak_recovery: Schema.optional(
+        Schema.Struct({
+          enabled: Schema.optional(Schema.Boolean).annotate({
+            description: "Crop repeated thinking/tool streaks from the next request and inject a recovery note.",
+          }),
+          trigger_count: Schema.optional(PositiveInt).annotate({
+            description: "Consecutive identical streak keys required to trigger (default 3).",
+          }),
+          max_span: Schema.optional(PositiveInt).annotate({
+            description: "Max assistant messages cropped from the trailing streak (default 64).",
+          }),
+        }),
+      ).annotate({ description: "Loop-streak request-layer recovery (experimental)." }),
       mcp_timeout: Schema.optional(PositiveInt).annotate({
         description: "Timeout in milliseconds for model context protocol (MCP) requests",
       }),
@@ -556,10 +614,16 @@ export const layer = Layer.effect(
       if (!("path" in options)) return data
 
       yield* Effect.promise(() => resolveLoadedPlugins(data, options.path))
-      if (!data.$schema) {
-        data.$schema = "https://opencode.ai/config.json"
-        const updated = text.replace(/^\s*\{/, '{\n  "$schema": "https://opencode.ai/config.json",')
-        yield* fs.writeFileString(options.path, updated).pipe(Effect.catch(() => Effect.void))
+      if (!data.$schema || data.$schema === "https://opencode.ai/config.json") {
+        data.$schema = "https://mimo.xiaomi.com/sleepycode/config.json"
+        const edits = modify(text, ["$schema"], "https://mimo.xiaomi.com/sleepycode/config.json", {
+          formattingOptions: { insertSpaces: true, tabSize: 2 },
+          isArrayInsertion: false,
+        })
+        if (edits.length) {
+          const updated = applyEdits(text, edits)
+          yield* fs.writeFileString(options.path, updated).pipe(Effect.catch(() => Effect.void))
+        }
       }
       return data
     })
@@ -586,13 +650,24 @@ export const layer = Layer.effect(
             .then(async (mod) => {
               const { provider, model, ...rest } = mod.default
               if (provider && model) result.model = `${provider}/${model}`
-              result["$schema"] = "https://opencode.ai/config.json"
+              result["$schema"] = "https://mimo.xiaomi.com/sleepycode/config.json"
               result = mergeDeep(result, rest)
               await fsNode.writeFile(path.join(Global.Path.config, "config.json"), JSON.stringify(result, null, 2))
               await fsNode.unlink(legacy)
             })
             .catch(() => {}),
         )
+      }
+
+      // Seed a starter config when no global config file exists yet
+      const globalConfigFile = path.join(Global.Path.config, "sleepycode.jsonc")
+      if (
+        !existsSync(path.join(Global.Path.config, "config.json")) &&
+        !existsSync(path.join(Global.Path.config, "sleepycode.json")) &&
+        !existsSync(globalConfigFile)
+      ) {
+        const starter = '{\n  "$schema": "https://mimo.xiaomi.com/sleepycode/config.json"\n}\n'
+        yield* fs.writeFileString(globalConfigFile, starter).pipe(Effect.catch(() => Effect.void))
       }
 
       return result
@@ -619,7 +694,7 @@ export const layer = Layer.effect(
         yield* fs
           .writeFileString(
             gitignore,
-            ["node_modules", "package.json", "package-lock.json", "bun.lock", ".gitignore"].join("\n"),
+            SLEEPYCODE_GITIGNORE_ENTRIES.join("\n"),
           )
           .pipe(
             Effect.catchIf(
@@ -736,7 +811,7 @@ export const layer = Layer.effect(
             }
             const wellknown = (yield* Effect.promise(() => response.json())) as { config?: Record<string, unknown> }
             const remoteConfig = wellknown.config ?? {}
-            if (!remoteConfig.$schema) remoteConfig.$schema = "https://opencode.ai/config.json"
+            if (!remoteConfig.$schema) remoteConfig.$schema = "https://mimo.xiaomi.com/sleepycode/config.json"
             const source = `${url}/.well-known/opencode`
             const next = yield* loadConfig(JSON.stringify(remoteConfig), {
               dir: path.dirname(source),
@@ -904,6 +979,13 @@ export const layer = Layer.effect(
               mode: "primary" as const,
             },
           })
+        }
+
+        if (Flag.SLEEPYCODE_DANGEROUSLY_SKIP_PERMISSIONS) {
+          // Allow-all base, merged UNDER user config so an explicit deny still
+          // wins. Matches `sleepy run --dangerously-skip-permissions`: auto-approve
+          // everything not explicitly denied.
+          result.permission = mergeDeep({ "*": "allow" } as ConfigPermission.Info, result.permission ?? {})
         }
 
         if (Flag.SLEEPYCODE_PERMISSION) {

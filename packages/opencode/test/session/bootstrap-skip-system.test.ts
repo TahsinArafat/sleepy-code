@@ -29,14 +29,19 @@ const stubActorRegistry = Layer.succeed(
     register: () => Effect.die("not used"),
     updateStatus: () => Effect.void,
     updateTurn: () => Effect.void,
+    updateAgent: () => Effect.void,
     get: () => Effect.succeed(undefined),
+    liveness: () => Effect.succeed(undefined),
     listBySession: () => Effect.succeed([]),
     listActive: () => Effect.succeed([]),
     listByParent: () => Effect.succeed([]),
+    listPeerChildren: () => Effect.succeed([]),
     renderForAgent: () => Effect.succeed(""),
     agentTypeFor: () => Effect.succeed("main"),
     // Force the guard inside tryStartCheckpointWriter to fire by always reporting true.
     isSystemSpawned: () => Effect.succeed(true),
+    // System actor → does not serve checkpoint (mirrors isSystemSpawned=true here).
+    servesCheckpoint: () => Effect.succeed(false),
     allocateActorID: () => Effect.die("not used"),
   }),
 )

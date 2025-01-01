@@ -73,11 +73,17 @@ export namespace ProviderTest {
           getLanguage: Effect.fn("TestProvider.getLanguage")(() =>
             Effect.die(new Error("ProviderTest.getLanguage not configured")),
           ),
+          getSpeech: Effect.fn("TestProvider.getSpeech")(() =>
+            Effect.die(new Error("ProviderTest.getSpeech not configured")),
+          ),
           closest: Effect.fn("TestProvider.closest")((providerID) =>
             Effect.succeed(providerID === row.id ? { providerID: row.id, modelID: mdl.id } : undefined),
           ),
           getSmallModel: Effect.fn("TestProvider.getSmallModel")((providerID) =>
             Effect.succeed(providerID === row.id ? mdl : undefined),
+          ),
+          getVisionModel: Effect.fn("TestProvider.getVisionModel")(() =>
+            Effect.succeed(mdl.capabilities.input.image ? mdl : undefined),
           ),
           defaultModel: Effect.fn("TestProvider.defaultModel")(() =>
             Effect.succeed({ providerID: row.id, modelID: mdl.id }),

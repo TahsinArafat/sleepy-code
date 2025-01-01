@@ -18,6 +18,70 @@ export type EventGlobalDisposed = {
   }
 }
 
+export type EventTuiPromptAppend = {
+  type: "tui.prompt.append"
+  properties: {
+    text: string
+  }
+}
+
+export type EventTuiCommandExecute = {
+  type: "tui.command.execute"
+  properties: {
+    command:
+      | "session.list"
+      | "session.new"
+      | "session.share"
+      | "session.interrupt"
+      | "session.compact"
+      | "session.page.up"
+      | "session.page.down"
+      | "session.line.up"
+      | "session.line.down"
+      | "session.half.page.up"
+      | "session.half.page.down"
+      | "session.first"
+      | "session.last"
+      | "prompt.clear"
+      | "prompt.submit"
+      | "agent.cycle"
+      | string
+  }
+}
+
+export type EventTuiToastShow = {
+  type: "tui.toast.show"
+  properties: {
+    title?: string
+    message: string
+    variant: "info" | "success" | "warning" | "error"
+    /**
+     * Duration in milliseconds
+     */
+    duration?: number
+  }
+}
+
+export type EventTuiSessionSelect = {
+  type: "tui.session.select"
+  properties: {
+    /**
+     * Session ID to navigate to
+     */
+    sessionID: string
+  }
+}
+
+export type EventTuiInstructionsLoaded = {
+  type: "tui.instructions.loaded"
+  properties: {
+    /**
+     * Display labels of loaded instruction files: worktree-relative path, ~-path, or absolute
+     */
+    files: Array<string>
+  }
+}
+
 export type EventActorRegistered = {
   type: "actor.registered"
   properties: {
@@ -52,6 +116,17 @@ export type EventActorStuck = {
     description: string
     lastTurnTime: number
     stuckDuration: number
+  }
+}
+
+export type EventActorStalled = {
+  type: "actor.stalled"
+  properties: {
+    sessionID: string
+    actorID: string
+    description: string
+    lastActivityTime: number
+    stalledDuration: number
   }
 }
 
@@ -120,24 +195,6 @@ export type EventTaskUpdated = {
   }
 }
 
-export type EventTeamCreated = {
-  type: "team.created"
-  properties: {
-    teamID: string
-    creatorSessionID: string
-  }
-}
-
-export type EventTeamMemberJoined = {
-  type: "team.member.joined"
-  properties: {
-    teamID: string
-    sessionID: string
-    agent: string
-    role: string
-  }
-}
-
 export type EventMetricsModelCall = {
   type: "metrics.model_call"
   properties: {
@@ -179,67 +236,34 @@ export type EventMetricsAgentRequest = {
   }
 }
 
-export type EventTuiPromptAppend = {
-  type: "tui.prompt.append"
+export type EventMetricsTryBestDetected = {
+  type: "metrics.try_best_detected"
   properties: {
-    text: string
-  }
-}
-
-export type EventTuiCommandExecute = {
-  type: "tui.command.execute"
-  properties: {
-    command:
-      | "session.list"
-      | "session.new"
-      | "session.share"
-      | "session.interrupt"
-      | "session.compact"
-      | "session.page.up"
-      | "session.page.down"
-      | "session.line.up"
-      | "session.line.down"
-      | "session.half.page.up"
-      | "session.half.page.down"
-      | "session.first"
-      | "session.last"
-      | "prompt.clear"
-      | "prompt.submit"
-      | "agent.cycle"
-      | string
-  }
-}
-
-export type EventTuiToastShow = {
-  type: "tui.toast.show"
-  properties: {
-    title?: string
-    message: string
-    variant: "info" | "success" | "warning" | "error"
-    /**
-     * Duration in milliseconds
-     */
-    duration?: number
-  }
-}
-
-export type EventTuiSessionSelect = {
-  type: "tui.session.select"
-  properties: {
-    /**
-     * Session ID to navigate to
-     */
     sessionID: string
+    reason: "edit_repeat" | "bash_retry" | "action_streak"
+    provider: string
+    model_id: string
+    count: number
+    similarity?: number
+    action?: "edit" | "verify"
   }
 }
 
-export type EventTuiInstructionsLoaded = {
-  type: "tui.instructions.loaded"
+export type EventTeamCreated = {
+  type: "team.created"
   properties: {
-    /**
-     * Display labels of loaded instruction files: worktree-relative path, ~-path, or absolute
-     */
-    files: Array<string>
+    teamID: string
+    creatorSessionID: string
+  }
+}
+
+export type EventTeamMemberJoined = {
+  type: "team.member.joined"
+  properties: {
+    teamID: string
+    sessionID: string
+    agent: string
+    role: string
   }
 }
 
@@ -376,6 +400,7 @@ export type EventInstallationUpdated = {
   type: "installation.updated"
   properties: {
     version: string
+    method?: string
   }
 }
 
@@ -383,6 +408,7 @@ export type EventInstallationUpdateAvailable = {
   type: "installation.update-available"
   properties: {
     version: string
+    method?: string
   }
 }
 
@@ -556,9 +582,32 @@ export type EventSessionRetryAttempt = {
     sessionID: string
     messageID: string
     attempt: number
+    phaseAttempt: number
     maxAttempts: number
+    phase: "request" | "stream"
+    kind: "network" | "rate_limit" | "server" | "stream" | "unknown" | "terminal"
+    scope: "request" | "live-step" | "max-candidate" | "max-judge"
     reason: string
     nextDelayMs: number
+  }
+}
+
+export type EventSessionTryBestDetected = {
+  type: "session.try_best.detected"
+  properties: {
+    sessionID: string
+    agentID?: string
+    providerID: string
+    modelID: string
+    reason: "edit_repeat" | "bash_retry" | "action_streak"
+    evidence: {
+      tool: string
+      path?: string
+      command?: string
+      count: number
+      similarity?: number
+      action?: "edit" | "verify"
+    }
   }
 }
 
@@ -715,25 +764,6 @@ export type EventBashInteractiveReplied = {
   }
 }
 
-export type Todo = {
-  /**
-   * Brief description of the task
-   */
-  content: string
-  /**
-   * Current status of the task: pending, in_progress, completed, cancelled
-   */
-  status: string
-}
-
-export type EventTodoUpdated = {
-  type: "todo.updated"
-  properties: {
-    sessionID: string
-    todos: Array<Todo>
-  }
-}
-
 export type SessionStatus =
   | {
       type: "idle"
@@ -741,8 +771,15 @@ export type SessionStatus =
   | {
       type: "retry"
       attempt: number
+      phaseAttempt?: number
       message: string
       next: number
+      phase?: "request" | "stream"
+      scope?: "request" | "live-step" | "max-candidate" | "max-judge"
+    }
+  | {
+      type: "notice"
+      message: string
     }
   | {
       type: "busy"
@@ -764,28 +801,10 @@ export type EventSessionIdle = {
   }
 }
 
-export type EventSessionGoal = {
-  type: "session.goal"
+export type EventVcsBranchUpdated = {
+  type: "vcs.branch.updated"
   properties: {
-    sessionID: string
-    goal?: {
-      condition: string
-    }
-    lastVerdict?: {
-      ok: boolean
-      impossible?: boolean
-      reason: string
-      attempt: number
-      messageID?: string
-      error?: boolean
-    }
-  }
-}
-
-export type EventSessionCompacted = {
-  type: "session.compacted"
-  properties: {
-    sessionID: string
+    branch?: string
   }
 }
 
@@ -814,13 +833,6 @@ export type EventCommandExecuted = {
   }
 }
 
-export type EventVcsBranchUpdated = {
-  type: "vcs.branch.updated"
-  properties: {
-    branch?: string
-  }
-}
-
 export type EventWorktreeReady = {
   type: "worktree.ready"
   properties: {
@@ -833,6 +845,51 @@ export type EventWorktreeFailed = {
   type: "worktree.failed"
   properties: {
     message: string
+  }
+}
+
+export type Todo = {
+  /**
+   * Brief description of the task
+   */
+  content: string
+  /**
+   * Current status of the task: pending, in_progress, completed, cancelled
+   */
+  status: string
+}
+
+export type EventTodoUpdated = {
+  type: "todo.updated"
+  properties: {
+    sessionID: string
+    todos: Array<Todo>
+  }
+}
+
+export type EventSessionGoal = {
+  type: "session.goal"
+  properties: {
+    sessionID: string
+    goal?: {
+      condition: string
+    }
+    lastVerdict?: {
+      ok: boolean
+      impossible?: boolean
+      reason: string
+      attempt: number
+      messageID?: string
+      error?: boolean
+    }
+  }
+}
+
+export type EventSessionCompacted = {
+  type: "session.compacted"
+  properties: {
+    sessionID: string
+    agentID?: string
   }
 }
 
@@ -951,6 +1008,8 @@ export type UserMessage = {
     variant?: string
   }
   system?: string
+  systemMode?: "append" | "replace-agent"
+  harness?: "auto" | "codex" | "default"
   tools?: {
     [key: string]: boolean
   }
@@ -1149,6 +1208,10 @@ export type ToolStateCompleted = {
     [key: string]: unknown
   }
   output: string
+  providerOutput?: unknown
+  providerMetadata?: {
+    [key: string]: unknown
+  }
   title: string
   metadata: {
     [key: string]: unknown
@@ -1174,6 +1237,7 @@ export type ToolStateError = {
     start: number
     end: number
   }
+  attachments?: Array<FilePart>
 }
 
 export type ToolState = ToolStatePending | ToolStateRunning | ToolStateCompleted | ToolStateError
@@ -1269,6 +1333,7 @@ export type CheckpointPart = {
   checkpointDir: string
   checkpointNumber: number
   coveredUpTo: string
+  digestUpTo?: string
 }
 
 export type CompactionPart = {
@@ -1279,6 +1344,19 @@ export type CompactionPart = {
   auto: boolean
   overflow?: boolean
   tail_start_id?: string
+  projection?: {
+    version: 1
+    summary_message_id: string
+    summary: string
+    manifest?: string
+    trigger: "manual" | "automatic" | "provider-overflow"
+    tail_start_id?: string
+    tail_end_id?: string
+    compacted_tool_calls?: Array<{
+      call_id: string
+      tokens: number
+    }>
+  }
 }
 
 export type Part =
@@ -1351,6 +1429,11 @@ export type Session = {
     archived?: number
   }
   permission?: PermissionRuleset
+  prompt?: {
+    system?: string
+    systemMode?: "append" | "replace-agent"
+    harness: "auto" | "codex" | "default"
+  }
   revert?: {
     messageID: string
     partID?: string
@@ -1480,6 +1563,11 @@ export type SyncEventSessionUpdated = {
         archived: number | null
       }
       permission: PermissionRuleset | null
+      prompt: {
+        system?: string
+        systemMode?: "append" | "replace-agent"
+        harness: "auto" | "codex" | "default"
+      } | null
       revert: {
         messageID: string
         partID?: string
@@ -1509,23 +1597,25 @@ export type GlobalEvent = {
   payload:
     | EventServerConnected
     | EventGlobalDisposed
-    | EventActorRegistered
-    | EventActorStatus
-    | EventActorStuck
-    | EventWriterCachePerf
-    | EventInboxArrived
-    | EventTaskCreated
-    | EventTaskUpdated
-    | EventTeamCreated
-    | EventTeamMemberJoined
-    | EventMetricsModelCall
-    | EventMetricsToolCall
-    | EventMetricsAgentRequest
     | EventTuiPromptAppend
     | EventTuiCommandExecute
     | EventTuiToastShow
     | EventTuiSessionSelect
     | EventTuiInstructionsLoaded
+    | EventActorRegistered
+    | EventActorStatus
+    | EventActorStuck
+    | EventActorStalled
+    | EventWriterCachePerf
+    | EventInboxArrived
+    | EventTaskCreated
+    | EventTaskUpdated
+    | EventMetricsModelCall
+    | EventMetricsToolCall
+    | EventMetricsAgentRequest
+    | EventMetricsTryBestDetected
+    | EventTeamCreated
+    | EventTeamMemberJoined
     | EventWorkflowPhase
     | EventWorkflowLog
     | EventWorkflowStarted
@@ -1546,6 +1636,7 @@ export type GlobalEvent = {
     | EventSessionDiff
     | EventSessionError
     | EventSessionRetryAttempt
+    | EventSessionTryBestDetected
     | EventHookExecuted
     | EventHookReactReentered
     | EventHookReactMaxReached
@@ -1555,17 +1646,17 @@ export type GlobalEvent = {
     | EventSessionCwd
     | EventBashInteractiveAsked
     | EventBashInteractiveReplied
-    | EventTodoUpdated
     | EventSessionStatus
     | EventSessionIdle
-    | EventSessionGoal
-    | EventSessionCompacted
+    | EventVcsBranchUpdated
     | EventMcpToolsChanged
     | EventMcpBrowserOpenFailed
     | EventCommandExecuted
-    | EventVcsBranchUpdated
     | EventWorktreeReady
     | EventWorktreeFailed
+    | EventTodoUpdated
+    | EventSessionGoal
+    | EventSessionCompacted
     | EventPtyCreated
     | EventPtyUpdated
     | EventPtyExited
@@ -1619,6 +1710,20 @@ export type ServerConfig = {
    * Additional domains to allow for CORS
    */
   cors?: Array<string>
+}
+
+/**
+ * Token lifetime defaults for the temporary local LLM server (sleepy llm-server)
+ */
+export type LlmServerConfig = {
+  /**
+   * Default sliding lifetime for issued tokens, measured from last use (e.g. '30m', '12h', '1d', or 'none'). Default '1d'.
+   */
+  ttl?: string
+  /**
+   * Absolute ceiling from issue, regardless of activity (e.g. '7d', or 'none'). Default 'none', so an actively used token is not cut off.
+   */
+  maxAge?: string
 }
 
 export type PermissionActionConfig = "ask" | "allow" | "deny"
@@ -1752,10 +1857,188 @@ export type ProviderConfig = {
      */
     timeout?: number | false
     /**
+     * Timeout in milliseconds while waiting for response headers. OpenAI defaults to 300000 (5 minutes). Set to false to disable.
+     */
+    headerTimeout?: number | false
+    /**
      * Timeout in milliseconds between streamed SSE chunks for this provider. If no chunk arrives within this window, the request is aborted.
      */
     chunkTimeout?: number
-    [key: string]: unknown | string | boolean | number | false | number | undefined
+    [key: string]: unknown | string | boolean | number | false | number | false | number | undefined
+  }
+  /**
+   * Provider-specific overrides for retry budgets
+   */
+  retry?: {
+    request?: {
+      /**
+       * bounded stops after maxRetries; persistent ignores the retry count and waits until cancellation or deadline
+       */
+      mode?: "bounded" | "persistent"
+      /**
+       * Retries after the initial attempt; 0 disables retries and the maximum is 100
+       */
+      maxRetries?: number
+      /**
+       * Wall-clock retry deadline in milliseconds; use noDeadline for an explicit unlimited deadline
+       */
+      deadlineMs?: number
+      /**
+       * Disable the wall-clock retry deadline explicitly; maxRetries still applies to bounded budgets
+       */
+      noDeadline?: boolean
+      initialDelayMs?: number
+      maxDelayMs?: number
+      jitterRatio?: number
+    }
+    stream?: {
+      /**
+       * bounded stops after maxRetries; persistent ignores the retry count and waits until cancellation or deadline
+       */
+      mode?: "bounded" | "persistent"
+      /**
+       * Retries after the initial attempt; 0 disables retries and the maximum is 100
+       */
+      maxRetries?: number
+      /**
+       * Wall-clock retry deadline in milliseconds; use noDeadline for an explicit unlimited deadline
+       */
+      deadlineMs?: number
+      /**
+       * Disable the wall-clock retry deadline explicitly; maxRetries still applies to bounded budgets
+       */
+      noDeadline?: boolean
+      initialDelayMs?: number
+      maxDelayMs?: number
+      jitterRatio?: number
+    }
+    maxCandidate?: {
+      /**
+       * bounded stops after maxRetries; persistent ignores the retry count and waits until cancellation or deadline
+       */
+      mode?: "bounded" | "persistent"
+      /**
+       * Retries after the initial attempt; 0 disables retries and the maximum is 100
+       */
+      maxRetries?: number
+      /**
+       * Wall-clock retry deadline in milliseconds; use noDeadline for an explicit unlimited deadline
+       */
+      deadlineMs?: number
+      /**
+       * Disable the wall-clock retry deadline explicitly; maxRetries still applies to bounded budgets
+       */
+      noDeadline?: boolean
+      initialDelayMs?: number
+      maxDelayMs?: number
+      jitterRatio?: number
+    }
+    maxJudge?: {
+      /**
+       * bounded stops after maxRetries; persistent ignores the retry count and waits until cancellation or deadline
+       */
+      mode?: "bounded" | "persistent"
+      /**
+       * Retries after the initial attempt; 0 disables retries and the maximum is 100
+       */
+      maxRetries?: number
+      /**
+       * Wall-clock retry deadline in milliseconds; use noDeadline for an explicit unlimited deadline
+       */
+      deadlineMs?: number
+      /**
+       * Disable the wall-clock retry deadline explicitly; maxRetries still applies to bounded budgets
+       */
+      noDeadline?: boolean
+      initialDelayMs?: number
+      maxDelayMs?: number
+      jitterRatio?: number
+    }
+    network?: {
+      /**
+       * bounded stops after maxRetries; persistent ignores the retry count and waits until cancellation or deadline
+       */
+      mode?: "bounded" | "persistent"
+      /**
+       * Retries after the initial attempt; 0 disables retries and the maximum is 100
+       */
+      maxRetries?: number
+      /**
+       * Wall-clock retry deadline in milliseconds; use noDeadline for an explicit unlimited deadline
+       */
+      deadlineMs?: number
+      /**
+       * Disable the wall-clock retry deadline explicitly; maxRetries still applies to bounded budgets
+       */
+      noDeadline?: boolean
+      initialDelayMs?: number
+      maxDelayMs?: number
+      jitterRatio?: number
+    }
+    server?: {
+      /**
+       * bounded stops after maxRetries; persistent ignores the retry count and waits until cancellation or deadline
+       */
+      mode?: "bounded" | "persistent"
+      /**
+       * Retries after the initial attempt; 0 disables retries and the maximum is 100
+       */
+      maxRetries?: number
+      /**
+       * Wall-clock retry deadline in milliseconds; use noDeadline for an explicit unlimited deadline
+       */
+      deadlineMs?: number
+      /**
+       * Disable the wall-clock retry deadline explicitly; maxRetries still applies to bounded budgets
+       */
+      noDeadline?: boolean
+      initialDelayMs?: number
+      maxDelayMs?: number
+      jitterRatio?: number
+    }
+    rateLimit?: {
+      /**
+       * bounded stops after maxRetries; persistent ignores the retry count and waits until cancellation or deadline
+       */
+      mode?: "bounded" | "persistent"
+      /**
+       * Retries after the initial attempt; 0 disables retries and the maximum is 100
+       */
+      maxRetries?: number
+      /**
+       * Wall-clock retry deadline in milliseconds; use noDeadline for an explicit unlimited deadline
+       */
+      deadlineMs?: number
+      /**
+       * Disable the wall-clock retry deadline explicitly; maxRetries still applies to bounded budgets
+       */
+      noDeadline?: boolean
+      initialDelayMs?: number
+      maxDelayMs?: number
+      jitterRatio?: number
+    }
+    unknown?: {
+      /**
+       * bounded stops after maxRetries; persistent ignores the retry count and waits until cancellation or deadline
+       */
+      mode?: "bounded" | "persistent"
+      /**
+       * Retries after the initial attempt; 0 disables retries and the maximum is 100
+       */
+      maxRetries?: number
+      /**
+       * Wall-clock retry deadline in milliseconds; use noDeadline for an explicit unlimited deadline
+       */
+      deadlineMs?: number
+      /**
+       * Disable the wall-clock retry deadline explicitly; maxRetries still applies to bounded budgets
+       */
+      noDeadline?: boolean
+      initialDelayMs?: number
+      maxDelayMs?: number
+      jitterRatio?: number
+    }
+    jitterRatio?: number
   }
   models?: {
     [key: string]: {
@@ -1767,10 +2050,12 @@ export type ProviderConfig = {
       reasoning?: boolean
       temperature?: boolean
       tool_call?: boolean
+      voice_design?: boolean
+      voice_clone?: boolean
       interleaved?:
         | true
         | {
-            field: "reasoning_content" | "reasoning_details"
+            field: "reasoning" | "reasoning_content" | "reasoning_details"
           }
       cost?: {
         input: number
@@ -1823,7 +2108,16 @@ export type ProviderConfig = {
       }
     }
   }
+  /**
+   * When true, show only the models listed in this provider's `models` map and hide the rest of the catalog (acts as an implicit whitelist). Defaults to false: `models` only augments/overrides the catalog without filtering it.
+   */
+  only_configured_models?: boolean
 }
+
+/**
+ * Policy for MCP client-side sampling (`sampling/createMessage`) from this server: deny, ask (default), or allow.
+ */
+export type McpSamplingPolicy = "deny" | "ask" | "allow"
 
 export type McpLocalConfig = {
   /**
@@ -1848,6 +2142,7 @@ export type McpLocalConfig = {
    * Timeout in ms for MCP server requests. Defaults to 5000 (5 seconds) if not specified.
    */
   timeout?: number
+  sampling?: McpSamplingPolicy
 }
 
 export type McpOAuthConfig = {
@@ -1896,6 +2191,7 @@ export type McpRemoteConfig = {
    * Timeout in ms for MCP server requests. Defaults to 5000 (5 seconds) if not specified.
    */
   timeout?: number
+  sampling?: McpSamplingPolicy
 }
 
 /**
@@ -1910,8 +2206,9 @@ export type Config = {
   $schema?: string
   logLevel?: LogLevel
   server?: ServerConfig
+  llmServer?: LlmServerConfig
   /**
-   * Command configuration, see https://opencode.ai/docs/commands
+   * Command configuration, see https://mimo.xiaomi.com/sleepycode/commands
    */
   command?: {
     [key: string]: {
@@ -1955,6 +2252,10 @@ export type Config = {
    * Enable or disable snapshot tracking. When false, filesystem snapshots are not recorded and undoing or reverting will not undo/redo file changes. Defaults to true.
    */
   snapshot?: boolean
+  /**
+   * Enable the once-per-session Auto-Worktree Notice when a primary root session mutates a git main worktree. Defaults to false (notice is off). When true, inject the existing soft-hint system-reminder; when false or omitted, inject nothing. Scope is the notice only — conflict detection and experimental worktree auto-create are not gated by this flag.
+   */
+  auto_worktree?: boolean
   plugin?: Array<
     | string
     | [
@@ -1993,6 +2294,10 @@ export type Config = {
    */
   small_model?: string
   /**
+   * Model to use for image/vision subagent tasks in the format of provider/model. If unset, a vision-capable model is chosen automatically (in-house models preferred, then cheapest).
+   */
+  vision_model?: string
+  /**
    * Named model groups (capability tiers, e.g. ultra/standard/lite). Each group has a default model and optional member models. A group name can be used anywhere a provider/model string is accepted.
    */
   model_groups?: {
@@ -2020,7 +2325,7 @@ export type Config = {
     [key: string]: AgentConfig | undefined
   }
   /**
-   * Agent configuration, see https://opencode.ai/docs/agents
+   * Agent configuration, see https://mimo.xiaomi.com/sleepycode/agents
    */
   agent?: {
     plan?: AgentConfig
@@ -2037,6 +2342,180 @@ export type Config = {
    */
   provider?: {
     [key: string]: ProviderConfig
+  }
+  /**
+   * Retry budgets for provider requests, streams, and long-running network recovery
+   */
+  retry?: {
+    request?: {
+      /**
+       * bounded stops after maxRetries; persistent ignores the retry count and waits until cancellation or deadline
+       */
+      mode?: "bounded" | "persistent"
+      /**
+       * Retries after the initial attempt; 0 disables retries and the maximum is 100
+       */
+      maxRetries?: number
+      /**
+       * Wall-clock retry deadline in milliseconds; use noDeadline for an explicit unlimited deadline
+       */
+      deadlineMs?: number
+      /**
+       * Disable the wall-clock retry deadline explicitly; maxRetries still applies to bounded budgets
+       */
+      noDeadline?: boolean
+      initialDelayMs?: number
+      maxDelayMs?: number
+      jitterRatio?: number
+    }
+    stream?: {
+      /**
+       * bounded stops after maxRetries; persistent ignores the retry count and waits until cancellation or deadline
+       */
+      mode?: "bounded" | "persistent"
+      /**
+       * Retries after the initial attempt; 0 disables retries and the maximum is 100
+       */
+      maxRetries?: number
+      /**
+       * Wall-clock retry deadline in milliseconds; use noDeadline for an explicit unlimited deadline
+       */
+      deadlineMs?: number
+      /**
+       * Disable the wall-clock retry deadline explicitly; maxRetries still applies to bounded budgets
+       */
+      noDeadline?: boolean
+      initialDelayMs?: number
+      maxDelayMs?: number
+      jitterRatio?: number
+    }
+    maxCandidate?: {
+      /**
+       * bounded stops after maxRetries; persistent ignores the retry count and waits until cancellation or deadline
+       */
+      mode?: "bounded" | "persistent"
+      /**
+       * Retries after the initial attempt; 0 disables retries and the maximum is 100
+       */
+      maxRetries?: number
+      /**
+       * Wall-clock retry deadline in milliseconds; use noDeadline for an explicit unlimited deadline
+       */
+      deadlineMs?: number
+      /**
+       * Disable the wall-clock retry deadline explicitly; maxRetries still applies to bounded budgets
+       */
+      noDeadline?: boolean
+      initialDelayMs?: number
+      maxDelayMs?: number
+      jitterRatio?: number
+    }
+    maxJudge?: {
+      /**
+       * bounded stops after maxRetries; persistent ignores the retry count and waits until cancellation or deadline
+       */
+      mode?: "bounded" | "persistent"
+      /**
+       * Retries after the initial attempt; 0 disables retries and the maximum is 100
+       */
+      maxRetries?: number
+      /**
+       * Wall-clock retry deadline in milliseconds; use noDeadline for an explicit unlimited deadline
+       */
+      deadlineMs?: number
+      /**
+       * Disable the wall-clock retry deadline explicitly; maxRetries still applies to bounded budgets
+       */
+      noDeadline?: boolean
+      initialDelayMs?: number
+      maxDelayMs?: number
+      jitterRatio?: number
+    }
+    network?: {
+      /**
+       * bounded stops after maxRetries; persistent ignores the retry count and waits until cancellation or deadline
+       */
+      mode?: "bounded" | "persistent"
+      /**
+       * Retries after the initial attempt; 0 disables retries and the maximum is 100
+       */
+      maxRetries?: number
+      /**
+       * Wall-clock retry deadline in milliseconds; use noDeadline for an explicit unlimited deadline
+       */
+      deadlineMs?: number
+      /**
+       * Disable the wall-clock retry deadline explicitly; maxRetries still applies to bounded budgets
+       */
+      noDeadline?: boolean
+      initialDelayMs?: number
+      maxDelayMs?: number
+      jitterRatio?: number
+    }
+    server?: {
+      /**
+       * bounded stops after maxRetries; persistent ignores the retry count and waits until cancellation or deadline
+       */
+      mode?: "bounded" | "persistent"
+      /**
+       * Retries after the initial attempt; 0 disables retries and the maximum is 100
+       */
+      maxRetries?: number
+      /**
+       * Wall-clock retry deadline in milliseconds; use noDeadline for an explicit unlimited deadline
+       */
+      deadlineMs?: number
+      /**
+       * Disable the wall-clock retry deadline explicitly; maxRetries still applies to bounded budgets
+       */
+      noDeadline?: boolean
+      initialDelayMs?: number
+      maxDelayMs?: number
+      jitterRatio?: number
+    }
+    rateLimit?: {
+      /**
+       * bounded stops after maxRetries; persistent ignores the retry count and waits until cancellation or deadline
+       */
+      mode?: "bounded" | "persistent"
+      /**
+       * Retries after the initial attempt; 0 disables retries and the maximum is 100
+       */
+      maxRetries?: number
+      /**
+       * Wall-clock retry deadline in milliseconds; use noDeadline for an explicit unlimited deadline
+       */
+      deadlineMs?: number
+      /**
+       * Disable the wall-clock retry deadline explicitly; maxRetries still applies to bounded budgets
+       */
+      noDeadline?: boolean
+      initialDelayMs?: number
+      maxDelayMs?: number
+      jitterRatio?: number
+    }
+    unknown?: {
+      /**
+       * bounded stops after maxRetries; persistent ignores the retry count and waits until cancellation or deadline
+       */
+      mode?: "bounded" | "persistent"
+      /**
+       * Retries after the initial attempt; 0 disables retries and the maximum is 100
+       */
+      maxRetries?: number
+      /**
+       * Wall-clock retry deadline in milliseconds; use noDeadline for an explicit unlimited deadline
+       */
+      deadlineMs?: number
+      /**
+       * Disable the wall-clock retry deadline explicitly; maxRetries still applies to bounded budgets
+       */
+      noDeadline?: boolean
+      initialDelayMs?: number
+      maxDelayMs?: number
+      jitterRatio?: number
+    }
+    jitterRatio?: number
   }
   /**
    * MCP (Model Context Protocol) server configurations
@@ -2120,17 +2599,26 @@ export type Config = {
      */
     prune?: boolean
     /**
-     * Number of recent user turns, including their following assistant/tool responses, to keep verbatim during compaction (default: 2)
+     * Deprecated compatibility setting. Projected compaction now keeps only whole API rounds that arrive while compaction is running.
      */
     tail_turns?: number
     /**
-     * Maximum number of tokens from recent turns to preserve verbatim after compaction
+     * Deprecated compatibility setting. Compression-time API rounds now use a fixed 40000-token hard budget.
      */
     preserve_recent_tokens?: number
     /**
-     * Token buffer for compaction. Leaves enough window to avoid overflow during compaction.
+     * Token buffer for compaction. Leaves enough window to avoid overflow during compaction (default: up to 33000, capped by the model's maximum output).
      */
     reserved?: number
+    /**
+     * Compact earlier than the model window. A token count (300000), a shorthand string ("300K", "1M", "50%"), or a map keyed by "<providerID>/<modelID>" with wildcards ("openai/gpt-5*"). Always clamped to the model's real window — it can only lower the compaction trigger, never raise it. 0 means no budget.
+     */
+    max_context?:
+      | number
+      | string
+      | {
+          [key: string]: number | string
+        }
   }
   checkpoint?: {
     /**
@@ -2142,11 +2630,7 @@ export type Config = {
      */
     reserved?: number
     /**
-     * Maximum consecutive writer failures per session before checkpointing stops retrying until process restart. Default: 3.
-     */
-    max_writer_failures?: number
-    /**
-     * Whether to fork the parent agent's message prefix into the writer session for prefix-cache reuse. Requires provider cache-breakpoint support. Default: false.
+     * Whether to fork the parent agent's message prefix into the writer session for prefix-cache reuse. Requires provider cache-breakpoint support. Default: true.
      */
     fork?: boolean
     /**
@@ -2221,6 +2705,10 @@ export type Config = {
   }
   memory?: {
     /**
+     * Stop WRITING new memory. Default: false (memory is written). When true, no new memory is produced — session checkpoint.md, project MEMORY.md, notes.md and per-task progress.md are never written, the high-pressure 'save your learnings to memory' nudge is suppressed, and automatic dream/distill runs are skipped. Existing memory stays READABLE on demand: the builtin `memory` search tool keeps working and the files can still be read directly. What does stop is the AUTOMATIC injection — checkpoint rebuild is short-circuited to compaction while writing is off, and the memory dumps that a rebuild would have placed in context are only produced by that rebuild, so nothing is loaded on its own; an agent that wants memory has to search or read for it. Nothing is ever deleted — set it back to false to resume writing on top of the existing files.
+     */
+    disable_write?: boolean
+    /**
      * Index Claude Code memory (~/.claude/projects/<slug>/memory) and expose under scope='cc'. Default: false. Note: when enabled, every sleepycode agent (build/explore/subagents) can search these memories via the builtin `memory` tool — including CC's `type: user` (your role/preferences) and `type: feedback` (your guidance) categories. CC originally writes them for future CC sessions; flipping this on widens the consumer set to sleepycode agents on the same machine. Leave disabled (default) if you don't want personal context recallable from a prompt-injection-vulnerable agent.
      */
     cc_index?: boolean
@@ -2236,7 +2724,7 @@ export type Config = {
   }
   dream?: {
     /**
-     * Auto-trigger dream memory consolidation on new session start. Default: true.
+     * Auto-trigger dream memory consolidation on new session start. Default: false.
      */
     auto?: boolean
     /**
@@ -2246,7 +2734,7 @@ export type Config = {
   }
   distill?: {
     /**
-     * Auto-trigger distill workflow packaging on new session start. Default: true.
+     * Auto-trigger distill workflow packaging on new session start. Default: false.
      */
     auto?: boolean
     /**
@@ -2285,6 +2773,44 @@ export type Config = {
      * Continue the agent loop when a tool call is denied
      */
     continue_loop_on_deny?: boolean
+    /**
+     * Try-best loop detector thresholds.
+     */
+    try_best?: {
+      /**
+       * Recent edit events to compare (default 12).
+       */
+      edit_window?: number
+      /**
+       * Jaccard threshold for near-identical edit detection (default 0.8).
+       */
+      edit_similarity?: number
+      /**
+       * Prior similar edits required before pausing (default 2).
+       */
+      edit_matches?: number
+      /**
+       * Consecutive edit or verify actions without progress before pausing (default 4).
+       */
+      action_streak?: number
+    }
+    /**
+     * Loop-streak request-layer recovery (experimental).
+     */
+    loop_streak_recovery?: {
+      /**
+       * Crop repeated thinking/tool streaks from the next request and inject a recovery note.
+       */
+      enabled?: boolean
+      /**
+       * Consecutive identical streak keys required to trigger (default 3).
+       */
+      trigger_count?: number
+      /**
+       * Max assistant messages cropped from the trailing streak (default 64).
+       */
+      max_span?: number
+    }
     /**
      * Timeout in milliseconds for model context protocol (MCP) requests
      */
@@ -2391,6 +2917,8 @@ export type Model = {
     reasoning: boolean
     attachment: boolean
     toolcall: boolean
+    voiceDesign?: boolean
+    voiceClone?: boolean
     input: {
       text: boolean
       audio: boolean
@@ -2408,7 +2936,7 @@ export type Model = {
     interleaved:
       | boolean
       | {
-          field: "reasoning_content" | "reasoning_details"
+          field: "reasoning" | "reasoning_content" | "reasoning_details"
         }
   }
   cost: {
@@ -2534,6 +3062,11 @@ export type GlobalSession = {
     archived?: number
   }
   permission?: PermissionRuleset
+  prompt?: {
+    system?: string
+    systemMode?: "append" | "replace-agent"
+    harness: "auto" | "codex" | "default"
+  }
   revert?: {
     messageID: string
     partID?: string
@@ -2694,23 +3227,25 @@ export type File = {
 export type Event =
   | EventServerConnected
   | EventGlobalDisposed
-  | EventActorRegistered
-  | EventActorStatus
-  | EventActorStuck
-  | EventWriterCachePerf
-  | EventInboxArrived
-  | EventTaskCreated
-  | EventTaskUpdated
-  | EventTeamCreated
-  | EventTeamMemberJoined
-  | EventMetricsModelCall
-  | EventMetricsToolCall
-  | EventMetricsAgentRequest
   | EventTuiPromptAppend
   | EventTuiCommandExecute
   | EventTuiToastShow
   | EventTuiSessionSelect
   | EventTuiInstructionsLoaded
+  | EventActorRegistered
+  | EventActorStatus
+  | EventActorStuck
+  | EventActorStalled
+  | EventWriterCachePerf
+  | EventInboxArrived
+  | EventTaskCreated
+  | EventTaskUpdated
+  | EventMetricsModelCall
+  | EventMetricsToolCall
+  | EventMetricsAgentRequest
+  | EventMetricsTryBestDetected
+  | EventTeamCreated
+  | EventTeamMemberJoined
   | EventWorkflowPhase
   | EventWorkflowLog
   | EventWorkflowStarted
@@ -2731,6 +3266,7 @@ export type Event =
   | EventSessionDiff
   | EventSessionError
   | EventSessionRetryAttempt
+  | EventSessionTryBestDetected
   | EventHookExecuted
   | EventHookReactReentered
   | EventHookReactMaxReached
@@ -2740,17 +3276,17 @@ export type Event =
   | EventSessionCwd
   | EventBashInteractiveAsked
   | EventBashInteractiveReplied
-  | EventTodoUpdated
   | EventSessionStatus
   | EventSessionIdle
-  | EventSessionGoal
-  | EventSessionCompacted
+  | EventVcsBranchUpdated
   | EventMcpToolsChanged
   | EventMcpBrowserOpenFailed
   | EventCommandExecuted
-  | EventVcsBranchUpdated
   | EventWorktreeReady
   | EventWorktreeFailed
+  | EventTodoUpdated
+  | EventSessionGoal
+  | EventSessionCompacted
   | EventPtyCreated
   | EventPtyUpdated
   | EventPtyExited
@@ -2828,6 +3364,7 @@ export type Command = {
   agent?: string
   model?: string
   source?: "command" | "mcp" | "skill"
+  bundled?: boolean
   template: string
   subtask?: boolean
   hints: Array<string>
@@ -2851,6 +3388,7 @@ export type Agent = {
   modelRef?: string
   variant?: string
   prompt?: string
+  completionGate?: boolean
   options: {
     [key: string]: unknown
   }
@@ -3952,6 +4490,81 @@ export type WorktreeResetResponses = {
 
 export type WorktreeResetResponse = WorktreeResetResponses[keyof WorktreeResetResponses]
 
+export type WorktreeAutoData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/worktree/auto"
+}
+
+export type WorktreeAutoErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type WorktreeAutoError = WorktreeAutoErrors[keyof WorktreeAutoErrors]
+
+export type WorktreeAutoResponses = {
+  /**
+   * Worktree info or null
+   */
+  200: Worktree | null
+}
+
+export type WorktreeAutoResponse = WorktreeAutoResponses[keyof WorktreeAutoResponses]
+
+export type ExperimentalTitleGenerateData = {
+  body: {
+    text?: string
+    parts?: Array<
+      | {
+          type: "text"
+          text: string
+        }
+      | {
+          type: "image"
+          data: string
+          mime: "image/jpeg" | "image/png" | "image/webp" | "image/gif"
+          filename?: string
+        }
+    >
+    locale?: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/title"
+}
+
+export type ExperimentalTitleGenerateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalTitleGenerateError = ExperimentalTitleGenerateErrors[keyof ExperimentalTitleGenerateErrors]
+
+export type ExperimentalTitleGenerateResponses = {
+  /**
+   * Generated conversation title
+   */
+  200: {
+    title: string
+    status: "generated" | "fallback" | "untitled"
+  }
+}
+
+export type ExperimentalTitleGenerateResponse =
+  ExperimentalTitleGenerateResponses[keyof ExperimentalTitleGenerateResponses]
+
 export type ExperimentalSessionListData = {
   body?: never
   path?: never
@@ -4239,6 +4852,10 @@ export type SessionChildrenData = {
   query?: {
     directory?: string
     workspace?: string
+    /**
+     * Only return user-visible children (peer sessions); hides internal subagent hosts
+     */
+    visible?: boolean
   }
   url: "/session/{sessionID}/children"
 }
@@ -4567,6 +5184,46 @@ export type SessionSummarizeResponses = {
 
 export type SessionSummarizeResponse = SessionSummarizeResponses[keyof SessionSummarizeResponses]
 
+export type SessionAskData = {
+  body?: {
+    question: string
+    providerID?: string
+    modelID?: string
+  }
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/ask"
+}
+
+export type SessionAskErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionAskError = SessionAskErrors[keyof SessionAskErrors]
+
+export type SessionAskResponses = {
+  /**
+   * Side question answer
+   */
+  200: {
+    answer: string
+  }
+}
+
+export type SessionAskResponse = SessionAskResponses[keyof SessionAskResponses]
+
 export type SessionMessagesData = {
   body?: never
   path: {
@@ -4640,7 +5297,22 @@ export type SessionPromptData = {
       [key: string]: boolean
     }
     format?: OutputFormat
+    /**
+     * BCP 47 locale used for automatic title generation.
+     */
+    titleLocale?: string
+    /**
+     * Additional system prompt selected by the session's first user query. Later values are ignored.
+     */
     system?: string
+    /**
+     * Whether the selected system prompt appends to or replaces the agent prompt. Later values are ignored.
+     */
+    systemMode?: "append" | "replace-agent"
+    /**
+     * Harness mode selected by the session's first user query. Later values are ignored. GPT models always use the Codex harness. For other models, auto preserves model/process inference and explicit default forces the native tool schema.
+     */
+    harness?: "auto" | "codex" | "default"
     variant?: string
     parts: Array<TextPartInput | FilePartInput | AgentPartInput | SubtaskPartInput>
   }
@@ -4828,6 +5500,85 @@ export type PartUpdateResponses = {
 
 export type PartUpdateResponse = PartUpdateResponses[keyof PartUpdateResponses]
 
+export type SessionRecoveryData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+    agentID?: string
+  }
+  url: "/session/{sessionID}/recovery"
+}
+
+export type SessionRecoveryErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionRecoveryError = SessionRecoveryErrors[keyof SessionRecoveryErrors]
+
+export type SessionRecoveryResponses = {
+  /**
+   * Recovery candidates
+   */
+  200: Array<{
+    assistantMessageID: string
+    parentMessageID: string
+    created: number
+  }>
+}
+
+export type SessionRecoveryResponse = SessionRecoveryResponses[keyof SessionRecoveryResponses]
+
+export type SessionResumeData = {
+  body?: never
+  path: {
+    sessionID: string
+    assistantMessageID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+    agentID?: string
+    task_id?: string
+    titleLocale?: string
+  }
+  url: "/session/{sessionID}/turn/{assistantMessageID}/resume"
+}
+
+export type SessionResumeErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+  /**
+   * Conflict — session resource is busy
+   */
+  409: ConflictError
+}
+
+export type SessionResumeError = SessionResumeErrors[keyof SessionResumeErrors]
+
+export type SessionResumeResponses = {
+  /**
+   * Resume accepted
+   */
+  202: unknown
+}
+
 export type SessionPromptAsyncData = {
   body?: {
     messageID?: string
@@ -4855,7 +5606,22 @@ export type SessionPromptAsyncData = {
       [key: string]: boolean
     }
     format?: OutputFormat
+    /**
+     * BCP 47 locale used for automatic title generation.
+     */
+    titleLocale?: string
+    /**
+     * Additional system prompt selected by the session's first user query. Later values are ignored.
+     */
     system?: string
+    /**
+     * Whether the selected system prompt appends to or replaces the agent prompt. Later values are ignored.
+     */
+    systemMode?: "append" | "replace-agent"
+    /**
+     * Harness mode selected by the session's first user query. Later values are ignored. GPT models always use the Codex harness. For other models, auto preserves model/process inference and explicit default forces the native tool schema.
+     */
+    harness?: "auto" | "codex" | "default"
     variant?: string
     parts: Array<TextPartInput | FilePartInput | AgentPartInput | SubtaskPartInput>
   }
@@ -4898,7 +5664,23 @@ export type SessionCommandData = {
     model?: string
     arguments: string
     command: string
+    /**
+     * BCP 47 locale used for automatic title generation.
+     */
+    titleLocale?: string
     variant?: string
+    /**
+     * Additional system prompt selected by the session's first user command. Later values are ignored.
+     */
+    system?: string
+    /**
+     * Whether the selected system prompt appends to or replaces the agent prompt. Later values are ignored.
+     */
+    systemMode?: "append" | "replace-agent"
+    /**
+     * Harness mode selected by the session's first user command. Later values are ignored. GPT models always use the Codex harness. For other models, auto preserves model/process inference and explicit default forces the native tool schema.
+     */
+    harness?: "auto" | "codex" | "default"
     parts?: Array<{
       id?: string
       type: "file"
@@ -5223,6 +6005,165 @@ export type PermissionListResponses = {
 }
 
 export type PermissionListResponse = PermissionListResponses[keyof PermissionListResponses]
+
+export type PermissionSkipAllData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/permission/skip-all"
+}
+
+export type PermissionSkipAllResponses = {
+  /**
+   * Current skip-all state
+   */
+  200: boolean
+}
+
+export type PermissionSkipAllResponse = PermissionSkipAllResponses[keyof PermissionSkipAllResponses]
+
+export type PermissionSetSkipAllData = {
+  body?: {
+    /**
+     * Whether skip-all is enabled
+     */
+    enabled: boolean
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/permission/skip-all"
+}
+
+export type PermissionSetSkipAllErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type PermissionSetSkipAllError = PermissionSetSkipAllErrors[keyof PermissionSetSkipAllErrors]
+
+export type PermissionSetSkipAllResponses = {
+  /**
+   * Updated skip-all state
+   */
+  200: boolean
+}
+
+export type PermissionSetSkipAllResponse = PermissionSetSkipAllResponses[keyof PermissionSetSkipAllResponses]
+
+export type PermissionAutoApproveDeleteData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/permission/auto-approve-delete"
+}
+
+export type PermissionAutoApproveDeleteResponses = {
+  /**
+   * Current auto-approve-delete state
+   */
+  200: boolean
+}
+
+export type PermissionAutoApproveDeleteResponse =
+  PermissionAutoApproveDeleteResponses[keyof PermissionAutoApproveDeleteResponses]
+
+export type PermissionSetAutoApproveDeleteData = {
+  body?: {
+    /**
+     * Whether auto-approve-delete is enabled
+     */
+    enabled: boolean
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/permission/auto-approve-delete"
+}
+
+export type PermissionSetAutoApproveDeleteErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type PermissionSetAutoApproveDeleteError =
+  PermissionSetAutoApproveDeleteErrors[keyof PermissionSetAutoApproveDeleteErrors]
+
+export type PermissionSetAutoApproveDeleteResponses = {
+  /**
+   * Updated auto-approve-delete state
+   */
+  200: boolean
+}
+
+export type PermissionSetAutoApproveDeleteResponse =
+  PermissionSetAutoApproveDeleteResponses[keyof PermissionSetAutoApproveDeleteResponses]
+
+export type PermissionAskTimeoutData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/permission/ask-timeout"
+}
+
+export type PermissionAskTimeoutResponses = {
+  /**
+   * Current ask timeout in ms, or null
+   */
+  200: number | null
+}
+
+export type PermissionAskTimeoutResponse = PermissionAskTimeoutResponses[keyof PermissionAskTimeoutResponses]
+
+export type PermissionSetAskTimeoutData = {
+  body?: {
+    /**
+     * Timeout in ms, or null to disable
+     */
+    ms: number | null
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/permission/ask-timeout"
+}
+
+export type PermissionSetAskTimeoutErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type PermissionSetAskTimeoutError = PermissionSetAskTimeoutErrors[keyof PermissionSetAskTimeoutErrors]
+
+export type PermissionSetAskTimeoutResponses = {
+  /**
+   * Updated ask timeout in ms, or null
+   */
+  200: number | null
+}
+
+export type PermissionSetAskTimeoutResponse = PermissionSetAskTimeoutResponses[keyof PermissionSetAskTimeoutResponses]
 
 export type WorkflowListData = {
   body?: never
@@ -5550,6 +6491,7 @@ export type ProviderListResponses = {
       [key: string]: string
     }
     connected: Array<string>
+    authenticated: Array<string>
   }
 }
 
@@ -6601,9 +7543,11 @@ export type AppSkillsResponses = {
   200: Array<{
     name: string
     description: string
+    aliases?: Array<string>
     location: string
     content: string
-    hidden?: boolean
+    disable_model_invocation?: boolean
+    bundled?: boolean
   }>
 }
 

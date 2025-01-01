@@ -1,19 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { isOverflow, pressureLevel, usable } from "../../src/session/overflow"
+import { contextPressureLevel, contextWindow, isOverflow, pressureLevel, usable } from "../../src/session/overflow"
 import { Token } from "../../src/util"
 import { Session as SessionNs } from "../../src/session"
 import type { Provider } from "../../src/provider"
-import { Instance } from "../../src/project/instance"
 
-function mockCfg(opts?: { reserved?: number; auto?: boolean }) {
+function mockCfg(opts?: { reserved?: number; auto?: boolean; max_context?: number | string | Record<string, string> }) {
   return {
-    compaction: { auto: opts?.auto ?? true, reserved: opts?.reserved },
+    compaction: { auto: opts?.auto ?? true, reserved: opts?.reserved, max_context: opts?.max_context },
   } as any
 }
-
-afterEach(async () => {
-  await Instance.disposeAll()
-})
 
 function createModel(opts: {
   context: number
@@ -21,9 +16,10 @@ function createModel(opts: {
   input?: number
   cost?: Provider.Model["cost"]
   npm?: string
+  id?: string
 }): Provider.Model {
   return {
-    id: "test-model",
+    id: opts.id ?? "test-model",
     providerID: "test",
     name: "Test",
     limit: {
@@ -40,7 +36,7 @@ function createModel(opts: {
       input: { text: true, image: false, audio: false, video: false },
       output: { text: true, image: false, audio: false, video: false },
     },
-    api: { npm: opts.npm ?? "@ai-sdk/anthropic" },
+    api: { id: opts.id ?? "test-model", npm: opts.npm ?? "@ai-sdk/anthropic" },
     options: {},
   } as Provider.Model
 }
@@ -84,6 +80,19 @@ describe("pressureLevel", () => {
     const limit = usable({ cfg, model })
     const tokens = { input: Math.floor(limit * 0.9), output: 0, cache: { read: 0, write: 0 } } as any
     expect(pressureLevel({ cfg, tokens, model })).toBe(0)
+    expect(contextPressureLevel({ cfg, tokens, model })).toBe(3)
+  })
+
+  test("uses exact context pressure boundaries independently of compaction policy", () => {
+    const model = createModel({ context: 200_000 })
+    const cfg = mockCfg({ auto: false })
+    const limit = usable({ cfg, model })
+    const tokens = (ratio: number) =>
+      ({ input: limit * ratio, output: 0, cache: { read: 0, write: 0 } }) as any
+
+    expect(contextPressureLevel({ cfg, tokens: tokens(0.5), model })).toBe(1)
+    expect(contextPressureLevel({ cfg, tokens: tokens(0.7), model })).toBe(2)
+    expect(contextPressureLevel({ cfg, tokens: tokens(0.85), model })).toBe(3)
   })
 
   test("returns 0 when context limit is 0", () => {
@@ -98,7 +107,8 @@ describe("isOverflow", () => {
   test("returns true when token count exceeds usable context", () => {
     const model = createModel({ context: 100_000, output: 32_000 })
     const cfg = mockCfg()
-    const tokens = { input: 75_000, output: 5_000, reasoning: 0, cache: { read: 0, write: 0 } } as any
+    // usable = floor(100K * 0.9) = 90K; 88K + 5K = 93K exceeds it
+    const tokens = { input: 88_000, output: 5_000, reasoning: 0, cache: { read: 0, write: 0 } } as any
     expect(isOverflow({ cfg, tokens, model })).toBe(true)
   })
 
@@ -112,8 +122,22 @@ describe("isOverflow", () => {
   test("includes cache.read in token count", () => {
     const model = createModel({ context: 100_000, output: 32_000 })
     const cfg = mockCfg()
-    const tokens = { input: 60_000, output: 10_000, reasoning: 0, cache: { read: 10_000, write: 0 } } as any
+    // usable = floor(100K * 0.9) = 90K; 60K + 10K + 25K cache.read = 95K exceeds it
+    const tokens = { input: 60_000, output: 10_000, reasoning: 0, cache: { read: 25_000, write: 0 } } as any
     expect(isOverflow({ cfg, tokens, model })).toBe(true)
+  })
+
+  test("includes cache.write in token count", () => {
+    // On the first request against a fresh cache, read is 0 and nearly the whole prompt is
+    // a cache write. input/read/write partition one request's prompt (getUsage subtracts
+    // both cache figures out of the SDK's inputTokens), so dropping write here would make
+    // a full context look empty. Provider totals confirm the partition: totalTokens equals
+    // input + output + reasoning + read + write.
+    const model = createModel({ context: 200_000, output: 32_000 })
+    const cfg = mockCfg()
+    const tokens = { input: 300, output: 400, reasoning: 0, cache: { read: 0, write: 180_000 } } as any
+    expect(isOverflow({ cfg, tokens, model })).toBe(true)
+    expect(contextPressureLevel({ cfg, tokens, model })).toBe(3)
   })
 
   test("respects input limit for input caps", () => {
@@ -137,68 +161,29 @@ describe("isOverflow", () => {
     expect(isOverflow({ cfg, tokens, model })).toBe(false)
   })
 
-  // ─── Bug reproduction tests ───────────────────────────────────────────
-  // These tests demonstrate that when limit.input is set, isOverflow()
-  // does not subtract any headroom for the next model response. This means
-  // compaction only triggers AFTER we've already consumed the full input
-  // budget, leaving zero room for the next API call's output tokens.
-  //
-  // Compare: without limit.input, usable = context - output (reserves space).
-  // With limit.input, usable = limit.input (reserves nothing).
-  //
-  // Related issues: #10634, #8089, #11086, #12621
-  // Open PRs: #6875, #12924
+  // The compaction trigger is a flat fraction of the window (see
+  // Flag.SLEEPYCODE_COMPACTION_TRIGGER_RATIO), so it reserves headroom uniformly
+  // whether or not the model publishes a dedicated input cap. This removes the
+  // old asymmetry where a limit.input model triggered compaction later than an
+  // equivalent model without one (issues #10634, #8089, #11086, #12621).
 
-  test("BUG: no headroom when limit.input is set — compaction should trigger near boundary but does not", () => {
-    // Simulate Claude with prompt caching: input limit = 200K, output limit = 32K
+  test("reserves headroom via the flat ratio when limit.input is set", () => {
     const model = createModel({ context: 200_000, input: 200_000, output: 32_000 })
     const cfg = mockCfg()
-
-    // We've used 198K tokens total. Only 2K under the input limit.
-    // On the next turn, the full conversation (198K) becomes input,
-    // plus the model needs room to generate output — this WILL overflow.
+    // usable = floor(200K * 0.9) = 180K. 180K + 15K + 3K = 198K exceeds it, so
+    // compaction fires while ~2K of real headroom remains for the next output.
     const tokens = { input: 180_000, output: 15_000, reasoning: 0, cache: { read: 3_000, write: 0 } } as any
-    // count = 180K + 3K + 15K = 198K
-    // usable = limit.input = 200K (no output subtracted!)
-    // 198K > 200K = false → no compaction triggered
-
-    // WITHOUT limit.input: usable = 200K - 32K = 168K, and 198K > 168K = true ✓
-    // WITH limit.input: usable = 200K, and 198K > 200K = false ✗
-
-    // With 198K used and only 2K headroom, the next turn will overflow.
-    // Compaction MUST trigger here.
     expect(isOverflow({ cfg, tokens, model })).toBe(true)
   })
 
-  test("BUG: without limit.input, same token count correctly triggers compaction", () => {
-    // Same model but without limit.input — uses context - output instead
-    const model = createModel({ context: 200_000, output: 32_000 })
-    const cfg = mockCfg()
-
-    // Same token usage as above
-    const tokens = { input: 180_000, output: 15_000, reasoning: 0, cache: { read: 3_000, write: 0 } } as any
-    // count = 198K
-    // usable = context - output = 200K - 32K = 168K
-    // 198K > 168K = true → compaction correctly triggered
-
-    expect(isOverflow({ cfg, tokens, model })).toBe(true) // ← Correct: headroom is reserved
-  })
-
-  test("BUG: asymmetry — limit.input model allows 30K more usage before compaction than equivalent model without it", () => {
-    // Two models with identical context/output limits, differing only in limit.input
+  test("limit.input and no-limit models trigger at the same point", () => {
     const withInputLimit = createModel({ context: 200_000, input: 200_000, output: 32_000 })
     const withoutInputLimit = createModel({ context: 200_000, output: 32_000 })
     const cfg = mockCfg()
-
-    // 170K total tokens — well above context-output (168K) but below input limit (200K)
+    // Both resolve hard = 200K → usable = 180K, so they agree exactly.
     const tokens = { input: 166_000, output: 10_000, reasoning: 0, cache: { read: 5_000, write: 0 } } as any
-
-    const withLimit = isOverflow({ cfg, tokens, model: withInputLimit })
-    const withoutLimit = isOverflow({ cfg, tokens, model: withoutInputLimit })
-
-    // Both models have identical real capacity — they should agree:
-    expect(withLimit).toBe(true) // should compact (170K leaves no room for 32K output)
-    expect(withoutLimit).toBe(true) // correctly compacts (170K > 168K)
+    expect(isOverflow({ cfg, tokens, model: withInputLimit })).toBe(true)
+    expect(isOverflow({ cfg, tokens, model: withoutInputLimit })).toBe(true)
   })
 
   test("returns false when model context limit is 0", () => {
@@ -550,27 +535,190 @@ describe("SessionNs.getUsage", () => {
 })
 
 describe("usable", () => {
-  test("caps output reservation at 20K when model.limit.output is larger", () => {
-    // 200K context with 32K output — without the cap, usable would be 200K - 32K = 168K.
-    // With OUTPUT_CAP=20K, usable should be 200K - 20K - reserved.
-    const model = createModel({ context: 200_000, output: 32_000 })
-    const cfg = mockCfg() // reserved defaults to min(20K, 32K) = 20K
-    expect(usable({ cfg, model })).toBe(160_000) // 200K - 20K (output cap) - 20K (reserved)
+  test("is a flat 90% of the model window regardless of output size", () => {
+    // The trigger is a fixed fraction of the window now, so output size no
+    // longer shrinks it — a 32K-output model and an 8K-output model with the
+    // same context share the same 90% trigger.
+    const big = createModel({ context: 200_000, output: 32_000 })
+    const small = createModel({ context: 200_000, output: 8_000 })
+    expect(usable({ cfg: mockCfg(), model: big })).toBe(180_000) // floor(200K * 0.9)
+    expect(usable({ cfg: mockCfg(), model: small })).toBe(180_000)
   })
 
-  test("does not cap when model.limit.output is below 20K", () => {
-    // 100K context with 8K output — output cap (20K) does not bite.
-    // usable should be 100K - 8K - reserved.
-    const model = createModel({ context: 100_000, output: 8_000 })
-    const cfg = mockCfg() // reserved defaults to min(20K, 8K) = 8K
-    expect(usable({ cfg, model })).toBe(84_000) // 100K - 8K (raw output, below cap) - 8K (reserved)
+  test("cfg.compaction.reserved no longer shrinks the trigger", () => {
+    // reserved only gates config-budget validation now; the trigger stays 90%.
+    const model = createModel({ context: 200_000, output: 32_000 })
+    expect(usable({ cfg: mockCfg({ reserved: 5_000 }), model })).toBe(180_000)
+  })
+})
+
+describe("SLEEPYCODE_COMPACTION_TRIGGER_RATIO", () => {
+  afterEach(() => {
+    delete process.env["SLEEPYCODE_COMPACTION_TRIGGER_RATIO"]
   })
 
-  test("respects user-configured cfg.compaction.reserved", () => {
-    // 200K context, output 32K, user sets reserved=5K explicitly.
-    // usable = 200K - min(32K, 20K) - 5K = 175K
+  test("a decimal moves the trigger", () => {
+    process.env["SLEEPYCODE_COMPACTION_TRIGGER_RATIO"] = "0.75"
+    expect(usable({ cfg: mockCfg(), model: createModel({ context: 200_000 }) })).toBe(150_000)
+  })
+
+  test("a percentage is equivalent to the decimal", () => {
+    process.env["SLEEPYCODE_COMPACTION_TRIGGER_RATIO"] = "75%"
+    expect(usable({ cfg: mockCfg(), model: createModel({ context: 200_000 }) })).toBe(150_000)
+  })
+
+  test("1 lets usage fill the whole working window", () => {
+    process.env["SLEEPYCODE_COMPACTION_TRIGGER_RATIO"] = "1"
+    expect(usable({ cfg: mockCfg(), model: createModel({ context: 200_000 }) })).toBe(200_000)
+  })
+
+  test("applies on top of the max_context budget rather than replacing it", () => {
+    process.env["SLEEPYCODE_COMPACTION_TRIGGER_RATIO"] = "0.5"
+    const model = createModel({ context: 200_000 })
+    expect(contextWindow({ cfg: mockCfg({ max_context: "100K" }), model })).toEqual({
+      hard: 200_000,
+      effective: 100_000,
+      usable: 50_000,
+      source: "config",
+    })
+  })
+
+  test.each(["0", "-0.5", "1.5", "150%", "abc", ""])("ignores %p and keeps the 0.9 default", (value) => {
+    process.env["SLEEPYCODE_COMPACTION_TRIGGER_RATIO"] = value
+    expect(usable({ cfg: mockCfg(), model: createModel({ context: 200_000 }) })).toBe(180_000)
+  })
+})
+
+describe("compaction.max_context", () => {
+  // 1M-class GPT shape: models.dev publishes both context and a smaller input cap.
+  const large = () => createModel({ context: 1_050_000, input: 922_000, output: 128_000, id: "gpt-5.6" })
+
+  test("no budget configured leaves the model window untouched", () => {
+    const model = large()
+    expect(usable({ cfg: mockCfg(), model })).toBe(829_800)
+    expect(contextWindow({ cfg: mockCfg(), model })).toEqual({
+      hard: 922_000,
+      effective: 922_000,
+      usable: 829_800,
+      source: "model",
+    })
+  })
+
+  test("lowers the compaction trigger to the budget", () => {
+    const model = large()
+    const cfg = mockCfg({ max_context: "300K" })
+    expect(contextWindow({ cfg, model })).toEqual({
+      hard: 922_000,
+      effective: 300_000,
+      usable: 270_000,
+      source: "config",
+    })
+    const tokens = { input: 270_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } as any
+    expect(isOverflow({ cfg, tokens, model })).toBe(true)
+    const under = { input: 269_999, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } as any
+    expect(isOverflow({ cfg, tokens: under, model })).toBe(false)
+  })
+
+  test("accepts a plain token count and a percentage", () => {
+    const model = large()
+    expect(usable({ cfg: mockCfg({ max_context: 500_000 }), model })).toBe(450_000)
+    expect(usable({ cfg: mockCfg({ max_context: "50%" }), model })).toBe(414_900)
+  })
+
+  test("never raises the window above the provider cap", () => {
+    const model = createModel({ context: 128_000, output: 16_384 })
+    const cfg = mockCfg({ max_context: "1M" })
+    expect(contextWindow({ cfg, model })).toEqual({
+      hard: 128_000,
+      effective: 128_000,
+      usable: 115_200,
+      source: "model",
+    })
+  })
+
+  test("matches per-model keys with wildcards, longest pattern wins", () => {
+    const cfg = mockCfg({ max_context: { "test/gpt-5*": "300K", "test/gpt-5.6": "200K" } })
+    expect(usable({ cfg, model: large() })).toBe(180_000)
+    expect(usable({ cfg, model: createModel({ context: 1_050_000, input: 922_000, id: "gpt-5.4" }) })).toBe(270_000)
+  })
+
+  test("ignores keys that match no model", () => {
+    const cfg = mockCfg({ max_context: { "openai/gpt-4o": "100K" } })
+    expect(usable({ cfg, model: large() })).toBe(829_800)
+  })
+
+  test("ignores a budget that leaves no room for the reserves", () => {
+    const model = large()
+    expect(usable({ cfg: mockCfg({ max_context: 20_000 }), model })).toBe(829_800)
+    expect(usable({ cfg: mockCfg({ max_context: "not-a-budget" }), model })).toBe(829_800)
+  })
+
+  test("keeps overflow handling disabled when the model reports no window", () => {
+    const model = createModel({ context: 0, output: 0 })
+    const cfg = mockCfg({ max_context: "300K" })
+    expect(contextWindow({ cfg, model })).toEqual({ hard: 0, effective: 0, usable: 0, source: "model" })
+    const tokens = { input: 500_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } as any
+    expect(isOverflow({ cfg, tokens, model })).toBe(false)
+  })
+
+  test("drives checkpoint pressure off the budget", () => {
+    const model = large()
+    const cfg = mockCfg({ max_context: "300K" })
+    const tokens = { input: 250_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } as any
+    expect(pressureLevel({ cfg, tokens, model })).toBe(3)
+    expect(pressureLevel({ cfg: mockCfg(), tokens, model })).toBe(0)
+  })
+})
+
+describe("util.token.parseQuantity", () => {
+  test("parses numbers, shorthand and percentages", () => {
+    expect(Token.parseQuantity(300_000)).toBe(300_000)
+    expect(Token.parseQuantity("300K")).toBe(300_000)
+    expect(Token.parseQuantity("1.5m")).toBe(1_500_000)
+    expect(Token.parseQuantity("50%", 1_000_000)).toBe(500_000)
+    expect(Token.parseQuantity(" 200k ")).toBe(200_000)
+  })
+
+  test("returns undefined for invalid input", () => {
+    expect(Token.parseQuantity("abc")).toBeUndefined()
+    expect(Token.parseQuantity("100G")).toBeUndefined()
+    expect(Token.parseQuantity("")).toBeUndefined()
+    expect(Token.parseQuantity("0%", 1_000)).toBeUndefined()
+    expect(Token.parseQuantity("101%", 1_000)).toBeUndefined()
+    expect(Token.parseQuantity("50%")).toBeUndefined()
+    expect(Token.parseQuantity(-5)).toBeUndefined()
+  })
+})
+
+describe("compaction.max_context reset sentinel", () => {
+  test("0 restores the model window without a warning path", () => {
+    const model = createModel({ context: 1_050_000, input: 922_000, id: "gpt-5.6" })
+    expect(usable({ cfg: mockCfg({ max_context: { "test/gpt-5.6": 0 } as any }), model })).toBe(829_800)
+    expect(contextWindow({ cfg: mockCfg({ max_context: 0 }), model }).source).toBe("model")
+    // The picker writes a number, but a hand-edited config may carry the string form.
+    expect(usable({ cfg: mockCfg({ max_context: { "test/gpt-5.6": "0" } }), model })).toBe(829_800)
+    expect(usable({ cfg: mockCfg({ max_context: "" }), model })).toBe(829_800)
+  })
+})
+
+describe("small windows", () => {
+  test("the trigger stays proportional instead of collapsing to 0", () => {
+    // The old fixed-reserve formula could drive usable to 0 on a tiny window
+    // (reserved 8K + output 8K > 8K window). The flat 90% fraction keeps a
+    // usable trigger no matter how small the window is.
+    const model = createModel({ context: 8_192, output: 8_192 })
+    expect(contextWindow({ cfg: mockCfg(), model })).toEqual({
+      hard: 8_192,
+      effective: 8_192,
+      usable: 7_372, // floor(8_192 * 0.9)
+      source: "model",
+    })
+  })
+
+  test("an oversized cfg.compaction.reserved no longer zeroes the trigger", () => {
+    // reserved only gates config-budget validation now, so a huge value leaves
+    // the model window's 90% trigger intact.
     const model = createModel({ context: 200_000, output: 32_000 })
-    const cfg = mockCfg({ reserved: 5_000 })
-    expect(usable({ cfg, model })).toBe(175_000)
+    expect(usable({ cfg: mockCfg({ reserved: 500_000 }), model })).toBe(180_000)
   })
 })

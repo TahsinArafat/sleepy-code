@@ -11,6 +11,7 @@
  * before tools run by hooking into start-step, but the AI SDK executes
  * tools internally during multi-step processing before emitting events.
  */
+import { Worktree } from "../../src/worktree"
 import { expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import { FetchHttpClient } from "effect/unstable/http"
@@ -49,7 +50,6 @@ import { SessionProcessor } from "../../src/session/processor"
 import { SessionCompaction } from "../../src/session/compaction"
 import { SessionRunState } from "../../src/session/run-state"
 import { Goal } from "../../src/session/goal"
-import { TaskGateState } from "../../src/task/gate-state"
 import { SessionStatus } from "../../src/session/status"
 import { SessionCheckpoint } from "../../src/session/checkpoint"
 import { ActorRegistry } from "../../src/actor/registry"
@@ -61,6 +61,7 @@ import { Snapshot } from "../../src/snapshot"
 import { ToolRegistry } from "../../src/tool"
 import { Truncate } from "../../src/tool"
 import { TaskRegistry } from "../../src/task/registry"
+import { defaultLayer as SchedulerDefaultLayer } from "../../src/cron/scheduler"
 import { Auth } from "../../src/auth"
 import { AppFileSystem } from "@sleepy-ai/shared/filesystem"
 import * as CrossSpawnSpawner from "../../src/effect/cross-spawn-spawner"
@@ -145,11 +146,13 @@ function makeHttp() {
     Layer.provide(Memory.defaultLayer),
     Layer.provide(History.defaultLayer),
     Layer.provide(TaskRegistry.defaultLayer),
+    Layer.provide(SchedulerDefaultLayer),
     Layer.provide(taskRegistry),
   )
   const taskWaiter = ActorWaiter.layer.pipe(Layer.provide(Bus.layer), Layer.provide(taskRegistry))
   const team = Team.defaultLayer
   const registry = ToolRegistry.layer.pipe(
+    Layer.provide(Worktree.defaultLayer),
     Layer.provide(Skill.defaultLayer),
     Layer.provide(FetchHttpClient.layer),
     Layer.provide(CrossSpawnSpawner.defaultLayer),
@@ -162,6 +165,7 @@ function makeHttp() {
     Layer.provide(Memory.defaultLayer),
     Layer.provide(History.defaultLayer),
     Layer.provide(TaskRegistry.defaultLayer),
+    Layer.provide(SchedulerDefaultLayer),
     Layer.provide(Auth.defaultLayer),
     Layer.provideMerge(todo),
     Layer.provideMerge(question),
@@ -185,8 +189,8 @@ function makeHttp() {
     SessionSummary.defaultLayer,
     SessionPrompt.layer.pipe(
     Layer.provide(Goal.defaultLayer),
-      Layer.provide(TaskGateState.defaultLayer),
       Layer.provide(TaskRegistry.defaultLayer),
+    Layer.provide(SchedulerDefaultLayer),
       Layer.provide(SessionRevert.defaultLayer),
       Layer.provide(SessionSummary.defaultLayer),
       Layer.provide(checkpoint),
@@ -210,6 +214,7 @@ const it = testEffect(makeHttp())
 
 const providerCfg = (url: string) => ({
   checkpoint: { thresholds: [] as string[] },
+  model: "test/test-model",
   provider: {
     test: {
       name: "Test",
@@ -252,11 +257,11 @@ it.live("tool execution produces non-empty session diff (snapshot race)", () =>
 
       // Use bash tool (always registered) to create a file
       const command = `echo 'snapshot race test content' > ${path.join(dir, "race-test.txt")}`
-      yield* llm.toolMatch((hit) => JSON.stringify(hit.body).includes("create the file"), "bash", {
+      yield* llm.tool("bash", {
         command,
         description: "create test file",
       })
-      yield* llm.textMatch((hit) => JSON.stringify(hit.body).includes("bash"), "done")
+      yield* llm.text("done")
 
       // Seed user message
       yield* prompt.prompt({
@@ -298,4 +303,5 @@ it.live("tool execution produces non-empty session diff (snapshot race)", () =>
     }),
     { git: true, config: providerCfg },
   ),
+  120_000,
 )

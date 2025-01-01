@@ -49,6 +49,10 @@ async function getSmallModel(providerID: ProviderID) {
   return run((provider) => provider.getSmallModel(providerID))
 }
 
+async function getVisionModel() {
+  return run((provider) => provider.getVisionModel())
+}
+
 async function defaultModel() {
   return run((provider) => provider.defaultModel())
 }
@@ -253,6 +257,110 @@ test("custom model alias via config", async () => {
   })
 })
 
+test("non-empty models config acts as implicit whitelist when only_configured_models is true", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "sleepycode.json"),
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          provider: {
+            anthropic: {
+              only_configured_models: true,
+              models: {
+                "claude-sonnet-4-20250514": {
+                  name: "Only Sonnet",
+                },
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    init: async () => {
+      set("ANTHROPIC_API_KEY", "test-api-key")
+    },
+    fn: async () => {
+      const providers = await list()
+      expect(providers[ProviderID.anthropic]).toBeDefined()
+      const models = Object.keys(providers[ProviderID.anthropic].models)
+      expect(models).toEqual(["claude-sonnet-4-20250514"])
+    },
+  })
+})
+
+test("models config only augments the catalog by default (no only_configured_models)", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "sleepycode.json"),
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          provider: {
+            anthropic: {
+              models: {
+                "claude-sonnet-4-20250514": {
+                  name: "Renamed Sonnet",
+                },
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    init: async () => {
+      set("ANTHROPIC_API_KEY", "test-api-key")
+    },
+    fn: async () => {
+      const providers = await list()
+      expect(providers[ProviderID.anthropic]).toBeDefined()
+      const models = Object.keys(providers[ProviderID.anthropic].models)
+      // Old (non-breaking) behavior: the configured model is still present AND
+      // other catalog models are NOT hidden.
+      expect(models).toContain("claude-sonnet-4-20250514")
+      expect(models.length).toBeGreaterThan(1)
+    },
+  })
+})
+
+test("only_configured_models with no models map is a no-op (catalog stays intact)", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "sleepycode.json"),
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          provider: {
+            anthropic: {
+              only_configured_models: true,
+            },
+          },
+        }),
+      )
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    init: async () => {
+      set("ANTHROPIC_API_KEY", "test-api-key")
+    },
+    fn: async () => {
+      const providers = await list()
+      expect(providers[ProviderID.anthropic]).toBeDefined()
+      const models = Object.keys(providers[ProviderID.anthropic].models)
+      // Empty/absent `models` ⇒ no implicit whitelist ⇒ full catalog remains.
+      expect(models).toContain("claude-sonnet-4-20250514")
+      expect(models.length).toBeGreaterThan(1)
+    },
+  })
+})
+
 test("custom provider with npm package", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
@@ -316,6 +424,10 @@ test("custom DeepSeek openai-compatible model defaults interleaved reasoning fie
                   name: "DeepSeek Details",
                   interleaved: { field: "reasoning_details" },
                 },
+                "deepseek-reasoning": {
+                  name: "DeepSeek Reasoning",
+                  interleaved: { field: "reasoning" },
+                },
                 "custom-model": {
                   name: "Custom Model",
                 },
@@ -349,6 +461,7 @@ test("custom DeepSeek openai-compatible model defaults interleaved reasoning fie
       const provider = providers[ProviderID.make("custom-provider")]
       expect(provider.models["deepseek-r1"].capabilities.interleaved).toEqual({ field: "reasoning_content" })
       expect(provider.models["deepseek-details"].capabilities.interleaved).toEqual({ field: "reasoning_details" })
+      expect(provider.models["deepseek-reasoning"].capabilities.interleaved).toEqual({ field: "reasoning" })
       expect(provider.models["custom-model"].capabilities.interleaved).toBe(false)
       expect(
         providers[ProviderID.make("custom-anthropic-provider")].models["deepseek-r1"].capabilities.interleaved,
@@ -1097,6 +1210,228 @@ test("getSmallModel respects config small_model override", async () => {
   })
 })
 
+// getVisionModel: an explicit `vision_model` literal wins first; otherwise a
+// smart default picks a vision-capable model with in-house (sleepy/xiaomi)
+// providers preferred, then cheapest by cost.input. Providers are fully
+// config-declared so tests don't depend on env-keyed models.dev autoload.
+const VISION_PROVIDER = {
+  sleepy: {
+    name: "Sleepy",
+    npm: "@ai-sdk/openai-compatible",
+    env: [],
+    models: {
+      "sleepy-vision": {
+        name: "Sleepy Vision",
+        tool_call: true,
+        limit: { context: 8000, output: 2000 },
+        cost: { input: 100, output: 200 },
+        modalities: { input: ["text", "image"], output: ["text"] },
+      },
+    },
+    options: { apiKey: "test-key" },
+  },
+  vendor: {
+    name: "Vendor",
+    npm: "@ai-sdk/openai-compatible",
+    env: [],
+    models: {
+      "vendor-cheap-vision": {
+        name: "Vendor Cheap Vision",
+        tool_call: true,
+        limit: { context: 8000, output: 2000 },
+        cost: { input: 1, output: 2 },
+        modalities: { input: ["text", "image"], output: ["text"] },
+      },
+      "vendor-text": {
+        name: "Vendor Text",
+        tool_call: true,
+        limit: { context: 8000, output: 2000 },
+        modalities: { input: ["text"], output: ["text"] },
+      },
+    },
+    options: { apiKey: "test-key" },
+  },
+}
+
+test("getVisionModel respects config vision_model override", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "sleepycode.json"),
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          provider: VISION_PROVIDER,
+          vision_model: "vendor/vendor-cheap-vision",
+        }),
+      )
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const model = await getVisionModel()
+      expect(model).toBeDefined()
+      expect(String(model?.providerID)).toBe("vendor")
+      expect(String(model?.id)).toBe("vendor-cheap-vision")
+    },
+  })
+})
+
+test("getVisionModel prefers in-house model over cheaper non-in-house", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "sleepycode.json"),
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          provider: VISION_PROVIDER,
+          enabled_providers: ["sleepy", "vendor"],
+        }),
+      )
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      // sleepy-vision (cost 100, in-house) beats vendor-cheap-vision (cost 1);
+      // vendor-text is text-only and excluded entirely.
+      const model = await getVisionModel()
+      expect(model).toBeDefined()
+      expect(String(model?.providerID)).toBe("sleepy")
+      expect(String(model?.id)).toBe("sleepy-vision")
+    },
+  })
+})
+
+test("getVisionModel picks cheapest when no in-house vision model", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "sleepycode.json"),
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          provider: {
+            vendor: {
+              name: "Vendor",
+              npm: "@ai-sdk/openai-compatible",
+              env: [],
+              models: {
+                "vision-pricey": {
+                  name: "Vision Pricey",
+                  tool_call: true,
+                  limit: { context: 8000, output: 2000 },
+                  cost: { input: 50, output: 100 },
+                  modalities: { input: ["text", "image"], output: ["text"] },
+                },
+                "vision-cheap": {
+                  name: "Vision Cheap",
+                  tool_call: true,
+                  limit: { context: 8000, output: 2000 },
+                  cost: { input: 5, output: 10 },
+                  modalities: { input: ["text", "image"], output: ["text"] },
+                },
+              },
+              options: { apiKey: "test-key" },
+            },
+          },
+          enabled_providers: ["vendor"],
+        }),
+      )
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const model = await getVisionModel()
+      expect(model).toBeDefined()
+      expect(String(model?.providerID)).toBe("vendor")
+      expect(String(model?.id)).toBe("vision-cheap")
+    },
+  })
+})
+
+test("getVisionModel returns undefined when no vision-capable model exists", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "sleepycode.json"),
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          provider: {
+            vendor: {
+              name: "Vendor",
+              npm: "@ai-sdk/openai-compatible",
+              env: [],
+              models: {
+                "text-only": {
+                  name: "Text Only",
+                  tool_call: true,
+                  limit: { context: 8000, output: 2000 },
+                  modalities: { input: ["text"], output: ["text"] },
+                },
+              },
+              options: { apiKey: "test-key" },
+            },
+          },
+          enabled_providers: ["vendor"],
+        }),
+      )
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const model = await getVisionModel()
+      expect(model).toBeUndefined()
+    },
+  })
+})
+
+// Regression: getModel raises ModelNotFoundError as a DEFECT. A misconfigured
+// vision_model must not propagate that defect (it runs at SystemPrompt.environment()
+// call time → would fail the current request). It should fall back to the smart
+// default instead of throwing.
+test("getVisionModel falls back to smart default when vision_model is misconfigured", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "sleepycode.json"),
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          vision_model: "vendor/does-not-exist",
+          provider: {
+            vendor: {
+              name: "Vendor",
+              npm: "@ai-sdk/openai-compatible",
+              env: [],
+              models: {
+                "vision-cheap": {
+                  name: "Vision Cheap",
+                  tool_call: true,
+                  limit: { context: 8000, output: 2000 },
+                  cost: { input: 5, output: 10 },
+                  modalities: { input: ["text", "image"], output: ["text"] },
+                },
+              },
+              options: { apiKey: "test-key" },
+            },
+          },
+          enabled_providers: ["vendor"],
+        }),
+      )
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      // Must not throw; falls back to the only vision-capable model.
+      const model = await getVisionModel()
+      expect(model).toBeDefined()
+      expect(String(model?.id)).toBe("vision-cheap")
+    },
+  })
+})
+
 test("provider.sort prioritizes preferred models", () => {
   const models = [
     { id: "random-model", name: "Random" },
@@ -1183,6 +1518,91 @@ test("provider with custom npm package", async () => {
       expect(providers[ProviderID.make("local-llm")]).toBeDefined()
       expect(providers[ProviderID.make("local-llm")].models["llama-3"].api.npm).toBe("@ai-sdk/openai-compatible")
       expect(providers[ProviderID.make("local-llm")].options.baseURL).toBe("http://localhost:11434/v1")
+    },
+  })
+})
+
+test("xiaomi models use the Responses harness for free-form exec PTC", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "sleepycode.json"),
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          enabled_providers: ["xiaomi"],
+          provider: {
+            xiaomi: {
+              npm: "@ai-sdk/openai-compatible",
+              models: {
+                "sleepy-ptc-test": {
+                  name: "Sleepy PTC Test",
+                  tool_call: true,
+                  limit: { context: 8192, output: 2048 },
+                },
+              },
+              options: {
+                apiKey: "test-key",
+                baseURL: "https://example.test/v1",
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    init: async () => {
+      set("XIAOMI_API_KEY", "test-key")
+    },
+    fn: async () => {
+      const model = await getModel(ProviderID.make("xiaomi"), ModelID.make("sleepy-ptc-test"))
+      const language = await getLanguage(model)
+      expect(language.provider).toBe("xiaomi.responses")
+    },
+  })
+})
+
+test("xiaomi models outside PTC mode stay on Chat Completions regardless of version", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "sleepycode.json"),
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          enabled_providers: ["xiaomi"],
+          provider: {
+            xiaomi: {
+              models: {
+                "sleepy-v2.5": {
+                  name: "Sleepy V2.5",
+                  tool_call: true,
+                  limit: { context: 8192, output: 2048 },
+                },
+                "sleepy-v2.6": {
+                  name: "Sleepy V2.6",
+                  tool_call: true,
+                  limit: { context: 8192, output: 2048 },
+                },
+              },
+              options: { apiKey: "test-key", baseURL: "https://example.test/v1" },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    init: async () => {
+      set("XIAOMI_API_KEY", "test-key")
+    },
+    fn: async () => {
+      const models = await Promise.all(
+        ["sleepy-v2.5", "sleepy-v2.6"].map((id) => getModel(ProviderID.make("xiaomi"), ModelID.make(id))),
+      )
+      const languages = await Promise.all(models.map((model) => getLanguage(model)))
+      expect(languages.map((language) => language.provider)).toEqual(["xiaomi.chat", "xiaomi.chat"])
     },
   })
 })
@@ -1789,7 +2209,7 @@ test("closest checks multiple query terms in order", async () => {
   })
 })
 
-test("model limit defaults to DEFAULT_CONTEXT_WINDOW (1M) when not specified (F41)", async () => {
+test("model limits use family defaults when not specified (F41)", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await Bun.write(
@@ -1807,6 +2227,18 @@ test("model limit defaults to DEFAULT_CONTEXT_WINDOW (1M) when not specified (F4
                   tool_call: true,
                   // no limit specified
                 },
+                "claude-default": {
+                  name: "Claude",
+                  tool_call: true,
+                },
+                "gpt-default": {
+                  name: "GPT",
+                  tool_call: true,
+                },
+                "sleepy-default": {
+                  name: "Sleepy",
+                  tool_call: true,
+                },
               },
               options: { apiKey: "test" },
             },
@@ -1822,6 +2254,12 @@ test("model limit defaults to DEFAULT_CONTEXT_WINDOW (1M) when not specified (F4
       const model = providers[ProviderID.make("no-limit")].models["model"]
       expect(model.limit.context).toBe(1_000_000)
       expect(model.limit.output).toBe(0)
+      for (const id of ["claude-default", "gpt-default", "sleepy-default"]) {
+        expect(providers[ProviderID.make("no-limit")].models[id].limit).toEqual({
+          context: 1_000_000,
+          output: 128_000,
+        })
+      }
     },
   })
 })
@@ -2607,4 +3045,3 @@ test("plugin config enabled and disabled providers are honored", async () => {
     },
   })
 })
-

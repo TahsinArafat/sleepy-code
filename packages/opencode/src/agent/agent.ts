@@ -1,20 +1,25 @@
 import { Config } from "../config"
+import { Flag } from "@/flag/flag"
 import z from "zod"
 import { Provider } from "../provider"
 import { ModelID, ProviderID } from "../provider/schema"
 import { generateObject, streamObject, type ModelMessage } from "ai"
 import { Instance } from "../project/instance"
 import { Truncate } from "../tool"
+import { usesGPTToolset } from "../tool/gpt"
 import { Auth } from "../auth"
 import { ProviderTransform } from "../provider"
 
 import PROMPT_GENERATE from "./generate.txt"
+import PROMPT_GENERATE_GPT from "./prompt/generate-gpt.txt"
+import PROMPT_GENERAL from "./prompt/general.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_DREAM from "./prompt/dream.txt"
 import PROMPT_DISTILL from "./prompt/distill.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
+import PROMPT_ORCHESTRATOR from "../session/prompt/orchestrator.txt"
 import { Permission } from "@/permission"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
 import { Global } from "@/global"
@@ -50,6 +55,7 @@ export const Info = z
     modelRef: z.string().optional(),
     variant: z.string().optional(),
     prompt: z.string().optional(),
+    completionGate: z.boolean().optional(),
     options: z.record(z.string(), z.any()),
     steps: z.number().int().positive().optional(),
     toolAllowlist: z.array(z.string()).optional(),
@@ -103,6 +109,11 @@ export const layer = Layer.effect(
         const defaults = Permission.fromConfig({
           "*": "allow",
           doom_loop: "ask",
+          skill: {
+            "*": "allow",
+            "compose:*": "deny",
+          },
+          plan_exit: "deny",
           external_directory: {
             "*": "ask",
             ...Object.fromEntries(whitelistedDirs.map((dir) => [dir, "allow"])),
@@ -129,6 +140,7 @@ export const layer = Layer.effect(
               defaults,
               Permission.fromConfig({
                 question: "allow",
+                plan_exit: "allow",
               }),
               user,
             ),
@@ -167,6 +179,7 @@ export const layer = Layer.effect(
               defaults,
               Permission.fromConfig({
                 question: "allow",
+                plan_exit: "allow",
                 external_directory: {
                   [path.join(Global.Path.data, "plans", "*")]: "allow",
                 },
@@ -179,7 +192,7 @@ export const layer = Layer.effect(
             // wins. (Every write tool — write/edit/multiedit/apply_patch/
             // notebook_edit — funnels through ctx.ask({ permission: "edit" }),
             // so this single rule governs all file writes.) Deliberately scoped
-            // to edit only: bash/change_directory/workflow are left to the
+            // to edit only: bash/workflow are left to the
             // model's own read-only discipline + plan prompt, matching the
             // project's "trust the model, permission layer is a backstop"
             // stance. The "*":"deny" carries a non-"*" allow exception, so the
@@ -198,31 +211,56 @@ export const layer = Layer.effect(
           compose: {
             name: "compose",
             color: "#a7a3d8",
-            description: "Compose mode. Orchestrates workflows with built-in compose skills.",
+            description:
+              "Compose mode (deprecated). Orchestrates workflows with built-in compose skills. For Fable/Sol-class models, use Build and run /compose-next instead.",
             options: {},
             permission: Permission.merge(
               defaults,
               Permission.fromConfig({
                 question: "allow",
+                skill: { "compose:*": "allow" },
               }),
               user,
             ),
             mode: "primary",
             native: true,
           },
+          // Orchestrator mode is experimental and opt-in (default OFF): only
+          // registered when SLEEPYCODE_EXPERIMENTAL_ORCHESTRATOR is set. Gating the
+          // registration here removes it from the TUI mode-cycle, the agent
+          // dialog, defaultAgent, and prevents any `session`-tool peer spawns —
+          // making the rest of the orchestrator feature dead code when off.
+          ...(Flag.SLEEPYCODE_EXPERIMENTAL_ORCHESTRATOR
+            ? {
+                orchestrator: {
+                  name: "orchestrator",
+                  color: "#7fb3d5",
+                  description:
+                    "Orchestrator mode. A general-purpose coordinator that accomplishes goals by delegating work to child sessions; use the `session` tool to create/switch/list/cancel children running in their own mode and model.",
+                  prompt: PROMPT_ORCHESTRATOR,
+                  options: {},
+                  permission: Permission.merge(
+                    defaults,
+                    Permission.fromConfig({
+                      question: "allow",
+                    }),
+                    user,
+                  ),
+                  mode: "primary" as const,
+                  native: true,
+                },
+              }
+            : {}),
           general: {
             name: "general",
             color: "#aac4e1",
-            description: `General-purpose agent for researching complex questions and executing multi-step tasks. Use this agent to execute multiple units of work in parallel.`,
-            permission: Permission.merge(
-              defaults,
-              Permission.fromConfig({
-                change_directory: "deny",
-              }),
-              user,
-            ),
+            description:
+              "Full-capability general-purpose subagent for autonomous read/write work, including investigation, implementation, debugging, testing, and multi-step delivery. It inherits the parent's available tool surface and can complete a delegated task end to end.",
+            permission: Permission.merge(defaults, user),
             options: {},
             mode: "subagent",
+            prompt: PROMPT_GENERAL,
+            completionGate: true,
             native: true,
           },
           explore: {
@@ -236,6 +274,7 @@ export const layer = Layer.effect(
                 glob: "allow",
                 list: "allow",
                 bash: "allow",
+                exec: "allow",
                 webfetch: "allow",
                 websearch: "allow",
                 codesearch: "allow",
@@ -259,11 +298,13 @@ export const layer = Layer.effect(
             options: {},
             native: true,
             hidden: true,
+            modelRef: "lite",
             temperature: 0.5,
             permission: Permission.merge(
               defaults,
               Permission.fromConfig({
                 "*": "deny",
+                StructuredOutput: "allow",
               }),
               user,
             ),
@@ -350,6 +391,7 @@ export const layer = Layer.effect(
                 grep: "allow",
                 memory: "allow",
                 bash: "allow",
+                exec: "allow",
                 external_directory: {
                   [path.join(Global.Path.data, "memory")]: "allow",
                   [path.join(Global.Path.data, "memory", "*")]: "allow",
@@ -357,7 +399,18 @@ export const layer = Layer.effect(
               }),
               user,
             ),
-            toolAllowlist: ["read", "write", "edit", "glob", "grep", "memory", "bash"],
+            toolAllowlist: [
+              "read",
+              "write",
+              "edit",
+              "apply_patch",
+              "view_image",
+              "glob",
+              "grep",
+              "memory",
+              "bash",
+              "exec",
+            ],
           },
           distill: {
             name: "distill",
@@ -377,6 +430,7 @@ export const layer = Layer.effect(
                 grep: "allow",
                 memory: "allow",
                 bash: "allow",
+                exec: "allow",
                 external_directory: {
                   [path.join(Global.Path.data, "memory")]: "allow",
                   [path.join(Global.Path.data, "memory", "*")]: "allow",
@@ -384,7 +438,18 @@ export const layer = Layer.effect(
               }),
               user,
             ),
-            toolAllowlist: ["read", "write", "edit", "glob", "grep", "memory", "bash"],
+            toolAllowlist: [
+              "read",
+              "write",
+              "edit",
+              "apply_patch",
+              "view_image",
+              "glob",
+              "grep",
+              "memory",
+              "bash",
+              "exec",
+            ],
           },
         }
 
@@ -421,19 +486,20 @@ export const layer = Layer.effect(
           item.permission = Permission.merge(item.permission, Permission.fromConfig(value.permission ?? {}))
         }
 
-        // Ensure Truncate.GLOB is allowed unless explicitly configured
+        // Ensure Truncate.GLOB and skill directories are allowed unless explicitly configured
         for (const name in agents) {
           const agent = agents[name]
-          const explicit = agent.permission.some((r) => {
-            if (r.permission !== "external_directory") return false
-            if (r.action !== "deny") return false
-            return r.pattern === Truncate.GLOB
-          })
-          if (explicit) continue
+          const globs = whitelistedDirs.filter(
+            (glob) =>
+              !agent.permission.some(
+                (r) => r.permission === "external_directory" && r.action === "deny" && r.pattern === glob,
+              ),
+          )
+          if (globs.length === 0) continue
 
           agents[name].permission = Permission.merge(
             agents[name].permission,
-            Permission.fromConfig({ external_directory: { [Truncate.GLOB]: "allow" } }),
+            Permission.fromConfig({ external_directory: Object.fromEntries(globs.map((g) => [g, "allow" as const])) }),
           )
         }
 
@@ -451,6 +517,7 @@ export const layer = Layer.effect(
               [(x) => x.name === "build", "desc"],
               [(x) => x.name === "plan", "desc"],
               [(x) => x.name === "compose", "desc"],
+              [(x) => x.name === "orchestrator", "desc"],
               [(x) => x.name === "max", "desc"],
               [(x) => x.name, "asc"],
             ),
@@ -501,7 +568,10 @@ export const layer = Layer.effect(
           ? Option.getOrUndefined(yield* Effect.serviceOption(OtelTracer.OtelTracer))
           : undefined
 
-        const system = [PROMPT_GENERATE]
+        const system = [
+          PROMPT_GENERATE,
+          ...(usesGPTToolset(resolved.id, undefined, resolved.api.id, resolved.family) ? [PROMPT_GENERATE_GPT] : []),
+        ]
         yield* plugin.trigger("experimental.chat.system.transform", { model: resolved }, { system })
         const existing = yield* InstanceState.useEffect(state, (s) => s.list())
 
