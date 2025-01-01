@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { APICallError } from "ai"
-import { parseAPICallError } from "../../src/provider/error"
+import { parseAPICallError, parseStreamError } from "../../src/provider/error"
 import { ProviderID } from "../../src/provider/schema"
 
 const xiaomi = ProviderID.make("xiaomi")
@@ -33,7 +33,7 @@ describe("provider error message", () => {
       }),
     })
     expect(parsed.type).toBe("api_error")
-    expect(parsed.message).toBe("Request blocked by content moderation: 敏感内容")
+    expect(parsed.message).toBe("Moderation Block")
   })
 
   test("maps Sleepy 441 risk control to a friendly message", () => {
@@ -45,7 +45,7 @@ describe("provider error message", () => {
         responseBody: JSON.stringify({ error: { code: "441", message: "Severe Violation", type: "risk_control" } }),
       }),
     })
-    expect(parsed.message).toBe("Request blocked by risk control")
+    expect(parsed.message).toBe("Severe Violation")
   })
 
   test("applies friendly gateway mapping for the free sleepy provider too", () => {
@@ -71,7 +71,7 @@ describe("provider error message", () => {
         }),
       }),
     })
-    expect(parsed.message).toBe("Param Incorrect: Not supported model xxx")
+    expect(parsed.message).toBe("Param Incorrect")
   })
 
   test("does not duplicate when param equals message", () => {
@@ -129,7 +129,7 @@ describe("provider error message", () => {
         responseBody: JSON.stringify({ error: { code: "400", message: "Invalid request", param: "field x" } }),
       }),
     })
-    expect(parsed.message).toBe("Invalid request: field x")
+    expect(parsed.message).toBe('Bad Request: {"error":{"code":"400","message":"Invalid request","param":"field x"}}')
   })
 
   test("still detects context overflow from error.code", () => {
@@ -155,6 +155,77 @@ describe("provider error message", () => {
         }),
       }),
     })
-    expect(parsed.message).toBe("Insufficient account balance")
+    expect(parsed.message).toBe('{"error":{"code":"402","message":"Insufficient account balance","type":"insufficient_balance"}}')
+  })
+})
+
+describe("provider stream error", () => {
+  test("marks OpenAI server overload events as retryable", () => {
+    const input = {
+      type: "error",
+      sequence_number: 2,
+      error: {
+        type: "service_unavailable_error",
+        code: "server_is_overloaded",
+        message: "Our servers are currently overloaded. Please try again later.",
+        param: null,
+      },
+    }
+
+    expect(parseStreamError(input)).toStrictEqual({
+      type: "api_error",
+      message: input.error.message,
+      isRetryable: true,
+      responseBody: JSON.stringify(input),
+    })
+  })
+
+  test("marks upstream stream_read_error events as retryable", () => {
+    const input = {
+      type: "error",
+      sequence_number: 0,
+      error: {
+        type: "upstream_error",
+        code: "stream_read_error",
+        message: "stream_read_error",
+      },
+    }
+
+    expect(parseStreamError(input)).toStrictEqual({
+      type: "api_error",
+      message: input.error.message,
+      isRetryable: true,
+      responseBody: JSON.stringify(input),
+    })
+  })
+
+  test("marks OpenAI server_error events as retryable", () => {
+    const input = {
+      type: "error",
+      sequence_number: 3,
+      error: {
+        type: "server_error",
+        code: "server_error",
+        message: "An error occurred while processing your request. You can retry your request.",
+        param: null,
+      },
+    }
+
+    expect(parseStreamError(input)).toStrictEqual({
+      type: "api_error",
+      message: input.error.message,
+      isRetryable: true,
+      responseBody: JSON.stringify(input),
+    })
+  })
+
+  test("marks Anthropic overloaded_error events as retryable without an error code", () => {
+    const input = { type: "error", error: { type: "overloaded_error", message: "Overloaded" } }
+    expect(parseStreamError(input)).toStrictEqual({
+      type: "api_error",
+      message: "Overloaded",
+      isRetryable: true,
+      responseBody: JSON.stringify(input),
+    })
   })
 })

@@ -18,6 +18,21 @@ function getLastModel(sessionID: SessionID) {
   return undefined
 }
 
+function getLastActiveAgent(sessionID: SessionID) {
+  for (const item of MessageV2.stream(sessionID, { agentID: "*" })) {
+    if (
+      item.info.role === "user" &&
+      item.info.agent &&
+      item.info.agent !== "plan" &&
+      !item.info.agent.includes("stack")
+    ) {
+      return item.info.agent
+    }
+  }
+  return "build"
+}
+
+
 export const PlanEnterTool = Tool.define(
   "plan_enter",
   Effect.gen(function* () {
@@ -30,7 +45,7 @@ export const PlanEnterTool = Tool.define(
       parameters: z.object({}),
       execute: (_params: {}, ctx: Tool.Context) =>
         Effect.gen(function* () {
-          if (ctx.agent === "plan") {
+          if (ctx.agent === "plan" || ctx.agent.includes("stack")) {
             return {
               title: "Already in plan mode",
               output: "You are already in plan mode. This tool is only effective outside of plan mode.",
@@ -110,7 +125,7 @@ export const PlanExitTool = Tool.define(
       parameters: z.object({}),
       execute: (_params: {}, ctx: Tool.Context) =>
         Effect.gen(function* () {
-          if (ctx.agent !== "plan") {
+          if (ctx.agent !== "plan" && !ctx.agent.includes("stack")) {
             return {
               title: "Not in plan mode",
               output: "You are not in plan mode. This tool is only effective in plan mode.",
@@ -138,12 +153,19 @@ export const PlanExitTool = Tool.define(
           })
 
           const answer = answers[0]?.[0]
-          if (answer === "No") return yield* new Question.RejectedError()
+          if (answer === "No") {
+            return {
+              title: "Staying in plan mode",
+              output:
+                "User chose to stay in plan mode and continue refining the plan. Plan mode is still active — do NOT start implementing. Use the question tool to ask the user which aspects of the plan they want to refine or change, then update the plan file accordingly and call plan_exit again when ready.",
+              metadata: { switched: false, feedback: "" },
+            }
+          }
 
           if (answer !== "Yes") {
             return {
               title: "User provided feedback",
-              output: `User chose not to switch yet and provided feedback: ${answer}`,
+              output: `User chose not to switch yet and provided feedback: ${answer}\n\nPlan mode is still active — do NOT start implementing. Address the feedback by refining the plan file, then call plan_exit again when the plan is ready.`,
               metadata: { switched: false, feedback: answer },
             }
           }
@@ -155,7 +177,7 @@ export const PlanExitTool = Tool.define(
             sessionID: ctx.sessionID,
             role: "user",
             time: { created: Date.now() },
-            agent: "build",
+            agent: getLastActiveAgent(ctx.sessionID),
             model,
           }
           yield* session.updateMessage(msg)

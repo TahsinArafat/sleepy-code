@@ -53,4 +53,10 @@ export const TuiEvent = {
         .describe("Display labels of loaded instruction files: worktree-relative path, ~-path, or absolute"),
     }),
   ),
+  SessionExpired: BusEvent.define(
+    "tui.session.expired",
+    z.object({
+      message: z.string(),
+    }),
+  ),
 }

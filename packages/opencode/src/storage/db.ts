@@ -29,9 +29,9 @@ const log = Log.create({ service: "db" })
 
 export function getChannelPath() {
   if (["latest", "beta", "prod"].includes(InstallationChannel) || Flag.SLEEPYCODE_DISABLE_CHANNEL_DB)
-    return path.join(Global.Path.data, "sleepycode.db")
+    return path.join(Global.Path.data, "sleepy.db")
   const safe = InstallationChannel.replace(/[^a-zA-Z0-9._-]/g, "-")
-  return path.join(Global.Path.data, `sleepycode-${safe}.db`)
+  return path.join(Global.Path.data, `sleepy-${safe}.db`)
 }
 
 export const Path = iife(() => {

@@ -19,11 +19,11 @@ describe("resolveSleepyHome", () => {
     const result = resolveSleepyHome({})
     expect(result.mode).toBe("xdg")
     expect(result.root).toBeUndefined()
-    // xdg paths end with "/sleepycode"
-    expect(result.config.endsWith(path.join("", "sleepycode"))).toBe(true)
-    expect(result.data.endsWith(path.join("", "sleepycode"))).toBe(true)
-    expect(result.state.endsWith(path.join("", "sleepycode"))).toBe(true)
-    expect(result.cache.endsWith(path.join("", "sleepycode"))).toBe(true)
+    // xdg paths end with "/sleepy"
+    expect(result.config.endsWith(path.join("", "sleepy"))).toBe(true)
+    expect(result.data.endsWith(path.join("", "sleepy"))).toBe(true)
+    expect(result.state.endsWith(path.join("", "sleepy"))).toBe(true)
+    expect(result.cache.endsWith(path.join("", "sleepy"))).toBe(true)
   })
 
   test("empty SLEEPY_HOME string is treated as unset (xdg mode)", () => {

@@ -15,6 +15,7 @@ import { useLanguage } from "@tui/context/language"
 import * as Model from "../util/model"
 import { PROVIDER_PRIORITY } from "@/util/provider-priority"
 import * as fuzzysort from "fuzzysort"
+import { createFreeApiSunsetSignal, freeApiModelNameKey, isFreeApiModel } from "@tui/util/free-api-sunset"
 
 const ADD_MODEL_SENTINEL = "__add_model__"
 
@@ -37,8 +38,11 @@ export function DialogModel(props: { providerID?: string }) {
   const connected = useConnected()
   const providers = createDialogProviderOptions()
   const t = useLanguage().t
+  const freeApiSunset = createFreeApiSunsetSignal()
   const modelName = (providerID: string, modelID: string) =>
-    modelID === "sleepy-auto" ? t("tui.model.sleepy_auto.name") : Model.name(sync.data.provider, providerID, modelID)
+    isFreeApiModel({ providerID, modelID })
+      ? t(freeApiModelNameKey(freeApiSunset()))
+      : Model.name(sync.data.provider, providerID, modelID)
 
   const showExtra = createMemo(() => connected() && !props.providerID)
 
@@ -95,61 +99,70 @@ export function DialogModel(props: { providerID?: string }) {
 
     const pinnedOptions = showPinned
       ? [
-          // sleepy-free model
-          ...(sleepyProvider && "sleepy-auto" in sleepyProvider.models && sleepyProvider.models["sleepy-auto"].status !== "deprecated" && (!showSections || !inShortcuts("sleepy", "sleepy-auto"))
-            ? [
+        // The gateway injects sleepy models dynamically from the dashboard API
+        // (ids like "auto:free", "mimo-2.5-pro"); the literal "sleepy-auto"
+        // alias only exists on accounts where the gateway publishes it. When
+        // present pin it alone, otherwise pin ALL sleepy models — the regular
+        // list below excludes the sleepy provider while the pinned section
+        // shows, so pinning only a non-existent alias would leave the picker
+        // with zero sleepy models. See Model.pinnedSleepyModels.
+        ...pipe(
+          Model.pinnedSleepyModels(sleepyProvider),
+          filter((pin) => !showSections || !inShortcuts(pin.providerID, pin.modelID)),
+          map((pin) => ({
+            value: pin,
+            title:
+              pin.modelID === "sleepy-auto"
+                ? modelName("sleepy", "sleepy-auto")
+                : (sleepyProvider?.models[pin.modelID]?.name ?? pin.modelID),
+            description: undefined as string | undefined,
+            category: pinnedCategory,
+            disabled: false,
+            footer: undefined as "Free" | undefined,
+            onSelect() {
+              onSelect(pin.providerID, pin.modelID)
+            },
+          })),
+        ),
+        // xiaomi provider models
+        ...(xiaomiProvider
+          ? [
+            ...pipe(
+              xiaomiProvider.models,
+              entries(),
+              filter(([_, info]) => info.status !== "deprecated"),
+              map(([model, info]) => ({
+                value: { providerID: xiaomiProvider.id, modelID: model },
+                title: info.name ?? model,
+                description: undefined as string | undefined,
+                category: pinnedCategory,
+                disabled: false,
+                footer: undefined as "Free" | undefined,
+                onSelect() {
+                  onSelect(xiaomiProvider.id, model)
+                },
+              })),
+              filter((x) => !showSections || !inShortcuts(x.value.providerID, x.value.modelID)),
+            ),
+            // "+ Add model" for config-sourced providers
+            ...(xiaomiProvider.source === "config"
+              ? [
                 {
-                  value: { providerID: "sleepy", modelID: "sleepy-auto" },
-                  title: modelName("sleepy", "sleepy-auto"),
-                  description: undefined as string | undefined,
+                  value: { providerID: xiaomiProvider.id, modelID: ADD_MODEL_SENTINEL },
+                  title: "+ Add model",
+                  description: undefined,
                   category: pinnedCategory,
                   disabled: false,
                   footer: undefined as "Free" | undefined,
                   onSelect() {
-                    onSelect("sleepy", "sleepy-auto")
+                    void runAddModelWizard({ dialog, sdk, sync, toast, providerID: xiaomiProvider.id })
                   },
                 },
               ]
-            : []),
-          // xiaomi provider models
-          ...(xiaomiProvider
-            ? [
-                ...pipe(
-                  xiaomiProvider.models,
-                  entries(),
-                  filter(([_, info]) => info.status !== "deprecated"),
-                  map(([model, info]) => ({
-                    value: { providerID: xiaomiProvider.id, modelID: model },
-                    title: info.name ?? model,
-                    description: undefined as string | undefined,
-                    category: pinnedCategory,
-                    disabled: false,
-                    footer: undefined as "Free" | undefined,
-                    onSelect() {
-                      onSelect(xiaomiProvider.id, model)
-                    },
-                  })),
-                  filter((x) => !showSections || !inShortcuts(x.value.providerID, x.value.modelID)),
-                ),
-                // "+ Add model" for config-sourced providers
-                ...(xiaomiProvider.source === "config"
-                  ? [
-                      {
-                        value: { providerID: xiaomiProvider.id, modelID: ADD_MODEL_SENTINEL },
-                        title: "+ Add model",
-                        description: undefined,
-                        category: pinnedCategory,
-                        disabled: false,
-                        footer: undefined as "Free" | undefined,
-                        onSelect() {
-                          void runAddModelWizard({ dialog, sdk, sync, toast, providerID: xiaomiProvider.id })
-                        },
-                      },
-                    ]
-                  : []),
-              ]
-            : []),
-        ]
+              : []),
+          ]
+          : []),
+      ]
       : []
 
     const providerOptions = pipe(
@@ -213,13 +226,13 @@ export function DialogModel(props: { providerID?: string }) {
 
     const popularProviders = !connected()
       ? pipe(
-          providers(),
-          map((option) => ({
-            ...option,
-            category: "Popular providers",
-          })),
-          take(6),
-        )
+        providers(),
+        map((option) => ({
+          ...option,
+          category: "Popular providers",
+        })),
+        take(6),
+      )
       : []
 
     if (needle) {

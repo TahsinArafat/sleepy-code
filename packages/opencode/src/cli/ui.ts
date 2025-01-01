@@ -5,9 +5,9 @@ import { logo as glyphs } from "./logo"
 
 const wordmark = [
   `⠀                                       `,
-  `█▀▄▀█ █ █▄ ▄█ █▀▀█ █▀▀ █▀▀█ █▀▀▄ █▀▀▀`,
-  `█ ▀ █ █ █ ▀ █ █  █ █   █  █ █  █ █▀▀ `,
-  `▀   ▀ ▀ ▀   ▀ ▀▀▀▀ ▀▀▀ ▀▀▀▀ ▀▀▀  ▀▀▀▀`,
+  `█▀▀ █   █▀▀ █▀▀ █▀▀█ █  █ █▀▀ █▀▀█ █▀▀▄ █▀▀▀`,
+  `▀▀█ █   █▀▀ █▀▀ █  █ █▄▄█ █   █  █ █  █ █▀▀ `,
+  `▀▀▀ ▀▀▀ ▀▀▀ ▀▀▀ █▀▀  ▄▄▄█ ▀▀▀ ▀▀▀▀ ▀▀▀  ▀▀▀▀`,
 ]
 
 export const CancelledError = NamedError.create("UICancelledError", z.void())
@@ -37,6 +37,10 @@ export function println(...message: string[]) {
 export function print(...message: string[]) {
   blank = false
   process.stderr.write(message.join(" "))
+}
+
+export function withTrailingEOL(text: string) {
+  return text.replace(/[\r\n]+$/, "") + EOL
 }
 
 let blank = false

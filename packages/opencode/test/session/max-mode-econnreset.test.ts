@@ -19,7 +19,7 @@ function expectCandidate(value: Candidate | null | "text-repeat"): Candidate {
  *   3. a non-transient error part falls through to the catch fallback.
  *
  * The mock stream yields synchronously-constructed events, so the only real
- * wall-clock cost is persistentRetrySchedule's first backoff (~500ms/attempt).
+ * wall-clock cost is the coordinator's local max-mode backoff (~500ms/attempt).
  */
 
 const econnreset = () => Object.assign(new Error("socket connection closed unexpectedly"), { code: "ECONNRESET" })
@@ -62,6 +62,31 @@ function baseInput(llm: LLM.Interface): MaxStepInput {
 }
 
 describe("max-mode ECONNRESET handling (integration)", () => {
+  test("candidate preserves the model-visible active tool subset", async () => {
+    let captured: LLM.StreamInput | undefined
+    const llm = {
+      buildSystemArray: () => Effect.succeed([]),
+      stream: (input: LLM.StreamInput) => {
+        captured = input
+        return Stream.fromIterable([
+          { type: "text-delta", text: "done" } as LLM.Event,
+          { type: "finish-step", finishReason: "stop", usage: { inputTokens: 1, outputTokens: 1 } } as LLM.Event,
+        ])
+      },
+    } as LLM.Interface
+    const input = baseInput(llm)
+    input.tools = {
+      visible: { description: "visible" } as any,
+      hidden_mcp: { description: "hidden" } as any,
+    }
+    input.activeTools = ["visible"]
+
+    expectCandidate(await Effect.runPromise(runCandidate(input, 0)))
+
+    expect(captured?.activeTools).toEqual(["visible"])
+    expect(Object.keys(captured?.tools ?? {})).toEqual(["visible", "hidden_mcp"])
+  })
+
   test("candidate retries a transient error part and recovers with a fresh accumulator", async () => {
     // Each attempt's "good" path emits text then finishes. On failing attempts
     // we ALSO emit a text-delta before the error part, to prove the retry does
@@ -179,7 +204,7 @@ describe("max-mode defect handling (SSE timeout surfaces as Cause.die)", () => {
 
   const sseTimeout = () => new Error("SSE read timed out")
   // A non-transient defect: not retried, so containment is proven in 1 attempt
-  // without waiting out persistentRetrySchedule's ~8min backoff exhaustion.
+  // without waiting out the coordinator's long backoff exhaustion.
   const fatalDefect = () => new Error("unexpected internal stream failure")
 
   test("candidate contains a transient defect and retries to recovery (no fiber crash)", async () => {

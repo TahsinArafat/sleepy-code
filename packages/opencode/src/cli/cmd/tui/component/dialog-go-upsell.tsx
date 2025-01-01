@@ -8,7 +8,7 @@ import { Link } from "@tui/ui/link"
 import { GoLogo } from "./logo"
 import { BgPulse, type BgPulseMask } from "./bg-pulse"
 
-const GO_URL = "https://opencode.ai/go"
+const GO_URL = "https://www.sleepyai.org/dashboard/plans"
 const PAD_X = 3
 const PAD_TOP_OUTER = 1
 
@@ -90,21 +90,14 @@ export function DialogGoUpsell(props: DialogGoUpsellProps) {
       <box paddingLeft={PAD_X} paddingRight={PAD_X} paddingBottom={1} gap={1}>
         <box ref={(item: BoxRenderable) => (headingBox = item)} flexDirection="row" justifyContent="space-between">
           <text attributes={TextAttributes.BOLD} fg={theme.text}>
-            Free limit reached
+            Limit reached
           </text>
           <text fg={theme.textMuted} onMouseUp={() => dialog.clear()}>
             esc
           </text>
         </box>
         <box ref={(item: BoxRenderable) => (descBox = item)} gap={0}>
-          <box flexDirection="row">
-            <text fg={theme.textMuted}>Subscribe to </text>
-            <text attributes={TextAttributes.BOLD} fg={theme.textMuted}>
-              OpenCode Go
-            </text>
-            <text fg={theme.textMuted}> for reliable access to the</text>
-          </box>
-          <text fg={theme.textMuted}>best open-source models, starting at $5/month.</text>
+          <text fg={theme.textMuted}>Upgrade your plan or top-up extra credits</text>
         </box>
         <box alignItems="center" gap={1} paddingBottom={1}>
           <box ref={(item: BoxRenderable) => (logoBox = item)}>

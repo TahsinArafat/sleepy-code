@@ -1,5 +1,5 @@
-import { NodePath } from "@effect/platform-node"
-import { Effect, Layer, Path, Schema, Context } from "effect"
+import { Effect, Layer, Schema, Context } from "effect"
+import path from "path"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { withTransientReadRetry } from "@/util/effect-http-client"
 import { AppFileSystem } from "@sleepy-ai/shared/filesystem"
@@ -24,15 +24,18 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SkillDiscovery") {}
 
-export const layer: Layer.Layer<Service, never, AppFileSystem.Service | Path.Path | HttpClient.HttpClient> =
+export const layer: Layer.Layer<Service, never, AppFileSystem.Service | HttpClient.HttpClient> =
   Layer.effect(
     Service,
     Effect.gen(function* () {
       const log = Log.create({ service: "skill-discovery" })
       const fs = yield* AppFileSystem.Service
-      const path = yield* Path.Path
       const http = HttpClient.filterStatusOk(withTransientReadRetry(yield* HttpClient.HttpClient))
-      const cache = path.join(Global.Path.cache, "skills")
+      const cachePath = Global.Path?.cache
+      if (!cachePath) {
+        return Service.of({ pull: () => Effect.succeed([]) })
+      }
+      const cache = path.join(cachePath, "skills")
 
       const download = Effect.fn("Discovery.download")(function* (url: string, dest: string) {
         if (yield* fs.exists(dest).pipe(Effect.orDie)) return true
@@ -110,7 +113,6 @@ export const layer: Layer.Layer<Service, never, AppFileSystem.Service | Path.Pat
 export const defaultLayer: Layer.Layer<Service> = layer.pipe(
   Layer.provide(FetchHttpClient.layer),
   Layer.provide(AppFileSystem.defaultLayer),
-  Layer.provide(NodePath.layer),
 )
 
 export * as Discovery from "./discovery"

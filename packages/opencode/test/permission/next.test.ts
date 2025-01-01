@@ -437,6 +437,19 @@ test("disabled - disables edit/write/apply_patch/multiedit when edit denied", ()
   expect(result.has("bash")).toBe(false)
 })
 
+test("disabled - disables view_image when read is denied", () => {
+  const result = Permission.disabled(
+    ["read", "view_image", "glob"],
+    [
+      { permission: "*", pattern: "*", action: "allow" },
+      { permission: "read", pattern: "*", action: "deny" },
+    ],
+  )
+  expect(result.has("read")).toBe(true)
+  expect(result.has("view_image")).toBe(true)
+  expect(result.has("glob")).toBe(false)
+})
+
 test("disabled - does not disable when partially denied", () => {
   const result = Permission.disabled(
     ["bash"],
@@ -779,6 +792,109 @@ it.live("ask - persisted approval does not override ruleset deny", () =>
       }).pipe(run),
     )
     expect(err).toBeInstanceOf(Permission.DeniedError)
+  }),
+)
+
+// Forced-ask (bash_delete) tests — irreversible actions must not be
+// pre-authorized by allow rules. Only an explicit deny short-circuits, and
+// only the env-var opt-out (checked tool-side) skips the ask entirely.
+
+it.live("ask - bash_delete stays pending even when ruleset has wildcard allow", () =>
+  withDir({ git: true }, () =>
+    Effect.gen(function* () {
+      const fiber = yield* ask({
+        sessionID: SessionID.make("session_test"),
+        permission: "bash_delete",
+        patterns: ["rm foo.txt"],
+        metadata: {},
+        always: [],
+        ruleset: [{ permission: "*", pattern: "*", action: "allow" }],
+      }).pipe(Effect.forkScoped)
+
+      const items = yield* waitForPending(1)
+      expect(items).toHaveLength(1)
+      expect(items[0].permission).toBe("bash_delete")
+      yield* rejectAll()
+      yield* Fiber.await(fiber)
+    }),
+  ),
+)
+
+it.live("ask - bash_delete stays pending even with explicit bash_delete allow", () =>
+  withDir({ git: true }, () =>
+    Effect.gen(function* () {
+      // Even a named allow rule cannot pre-authorize a forced-ask permission.
+      // The env-var opt-out (SLEEPYCODE_AUTO_APPROVE_DELETE, tool-side) is the
+      // only bypass; the permission layer itself refuses to honor allow.
+      const fiber = yield* ask({
+        sessionID: SessionID.make("session_test"),
+        permission: "bash_delete",
+        patterns: ["rm foo.txt"],
+        metadata: {},
+        always: [],
+        ruleset: [{ permission: "bash_delete", pattern: "*", action: "allow" }],
+      }).pipe(Effect.forkScoped)
+
+      yield* waitForPending(1)
+      yield* rejectAll()
+      yield* Fiber.await(fiber)
+    }),
+  ),
+)
+
+it.live("ask - bash_delete respects explicit deny", () =>
+  withDir({ git: true }, () =>
+    Effect.gen(function* () {
+      const err = yield* fail(
+        ask({
+          sessionID: SessionID.make("session_test"),
+          permission: "bash_delete",
+          patterns: ["rm foo.txt"],
+          metadata: {},
+          always: [],
+          ruleset: [{ permission: "bash_delete", pattern: "*", action: "deny" }],
+        }),
+      )
+      expect(err).toBeInstanceOf(Permission.DeniedError)
+    }),
+  ),
+)
+
+it.live("reply - always for bash_delete does not persist a rule", () =>
+  Effect.gen(function* () {
+    const dir = yield* tmpdirScoped({ git: true })
+    const run = withProvided(dir)
+
+    // Session 1: approve bash_delete "always". Even if the caller passes a
+    // non-empty `always`, no rule should reach the approved store.
+    const fiber = yield* ask({
+      id: PermissionID.make("per_forced_ask_persist"),
+      sessionID: SessionID.make("session_approve"),
+      permission: "bash_delete",
+      patterns: ["rm foo.txt"],
+      metadata: {},
+      always: ["*"],
+      ruleset: [],
+    }).pipe(run, Effect.forkScoped)
+
+    yield* waitForPending(1).pipe(run)
+    yield* reply({ requestID: PermissionID.make("per_forced_ask_persist"), reply: "always" }).pipe(run)
+    yield* Fiber.join(fiber)
+
+    // Session 2: a fresh bash_delete ask must still be pending — the previous
+    // "always" reply must NOT have been persisted.
+    const fiber2 = yield* ask({
+      sessionID: SessionID.make("session_next"),
+      permission: "bash_delete",
+      patterns: ["rm bar.txt"],
+      metadata: {},
+      always: [],
+      ruleset: [],
+    }).pipe(run, Effect.forkScoped)
+
+    yield* waitForPending(1).pipe(run)
+    yield* rejectAll().pipe(run)
+    yield* Fiber.await(fiber2)
   }),
 )
 

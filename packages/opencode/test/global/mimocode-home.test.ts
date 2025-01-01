@@ -7,7 +7,7 @@ import path from "path"
 const worker = path.join(import.meta.dir, "fixture", "global-paths-worker.ts")
 
 async function tmpdir() {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "sleepycode-home-test-"))
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "sleepy-home-test-"))
   return {
     path: dir,
     async [Symbol.asyncDispose]() {
@@ -24,6 +24,8 @@ type PathsResult = {
   bin: string
   log: string
   home: string
+  orchestrator: string
+  orchestratorExists: boolean
 }
 
 async function runWorker(env: Record<string, string>): Promise<{ ok: true; paths: PathsResult } | { ok: false; code: number | null; stderr: string }> {
@@ -67,6 +69,20 @@ describe("SLEEPY_HOME end-to-end", () => {
     expect(result.paths.cache).toBe(path.join(tmp.path, "cache"))
     expect(result.paths.bin).toBe(path.join(tmp.path, "cache", "bin"))
     expect(result.paths.log).toBe(path.join(tmp.path, "data", "log"))
+  })
+
+  test("orchestrator dir is a stable absolute path under data and is created on first use", async () => {
+    await using tmp = await tmpdir()
+    const result = await runWorker({ SLEEPY_HOME: tmp.path })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    // Fixed location under the global data root, independent of launch dir
+    expect(result.paths.orchestrator).toBe(path.join(tmp.path, "data", "orchestrator"))
+    expect(path.isAbsolute(result.paths.orchestrator)).toBe(true)
+    // Created (mkdir recursive) on first resolution
+    expect(result.paths.orchestratorExists).toBe(true)
+    const stat = await fs.stat(result.paths.orchestrator)
+    expect(stat.isDirectory()).toBe(true)
   })
 
   test("auto-creates all four subdirs under a nonexistent root", async () => {
@@ -136,8 +152,8 @@ describe("SLEEPY_HOME end-to-end", () => {
     })
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    // Paths should reflect XDG layout (ends with "/sleepycode"), not SLEEPY_HOME layout
-    expect(result.paths.config).toBe(path.join(tmp.path, "config", "sleepycode"))
-    expect(result.paths.data).toBe(path.join(tmp.path, "data", "sleepycode"))
+    // Paths should reflect XDG layout (ends with "/sleepy"), not SLEEPY_HOME layout
+    expect(result.paths.config).toBe(path.join(tmp.path, "config", "sleepy"))
+    expect(result.paths.data).toBe(path.join(tmp.path, "data", "sleepy"))
   })
 })

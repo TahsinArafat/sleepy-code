@@ -2,7 +2,7 @@ import os from "os"
 import path from "path"
 import { pathToFileURL } from "url"
 import z from "zod"
-import { Effect, Layer, Context } from "effect"
+import { Duration, Effect, Layer, Context } from "effect"
 import { NamedError } from "@sleepy-ai/shared/util/error"
 import type { Agent } from "@/agent/agent"
 import { Bus } from "@/bus"
@@ -17,22 +17,36 @@ import { Glob } from "@sleepy-ai/shared/util/glob"
 import { Log } from "../util"
 import { Discovery } from "./discovery"
 import { extractComposeBundle } from "./compose/extract"
-import { extractBuiltinBundle } from "./builtin/extract"
+import { extractBuiltinBundle, OFFICIAL_SKILL_NAMES } from "./builtin/extract"
 
 const log = Log.create({ service: "skill" })
 const EXTERNAL_DIRS = [".claude", ".agents", ".codex", ".opencode"]
 const EXTERNAL_SKILL_PATTERN = "skills/**/SKILL.md"
 const SLEEPYCODE_SKILL_PATTERN = "{skill,skills}/**/SKILL.md"
 const SKILL_PATTERN = "**/SKILL.md"
+const BUILTIN_SKILL_PATTERN = "skills/*/SKILL.md"
 
 export const Info = z.object({
   name: z.string(),
   description: z.string(),
+  aliases: z.array(z.string()).optional(),
   location: z.string(),
   content: z.string(),
-  hidden: z.boolean().optional(),
+  // Model reachability, distinct from authorization. When true the model never
+  // sees the skill (no system-prompt catalog entry, no skill tool description
+  // entry, no skill_search hit) and the skill tool refuses to load it; a user
+  // slash invocation still works. Authorization stays with permission.skill,
+  // where `deny` means unusable by anyone.
+  disable_model_invocation: z.boolean().optional(),
+  bundled: z.boolean().optional(),
 })
 export type Info = z.infer<typeof Info>
+
+// Kebab-case in frontmatter to match Claude Code and the agentskills.io open
+// standard, so a skill folder stays portable in both directions.
+const Frontmatter = Info.pick({ name: true, description: true, aliases: true }).extend({
+  "disable-model-invocation": z.boolean().optional(),
+})
 
 export const InvalidError = NamedError.create(
   "SkillInvalidError",
@@ -60,6 +74,7 @@ type State = {
 type DiscoveryState = {
   matches: string[]
   dirs: string[]
+  bundledRoots: string[]
 }
 
 type ScanState = {
@@ -72,10 +87,11 @@ export interface Interface {
   readonly all: () => Effect.Effect<Info[]>
   readonly dirs: () => Effect.Effect<string[]>
   readonly available: (agent?: Agent.Info) => Effect.Effect<Info[]>
+  readonly modelInvocable: (agent?: Agent.Info) => Effect.Effect<Info[]>
   readonly reload: () => Effect.Effect<void>
 }
 
-const add = Effect.fnUntraced(function* (state: State, match: string, bus: Bus.Interface) {
+const add = Effect.fnUntraced(function* (state: State, match: string, bundledRoots: string[], bus: Bus.Interface) {
   const md = yield* Effect.tryPromise({
     try: () => ConfigMarkdown.parse(match),
     catch: (err) => err,
@@ -95,24 +111,35 @@ const add = Effect.fnUntraced(function* (state: State, match: string, bus: Bus.I
 
   if (!md) return
 
-  const parsed = Info.pick({ name: true, description: true, hidden: true }).safeParse(md.data)
+  const parsed = Frontmatter.safeParse(md.data)
   if (!parsed.success) return
 
-  if (state.skills[parsed.data.name]) {
-    log.warn("duplicate skill name", {
-      name: parsed.data.name,
-      existing: state.skills[parsed.data.name].location,
-      duplicate: match,
-    })
+  const isBundled = bundledRoots.some((root) => match.startsWith(root))
+  const existing = state.skills[parsed.data.name]
+
+  if (existing) {
+    // User overrides always win: bundled must not overwrite non-bundled
+    if (isBundled && !existing.bundled) return
+    if (!isBundled && existing.bundled) {
+      log.info("user skill overrides bundled", { name: parsed.data.name, location: match })
+    } else {
+      log.warn("duplicate skill name", {
+        name: parsed.data.name,
+        existing: existing.location,
+        duplicate: match,
+      })
+    }
   }
 
   state.dirs.add(path.dirname(match))
   state.skills[parsed.data.name] = {
     name: parsed.data.name,
     description: parsed.data.description,
+    aliases: parsed.data.aliases,
     location: match,
     content: md.content,
-    hidden: parsed.data.hidden,
+    disable_model_invocation: parsed.data["disable-model-invocation"],
+    bundled: isBundled || undefined,
   }
 })
 
@@ -140,20 +167,17 @@ const scan = Effect.fnUntraced(function* (
     }),
   )
 
-  for (const match of matches) {
+  for (const match of matches.toSorted()) {
     state.matches.add(match)
     state.dirs.add(path.dirname(match))
   }
 })
 
-const discoverSkills = Effect.fnUntraced(function* (
-  config: Config.Interface,
-  discovery: Discovery.Interface,
+const discoverStableSkills = Effect.fnUntraced(function* (
   fsys: AppFileSystem.Interface,
-  directory: string,
-  worktree: string,
 ) {
   const state: ScanState = { matches: new Set(), dirs: new Set() }
+  const bundledRoots: string[] = []
 
   // Extract builtin skills to disk first (user skills with same name override)
   if (!Flag.SLEEPYCODE_DISABLE_BUILTIN_SKILLS) {
@@ -161,7 +185,20 @@ const discoverSkills = Effect.fnUntraced(function* (
       Effect.catch(() => Effect.succeed(undefined)),
     )
     if (builtinSkillRoot && (yield* fsys.isDir(builtinSkillRoot))) {
-      yield* scan(state, builtinSkillRoot, SKILL_PATTERN, { scope: "builtin" })
+      bundledRoots.push(builtinSkillRoot)
+      yield* scan(state, builtinSkillRoot, BUILTIN_SKILL_PATTERN, { scope: "builtin" })
+      if (Flag.SLEEPYCODE_DISABLE_OFFICIAL_SKILLS) {
+        const skillsRoot = path.join(builtinSkillRoot, "skills")
+        for (const name of OFFICIAL_SKILL_NAMES) {
+          const prefix = path.join(skillsRoot, name) + path.sep
+          for (const match of state.matches) {
+            if (match.startsWith(prefix)) {
+              state.matches.delete(match)
+              state.dirs.delete(path.dirname(match))
+            }
+          }
+        }
+      }
     }
   }
 
@@ -171,6 +208,7 @@ const discoverSkills = Effect.fnUntraced(function* (
       Effect.catch(() => Effect.succeed(undefined)),
     )
     if (composeSkillRoot && (yield* fsys.isDir(composeSkillRoot))) {
+      bundledRoots.push(composeSkillRoot)
       yield* scan(state, composeSkillRoot, SKILL_PATTERN, { scope: "compose" })
     }
   }
@@ -178,6 +216,7 @@ const discoverSkills = Effect.fnUntraced(function* (
   if (!Flag.SLEEPYCODE_DISABLE_EXTERNAL_SKILLS) {
     const externalDirs = EXTERNAL_DIRS.filter((dir) => {
       if (dir === ".claude" && Flag.SLEEPYCODE_DISABLE_CLAUDE_CODE_SKILLS) return false
+      if (dir === ".agents" && Flag.SLEEPYCODE_DISABLE_AGENTS_SKILLS) return false
       if (dir === ".codex" && Flag.SLEEPYCODE_DISABLE_CODEX_SKILLS) return false
       if (dir === ".opencode" && Flag.SLEEPYCODE_DISABLE_OPENCODE_SKILLS) return false
       return true
@@ -188,6 +227,34 @@ const discoverSkills = Effect.fnUntraced(function* (
       if (!(yield* fsys.isDir(root))) continue
       yield* scan(state, root, EXTERNAL_SKILL_PATTERN, { dot: true, scope: "global" })
     }
+  }
+
+  return {
+    matches: Array.from(state.matches),
+    dirs: Array.from(state.dirs),
+    bundledRoots,
+  }
+})
+
+const discoverSkills = Effect.fnUntraced(function* (
+  config: Config.Interface,
+  discovery: Discovery.Interface,
+  fsys: AppFileSystem.Interface,
+  stable: DiscoveryState,
+  directory: string,
+  worktree: string,
+) {
+  const state: ScanState = { matches: new Set(stable.matches), dirs: new Set(stable.dirs) }
+  const bundledRoots = [...stable.bundledRoots]
+
+  if (!Flag.SLEEPYCODE_DISABLE_EXTERNAL_SKILLS) {
+    const externalDirs = EXTERNAL_DIRS.filter((dir) => {
+      if (dir === ".claude" && Flag.SLEEPYCODE_DISABLE_CLAUDE_CODE_SKILLS) return false
+      if (dir === ".agents" && Flag.SLEEPYCODE_DISABLE_AGENTS_SKILLS) return false
+      if (dir === ".codex" && Flag.SLEEPYCODE_DISABLE_CODEX_SKILLS) return false
+      if (dir === ".opencode" && Flag.SLEEPYCODE_DISABLE_OPENCODE_SKILLS) return false
+      return true
+    })
 
     const upDirs = yield* fsys
       .up({ targets: externalDirs, start: directory, stop: worktree })
@@ -225,12 +292,13 @@ const discoverSkills = Effect.fnUntraced(function* (
   return {
     matches: Array.from(state.matches),
     dirs: Array.from(state.dirs),
+    bundledRoots,
   }
 })
 
 const loadSkills = Effect.fnUntraced(function* (state: State, discovered: DiscoveryState, bus: Bus.Interface) {
-  yield* Effect.forEach(discovered.matches, (match) => add(state, match, bus), {
-    concurrency: "unbounded",
+  yield* Effect.forEach(discovered.matches, (match) => add(state, match, discovered.bundledRoots, bus), {
+    concurrency: 1,
     discard: true,
   })
 
@@ -246,9 +314,13 @@ export const layer = Layer.effect(
     const config = yield* Config.Service
     const bus = yield* Bus.Service
     const fsys = yield* AppFileSystem.Service
+    const [stable, invalidateStable] = yield* Effect.cachedInvalidateWithTTL(
+      discoverStableSkills(fsys),
+      Duration.infinity,
+    )
     const discovered = yield* InstanceState.make(
       Effect.fn("Skill.discovery")(function* (ctx) {
-        return yield* discoverSkills(config, discovery, fsys, ctx.directory, ctx.worktree)
+        return yield* discoverSkills(config, discovery, fsys, yield* stable, ctx.directory, ctx.worktree)
       }),
     )
     const state = yield* InstanceState.make(
@@ -273,22 +345,30 @@ export const layer = Layer.effect(
       return (yield* InstanceState.get(discovered)).dirs
     })
 
+    // Authorization only: `deny` means unusable by anyone, so this is also the
+    // set a user slash invocation resolves against.
     const available = Effect.fn("Skill.available")(function* (agent?: Agent.Info) {
       const s = yield* InstanceState.get(state)
       let list: Info[] = Object.values(s.skills)
-        .filter((sk) => !sk.hidden)
 
       list = list.toSorted((a, b) => a.name.localeCompare(b.name))
       if (!agent) return list
       return list.filter((skill) => Permission.evaluate("skill", skill.name, agent.permission).action !== "deny")
     })
 
+    // Everything the model is allowed to see or act on. Anything the model can
+    // reach must come from here, never from `available` or `all`.
+    const modelInvocable = Effect.fn("Skill.modelInvocable")(function* (agent?: Agent.Info) {
+      return (yield* available(agent)).filter((skill) => !skill.disable_model_invocation)
+    })
+
     const reload = Effect.fn("Skill.reload")(function* () {
+      yield* invalidateStable
       yield* InstanceState.invalidate(discovered)
       yield* InstanceState.invalidate(state)
     })
 
-    return Service.of({ get, all, dirs, available, reload })
+    return Service.of({ get, all, dirs, available, modelInvocable, reload })
   }),
 )
 
@@ -305,7 +385,7 @@ export function fmt(list: Info[], opts: { verbose: boolean }) {
     return [
       "<available_skills>",
       ...list
-        .sort((a, b) => a.name.localeCompare(b.name))
+        .toSorted((a, b) => a.name.localeCompare(b.name))
         .flatMap((skill) => [
           "  <skill>",
           `    <name>${skill.name}</name>`,

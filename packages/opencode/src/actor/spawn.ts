@@ -1,4 +1,4 @@
-import { Effect, Deferred, Context, Fiber, Layer, Scope, Cause } from "effect"
+import { Effect, Deferred, Context, Fiber, Layer, Scope, Cause, Schedule } from "effect"
 import type { SessionID, MessageID } from "@/session/schema"
 import type { ProviderID, ModelID } from "@/provider/schema"
 import type { Tool as AITool, ModelMessage } from "ai"
@@ -10,16 +10,23 @@ import { TaskRegistry } from "@/task/registry"
 import { TaskGate, MAX_TASK_GATE_SUBAGENT_REACT } from "@/task/gate"
 import { Agent } from "@/agent/agent"
 import { Permission } from "@/permission"
-import type { SpawnMode, ContextMode, ToolWhitelist, Lifecycle } from "@/actor/schema"
+import type { Actor, SpawnMode, ContextMode, ToolWhitelist, Lifecycle } from "@/actor/schema"
+import { deriveLiveness, DEFAULT_LIVENESS_STALL_MS } from "@/actor/schema"
+import * as ActorEvents from "@/actor/events"
 import { runTurn } from "@/actor/turn"
 import { spawnRef } from "@/actor/spawn-ref"
+import { SYSTEM_SPAWNED_AGENT_TYPES } from "@/agent/config"
 import { Bus } from "@/bus"
+import { TuiEvent } from "@/cli/cmd/tui/event"
 import { MessageV2 } from "@/session/message-v2"
+import { SessionRetry } from "@/session/retry"
 import { Inbox } from "@/inbox"
 import { renderActorNotification } from "@/inbox/render"
 import { Plugin, HookEvent } from "@/plugin"
 import { parseReturnHeader, type ReturnStatus } from "./return-header"
 import { Log } from "@/util"
+import { Instance, type InstanceContext } from "@/project/instance"
+import { InstanceRef } from "@/effect/instance-ref"
 
 const log = Log.create({ service: "actor.spawn" })
 
@@ -32,6 +39,13 @@ const log = Log.create({ service: "actor.spawn" })
 export const MAX_PRE_REACT = 3
 /** Cap on postStop ReAct re-entries per spawn. See MAX_PRE_REACT TODO. */
 export const MAX_POST_REACT = 3
+/**
+ * T40 stall watchdog scan cadence. Well inside the DEFAULT_LIVENESS_STALL_MS (6m)
+ * window and just under the registry's own 60s stuck-scan, so a genuinely stalled
+ * child is caught within one scan of flipping to `stalled` without hammering the
+ * DB.
+ */
+export const WATCHDOG_SCAN_INTERVAL_MS = 45_000
 const RETURN_FORMAT_INSTRUCTION = `
 
 ---
@@ -107,8 +121,87 @@ export type AgentOutcome =
       // only when reportedStatus was downgraded to "partial"/"blocked".
       incompleteTasks?: string[]
     }
-  | { status: "failure"; error: string }
+  | { status: "failure"; error: string; failure?: FailureInfo }
   | { status: "cancelled" }
+
+/**
+ * Coarse, provider-agnostic category of a settled failure. Deliberately small:
+ * a consumer needs to answer "will this recur identically?", not to know which
+ * provider spelled which body which way. The provider-specific taxonomy has
+ * already been collapsed upstream by MessageV2.fromError, which runs
+ * ProviderError.parseAPICallError / isOverflow / isOpenAiErrorRetryable.
+ */
+export type FailureKind = "transient" | "overflow" | "auth" | "aborted" | "other"
+
+/**
+ * Classification carried on a `failure` outcome so a consumer can branch without
+ * string-matching `error`.
+ *
+ * PRESENT only when the failure came from a settled assistant error — i.e. the
+ * child's turn ran and persisted a normalized named error. ABSENT when the work
+ * fiber failed some other way (a defect during teardown, or a hand-built outcome
+ * such as checkpoint's "timeout"): there is no provider taxonomy to report and
+ * asserting one would be a lie. Read it with truthiness / `== null`, never
+ * `=== undefined` (AGENTS.md, "Reading a nullable column").
+ *
+ * `retryable` means "belonged to the retryable class", NOT "please retry". The
+ * child's LLM calls already run through SessionRetry's ladder (session/retry.ts,
+ * consumed by session/llm.ts and session/processor.ts), so any failure reaching
+ * a consumer is ALREADY post-retry.
+ */
+export interface FailureInfo {
+  readonly kind: FailureKind
+  readonly retryable: boolean
+  /** The persisted NamedError name, e.g. "APIError" / "ContextOverflowError". */
+  readonly name: string
+}
+
+/**
+ * Classify a settled assistant error where the typed error still exists.
+ *
+ * Reuses SessionRetry.retryable as the retryability oracle rather than adding a
+ * taxonomy: its input type IS this data shape (`Err` === `NamedError.toObject()`)
+ * and it already folds in isRetryableTransientError plus every 429 / 5xx / quota
+ * special case. `kind` is then read off the named-error identity, which is what
+ * MessageV2.fromError derived from ProviderError.parseAPICallError.
+ */
+function classifyAssistantError(err: SessionRetry.Err): FailureInfo {
+  // Truthiness, not `!== undefined`: retryable() returns a status *message*, and
+  // an empty one is not a usable retry signal.
+  const retryable = !!SessionRetry.retryable(err)
+  // 401/403 read off the statusCode ProviderError.parseAPICallError already
+  // extracted — not a new taxonomy and not a re-parse of prose. MessageV2.AuthError
+  // ("ProviderAuthError") only covers a MISSING key (LoadAPIKeyError); a rejected
+  // one arrives as an APIError, and both are the same thing to a consumer.
+  const status = MessageV2.APIError.isInstance(err) ? err.data.statusCode : undefined
+  const kind: FailureKind = MessageV2.ContextOverflowError.isInstance(err)
+    ? "overflow"
+    : MessageV2.AuthError.isInstance(err) || status === 401 || status === 403
+      ? "auth"
+      : MessageV2.AbortedError.isInstance(err)
+        ? "aborted"
+        : retryable
+          ? "transient"
+          : "other"
+  return { kind, retryable, name: err.name }
+}
+
+/**
+ * Raised by runAgentLoop when the child's turn settled with an assistant error.
+ * Exists solely to carry the classification across the Effect failure channel to
+ * forkWork's onFailure — that is the only place AgentOutcome is built, and the
+ * typed error is not reachable from there. Deliberately a plain Error subclass:
+ * Cause.pretty renders it byte-identically to `new Error(message)`, so the human
+ * `error` string is unchanged.
+ */
+class AssistantSettledError extends Error {
+  constructor(
+    message: string,
+    readonly failure: FailureInfo,
+  ) {
+    super(message)
+  }
+}
 
 export interface SpawnInput {
   mode: SpawnMode
@@ -134,6 +227,12 @@ export interface SpawnInput {
   background: boolean
   parentActorID?: string
   task_id?: string // Spec ②: bound user-task ID for postStop progress.md validation
+  // Peer-only: directory the child session runs in. When set, the child's work
+  // fiber is bound to that directory's Instance (via InstanceRef) so all its
+  // file tools / write boundary resolve against it — i.e. real isolation. A
+  // worktree is just such a directory; whether to CREATE one is the caller's
+  // policy (the session tool creates a worktree and passes its dir here). When
+  // unset, the child shares the spawner's directory.
   cwd?: string
   forkContext?: ForkContext // NEW
   lifecycle?: Lifecycle
@@ -176,7 +275,16 @@ export interface SpawnResult {
 export interface Interface {
   readonly spawn: (input: SpawnInput) => Effect.Effect<SpawnResult>
   readonly cancel: (sessionID: SessionID, actorID: string, mode: "graceful" | "forced") => Effect.Effect<void>
-  readonly getForkContext: (actorID: string) => Effect.Effect<ForkContext | undefined>
+  readonly getForkContext: (sessionID: SessionID, actorID: string) => Effect.Effect<ForkContext | undefined>
+  /**
+   * Run ONE stall-watchdog scan pass synchronously (the same body the background
+   * fiber repeats every WATCHDOG_SCAN_INTERVAL_MS). Exposed for deterministic
+   * tests that can't wait a real scan interval — it shares the same `notified`
+   * debounce set as the fiber, so driving it repeatedly exercises the real
+   * one-shot / re-arm semantics without touching wall-clock scheduling.
+   * Optional so lightweight test mocks of this Service need not implement it.
+   */
+  readonly scanStalledOnce?: () => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Actor") {}
@@ -199,6 +307,18 @@ export const layer = Layer.effect(
     // (contextMode = "full"). Read by fork's runLoop (see prompt.ts) and
     // cleared on terminal status. Fiber tracking moved to SessionRunState.
     const forkContexts = new Map<string, ForkContext>()
+    const forkContextKey = (sessionID: SessionID, actorID: string) => sessionID + ":" + actorID
+
+    // Actors whose cancel() has begun, keyed "sessionID:actorID". Populated
+    // BEFORE the fiber is interrupted so forkWork's onSuccess/onFailure notify
+    // can suppress its own (misleading) emit — a cancelled child's interrupt is
+    // masked by the runLoop onInterrupt handler (returns lastAssistant), so the
+    // work fiber sees a spurious "success". The authoritative "cancelled"
+    // notification is emitted instead by Actor.cancel via notifyTerminal, which
+    // runs in-context after updateStatus. This unifies success/failure/cancel
+    // onto one parent-notification contract without double-notifying. See T41.
+    const cancelling = new Set<string>()
+    const cancelKey = (sessionID: SessionID, actorID: string) => `${sessionID}:${actorID}`
 
     // Real agent loop: marks the actor running, then drives a SessionPrompt.prompt
     // turn. The user message persisted by SessionPrompt carries the actor's
@@ -234,6 +354,17 @@ export const layer = Layer.effect(
       // last text part (often a pre-tool-call preamble) is dropped to avoid
       // duplicating the result downstream. See spec §5.2.
       const info = (result as MessageV2.WithParts | undefined)?.info
+      if (info?.role === "assistant" && info.error) {
+        // Classify HERE: `info.error` is the persisted, already-normalized named
+        // error. Downstream (forkWork's onFailure) only has Cause.pretty's string,
+        // so re-deriving the class there would mean re-parsing prose.
+        return yield* Effect.fail(
+          new AssistantSettledError(
+            `Actor assistant failed: ${info.error.name}`,
+            classifyAssistantError(info.error),
+          ),
+        )
+      }
       const structured = info?.role === "assistant" ? info.structured : undefined
       const finalText =
         structured !== undefined
@@ -261,6 +392,11 @@ export const layer = Layer.effect(
       // gate; specialized/system agents and peers create no user tasks.
       gateEligible?: boolean
       format?: MessageV2.OutputFormat
+      // When set, the child's work fiber runs under this InstanceContext (via
+      // InstanceRef) instead of inheriting the spawner's. Used by peers placed
+      // in their own git worktree so their tools resolve paths/write-boundary
+      // against the worktree, not the orchestrator's directory.
+      instanceRef?: InstanceContext
     }) =>
       Effect.gen(function* () {
         const outcome = yield* Deferred.make<AgentOutcome>()
@@ -283,7 +419,13 @@ export const layer = Layer.effect(
           status: "completed" | "failed" | "cancelled",
           extra: { result?: string; error?: string; reportedStatus?: ReturnStatus; reportedSummary?: string },
         ) =>
-          input.background && input.agentType !== "checkpoint-writer"
+          // An external cancel masks its own interrupt (runLoop.onInterrupt
+          // returns lastAssistant), so this fiber would otherwise emit a bogus
+          // "completed"/"failed". Defer to the terminal-status bridge, which
+          // emits the single authoritative "cancelled" notification.
+          cancelling.has(cancelKey(input.sessionID, input.actorID))
+            ? Effect.void
+            : input.background && input.agentType !== "checkpoint-writer"
             ? inbox
                 .send({
                   receiverSessionID: input.parentSessionID,
@@ -299,6 +441,17 @@ export const layer = Layer.effect(
                   }),
                 })
                 .pipe(Effect.ignore)
+                // Also give the user a visible signal (the child may be unfocused).
+                .pipe(
+                  Effect.andThen(
+                    Effect.promise(() =>
+                      Bus.publish(TuiEvent.ToastShow, {
+                        message: `Child "${description}" ${status}`,
+                        variant: status === "completed" ? "success" : status === "cancelled" ? "info" : "error",
+                      }),
+                    ).pipe(Effect.ignore),
+                  ),
+                )
             : Effect.void
 
         // Derive actor mode from spawn shape: peer creates a new session, subagent shares parent's
@@ -402,8 +555,7 @@ export const layer = Layer.effect(
             onSuccess: ({ finalText, structured }) =>
               Effect.gen(function* () {
                 // === COMPLETION GATE (B) + structured parse (A) ===
-                // Delegates the list/decide step to TaskGate.decide so the
-                // logic is shared with the main-session taskGate (prompt.ts).
+                // Delegates the list/decide step to TaskGate.decide.
                 // We retain the runTurn re-entry + delivered-text update here
                 // because that is gate-policy, not list-policy.
                 let deliveredText = finalText
@@ -415,7 +567,6 @@ export const layer = Layer.effect(
                       owner: input.actorID,
                       reactCount: gateIter,
                       maxReact: MAX_TASK_GATE_SUBAGENT_REACT,
-                      mode: "subagent",
                     }).pipe(Effect.provideService(TaskRegistry.Service, taskRegistry))
                     if (!decision.needReentry) break
                     gateIter++
@@ -574,31 +725,65 @@ export const layer = Layer.effect(
                   lastFinalText = newTurn.finalText
                 }
 
-                yield* Effect.sync(() => forkContexts.delete(input.actorID))
+                yield* Effect.sync(() => forkContexts.delete(forkContextKey(input.sessionID, input.actorID)))
               }),
             onFailure: (cause) =>
               Effect.gen(function* () {
                 const cancelled = Cause.hasInterruptsOnly(cause)
                 const error = Cause.pretty(cause)
+                // Recover the classification runAgentLoop attached. Squash is the
+                // established idiom here (see session/prompt.ts, tool/shell-wrap.ts).
+                // A failure raised anywhere else carries none, and the field stays
+                // absent rather than being guessed from `error`.
+                const squashed = Cause.squash(cause)
+                const failure = squashed instanceof AssistantSettledError ? squashed.failure : undefined
                 yield* notify(cancelled ? "cancelled" : "failed", cancelled ? {} : { error })
                 yield* Deferred.succeed(
                   outcome,
-                  cancelled ? { status: "cancelled" as const } : { status: "failure" as const, error },
+                  cancelled
+                    ? { status: "cancelled" as const }
+                    : { status: "failure" as const, error, ...(failure ? { failure } : {}) },
                 )
-                yield* Effect.sync(() => forkContexts.delete(input.actorID))
+                yield* Effect.sync(() => forkContexts.delete(forkContextKey(input.sessionID, input.actorID)))
               }),
           }),
         )
-        const fiber = yield* work.pipe(Effect.forkIn(scope))
+        const boundWork = input.instanceRef
+          ? work.pipe(Effect.provideService(InstanceRef, input.instanceRef))
+          : work
+        const fiber = yield* boundWork.pipe(Effect.forkIn(scope))
         return { fiber, outcome }
       })
 
     const spawnPeer = Effect.fn("Actor.spawnPeer")(function* (input: SpawnInput) {
+      // When the caller gives the child its own directory (e.g. a worktree the
+      // session tool created), bind the child's work fiber to that directory's
+      // Instance so its file tools / write boundary are isolated there. A
+      // worktree is just a directory — spawn neither knows nor cares how it was
+      // made. Best-effort: a bad/unresolvable dir falls back to the shared dir.
+      const instanceRef = input.cwd
+        ? yield* Effect.promise(() => Instance.provide({ directory: input.cwd!, fn: () => Instance.current })).pipe(
+            Effect.catch(() => Effect.succeed(undefined)),
+          )
+        : undefined
+
       const child = yield* session.create({
         parentID: input.sessionID,
         contextFrom: input.context === "full" ? input.sessionID : undefined,
         title: `${input.agentType}: ${input.task.slice(0, 40)}`,
+        ...(input.cwd ? { directory: input.cwd } : {}),
       })
+      // T42: register the peer's receiver/actor-registry row (session_id ===
+      // actor_id === child.id, mode "peer") SYNCHRONOUSLY here — before spawn
+      // resolves and before the child's first turn. This is the single
+      // spawn-time registration that makes a child addressable the instant
+      // `session create` returns: Inbox.send's ESRCH pre-check (reg.get) and
+      // `session send` both resolve against this row without waiting for the
+      // child to arm anything on its first turn. turn_count/status start at 0/
+      // "pending"; the per-step turn heartbeat (registry.updateTurn) advances
+      // them later. No double-registration: nothing on the first-turn path
+      // (prompt.ts) re-registers a peer — it only reads (reg.get) and updates
+      // (updateTurn/updateStatus). Prerequisite for T43 (--topic reuse).
       yield* actorReg.register({
         sessionID: child.id,
         actorID: child.id,
@@ -613,7 +798,7 @@ export const layer = Layer.effect(
         tools: input.tools,
       })
       if (input.forkContext) {
-        forkContexts.set(child.id, input.forkContext) // peer's actorID === child.id
+        forkContexts.set(forkContextKey(child.id, child.id), input.forkContext) // peer's actorID === child.id
       }
       const { fiber, outcome } = yield* forkWork({
         sessionID: child.id,
@@ -628,6 +813,7 @@ export const layer = Layer.effect(
         lifecycle: input.lifecycle ?? "persistent",
         task_id: input.task_id,
         format: input.format,
+        ...(instanceRef ? { instanceRef } : {}),
       })
       if (!input.background) yield* Fiber.join(fiber).pipe(Effect.ignore)
       return { actorID: child.id, sessionID: child.id, outcome }
@@ -658,16 +844,16 @@ export const layer = Layer.effect(
       if (input.onActorID) yield* Effect.sync(() => input.onActorID!(actorID)).pipe(Effect.ignore)
 
       if (input.forkContext) {
-        forkContexts.set(actorID, input.forkContext)
+        forkContexts.set(forkContextKey(input.sessionID, actorID), input.forkContext)
       }
 
-      // Auto-inject return-format instruction for non-specialized subagents.
-      // Excluded: agents with hardcoded `prompt` (explore/title/summary — own
-      // contracts), checkpoint-writer (special — task is itself a complete
-      // writer-instruction string), and peer mode (routes via spawnPeer).
+      // Auto-inject return-format instruction for lifecycle-managed subagents.
+      // Agents with an explicit completionGate keep this behavior even when
+      // they also provide a dedicated system prompt.
       const agentInfo = yield* agents.get(input.agentType)
       const gateEligible =
-        agentInfo?.mode === "subagent" && !agentInfo?.prompt && input.agentType !== "checkpoint-writer"
+        agentInfo?.mode === "subagent" &&
+        (agentInfo.completionGate === true || (!agentInfo.prompt && input.agentType !== "checkpoint-writer"))
       const taskWithFormat = gateEligible ? input.task + RETURN_FORMAT_INSTRUCTION : input.task
 
       const { fiber, outcome } = yield* forkWork({
@@ -695,6 +881,56 @@ export const layer = Layer.effect(
       return yield* spawnSubagent(input)
     })
 
+    // === Unified terminal notification (T41) ===
+    // Single parent-notification contract for a terminal outcome. Completion and
+    // failure already notify directly from forkWork.notify on the woken/spawn
+    // turn; a CANCELLED child cannot, because its interrupt is masked by the
+    // runLoop.onInterrupt handler (returns lastAssistant) so the work fiber sees
+    // a spurious "success" and its own notify is suppressed via the `cancelling`
+    // set. `cancel` therefore emits the one authoritative cancelled notification
+    // here, reusing the exact shape forkWork.notify uses (renderActorNotification
+    // + actor_notification inbox message + a TUI toast). Gating (background,
+    // non-system peer/subagent) matches forkWork.notify so cancel/success/fail
+    // stay a single contract with no double-notify. Best-effort: a missing row
+    // or unresolved parent silently no-ops.
+    const notifyTerminal = (
+      sessionID: SessionID,
+      actorID: string,
+      actor: Actor | undefined,
+      status: "cancelled",
+    ) =>
+      Effect.gen(function* () {
+        if (!actor) return
+        if (!actor.background) return
+        if (actor.mode !== "peer" && actor.mode !== "subagent") return
+        if (SYSTEM_SPAWNED_AGENT_TYPES.has(actor.agent)) return
+        // Resolve the parent session: a peer runs in its own child session (notify
+        // its parentID); a subagent shares the parent's session.
+        const parentSessionID =
+          actor.mode === "peer" ? (yield* session.get(sessionID)).parentID : sessionID
+        if (!parentSessionID) return
+        yield* inbox
+          .send({
+            receiverSessionID: parentSessionID,
+            receiverActorID: actor.parentActorID ?? "main",
+            senderSessionID: sessionID,
+            senderActorID: actorID,
+            type: "actor_notification",
+            content: renderActorNotification({
+              actorID,
+              description: actor.description,
+              status,
+            }),
+          })
+          .pipe(Effect.ignore)
+        yield* Effect.promise(() =>
+          Bus.publish(TuiEvent.ToastShow, {
+            message: `Child "${actor.description}" ${status}`,
+            variant: "info",
+          }),
+        ).pipe(Effect.ignore)
+      }).pipe(Effect.catchCause((cause) => Effect.logError(`terminal notify failed: ${cause}`)))
+
     const cancel: (sessionID: SessionID, actorID: string, mode: "graceful" | "forced") => Effect.Effect<void> =
       Effect.fn("Actor.cancel")(function* (sessionID: SessionID, actorID: string, mode: "graceful" | "forced") {
         const children = yield* actorReg.listByParent(sessionID, actorID)
@@ -702,18 +938,140 @@ export const layer = Layer.effect(
           concurrency: "unbounded",
           discard: true,
         })
+        // Mark cancelling BEFORE interrupting so forkWork.notify (which fires on
+        // the interrupt-masked "success") suppresses its own emit; the single
+        // authoritative "cancelled" notification is emitted below instead.
+        yield* Effect.sync(() => cancelling.add(cancelKey(sessionID, actorID)))
+        // Snapshot the actor row before cancelActor tears state down — we need
+        // its mode/agent/background/parentActorID to decide + address the notify.
+        const actor = yield* actorReg.get(sessionID, actorID)
         yield* state.cancelActor(sessionID, actorID)
         yield* actorReg
           .updateStatus(sessionID, actorID, { status: "idle", lastOutcome: "cancelled" })
           .pipe(Effect.ignore)
-        yield* Effect.sync(() => forkContexts.delete(actorID))
+        yield* notifyTerminal(sessionID, actorID, actor, "cancelled")
+        yield* Effect.sync(() => forkContexts.delete(forkContextKey(sessionID, actorID)))
       })
 
-    const getForkContext = Effect.fn("Actor.getForkContext")(function* (actorID: string) {
-      return forkContexts.get(actorID)
+    const getForkContext = Effect.fn("Actor.getForkContext")(function* (sessionID: SessionID, actorID: string) {
+      return forkContexts.get(forkContextKey(sessionID, actorID))
     })
 
-    const impl = Service.of({ spawn, cancel, getForkContext })
+    // === T40 stall watchdog ===
+    // Event-driven stall detection: a background fiber periodically scans active
+    // background actors (ActorRegistry.listActive → pending/running + background),
+    // computes deriveLiveness for each, and when a PEER/subagent flips to
+    // `stalled` (running/pending but nothing has landed for the actor's slice for
+    // longer than DEFAULT_LIVENESS_STALL_MS — deriveLiveness encodes exactly that)
+    // pushes ONE actor_notification{stalled} to its parent. Reuses the
+    // notifyTerminal shape (inbox.send actor_notification + renderActorNotification
+    // + a TUI toast) so stalled joins completed/failed/cancelled on one contract.
+    //
+    // Debounce — the crux: `notified` holds the "sessionID:actorID" of actors we
+    // have ALREADY warned about for their CURRENT stall episode. We emit only on
+    // the not-yet-notified → stalled edge; while it STAYS stalled across ticks it
+    // is in `notified` and we skip. We re-arm (delete the key) the moment the
+    // actor is no longer stalled — it resumed (activity landed again, so
+    // deriveLiveness reads `progressing`), went terminal, or vanished — so a
+    // later re-stall notifies again. One notification per stall episode.
+    const notified = new Set<string>()
+
+    // Emit the single stalled notification for one actor. Same gating +
+    // parent-resolution as notifyTerminal: background only, peer/subagent only,
+    // exclude SYSTEM_SPAWNED_AGENT_TYPES, address the parent's main inbox.
+    const notifyStalled = (actor: Actor, stalledForMs: number) =>
+      Effect.gen(function* () {
+        if (!actor.background) return
+        if (actor.mode !== "peer" && actor.mode !== "subagent") return
+        if (SYSTEM_SPAWNED_AGENT_TYPES.has(actor.agent)) return
+        const parentSessionID =
+          actor.mode === "peer" ? (yield* session.get(actor.sessionID)).parentID : actor.sessionID
+        if (!parentSessionID) return
+        yield* inbox
+          .send({
+            receiverSessionID: parentSessionID,
+            receiverActorID: actor.parentActorID ?? "main",
+            senderSessionID: actor.sessionID,
+            senderActorID: actor.actorID,
+            type: "actor_notification",
+            content: renderActorNotification({
+              actorID: actor.actorID,
+              description: actor.description,
+              status: "stalled",
+              stalledForMs,
+            }),
+          })
+          .pipe(Effect.ignore)
+        yield* bus
+          .publish(ActorEvents.ActorStalled, {
+            sessionID: actor.sessionID,
+            actorID: actor.actorID,
+            description: actor.description,
+            // Same reference the classification used, for the same reason the
+            // notification carries it: an observability payload that reports the
+            // step clock while the predicate read the activity clock is a trap.
+            lastActivityTime: actor.lastActivityTime ?? actor.time.created,
+            stalledDuration: stalledForMs,
+          })
+          .pipe(Effect.ignore)
+        yield* Effect.promise(() =>
+          Bus.publish(TuiEvent.ToastShow, {
+            message: `Child "${actor.description}" appears stalled (no activity for ${Math.floor(stalledForMs / 1000)}s)`,
+            variant: "info",
+          }),
+        ).pipe(Effect.ignore)
+      }).pipe(Effect.catchCause((cause) => Effect.logError(`stall notify failed: ${cause}`)))
+
+    const scanStalled = Effect.gen(function* () {
+      const now = Date.now()
+      const active = yield* actorReg.listActive().pipe(Effect.orElseSucceed(() => [] as Actor[]))
+      const seen = new Set<string>()
+      for (const actor of active) {
+        const key = `${actor.sessionID}:${actor.actorID}`
+        seen.add(key)
+        const live = deriveLiveness(actor, now)
+        if (live === "stalled") {
+          if (notified.has(key)) continue // already warned this episode — debounce
+          notified.add(key)
+          // Report the quantity the classification actually used — silence since
+          // the last part write, or since spawn when nothing has landed — not
+          // time since the last completed step, which deriveLiveness no longer
+          // reads. A number that disagrees with its own predicate is a bug.
+          yield* notifyStalled(actor, now - (actor.lastActivityTime ?? actor.time.created))
+          continue
+        }
+        // Not stalled (progressing/terminal) → re-arm so a future re-stall notifies.
+        notified.delete(key)
+      }
+      // Drop debounce keys for actors that fell out of listActive entirely
+      // (went terminal / row gone) so the set can't grow unbounded and a
+      // recycled id re-arms cleanly.
+      for (const key of notified) if (!seen.has(key)) notified.delete(key)
+    }).pipe(Effect.catchCause((cause) => Effect.logError(`stall watchdog scan failed: ${cause}`)))
+
+    // Fork the watchdog into the instance (layer) scope. CRITICAL (T41 lesson):
+    // once the fiber detaches, Instance.current ALS context is lost, so
+    // actorReg.listActive / inbox.send → Database.use → Client() →
+    // InstanceState.bind would throw NotFound(instance). We capture the instance
+    // context that is ALS-bound HERE at layer-build time and re-provide it via
+    // InstanceRef, whose fallback path InstanceState.bind reads off the fiber
+    // context. `undefined` (no instance at build, e.g. some test harnesses) is a
+    // safe no-op — Database.use then takes its own NotFound fallback.
+    const watchdogInstance = yield* Effect.sync(() => {
+      try {
+        return Instance.current
+      } catch {
+        return undefined
+      }
+    })
+    yield* scanStalled.pipe(
+      Effect.repeat(Schedule.spaced(WATCHDOG_SCAN_INTERVAL_MS)),
+      Effect.provideService(InstanceRef, watchdogInstance),
+      Effect.ignore,
+      Effect.forkIn(scope),
+    )
+
+    const impl = Service.of({ spawn, cancel, getForkContext, scanStalledOnce: () => scanStalled })
     // Late-bind the impl so SessionCheckpoint.tryStartCheckpointWriter can resolve it
     // without forming a layer cycle. See spawn-ref.ts for rationale.
     // Save the previous binding so the finalizer can restore it: when the same
@@ -739,12 +1097,12 @@ export const layer = Layer.effect(
 // "Cannot access 'defaultLayer' before initialization", breaking every
 // it.live test harness. Same pattern session/prompt, session/checkpoint,
 // tool/registry, provider, etc. already use.
-export const defaultLayer = Layer.suspend(() =>
+/** App composition variant with SessionPrompt supplied by the root graph. */
+export const appLayer = Layer.suspend(() =>
   layer.pipe(
     Layer.provide(Session.defaultLayer),
     Layer.provide(ActorRegistry.defaultLayer),
     Layer.provide(Agent.defaultLayer),
-    Layer.provide(SessionPrompt.defaultLayer),
     Layer.provide(SessionRunState.defaultLayer),
     Layer.provide(Inbox.defaultLayer),
     Layer.provide(Plugin.defaultLayer),
@@ -752,5 +1110,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(TaskRegistry.defaultLayer),
   ),
 )
+
+export const defaultLayer = appLayer.pipe(Layer.provide(SessionPrompt.defaultLayer))
 
 export * as Actor from "./spawn"

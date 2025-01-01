@@ -1,6 +1,8 @@
 import { Prompt, type PromptRef } from "@tui/component/prompt"
-import { createEffect, createMemo, createSignal, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, onCleanup, onMount, Show } from "solid-js"
+import { useKeyboard } from "@opentui/solid"
 import path from "path"
+import fs from "fs"
 import { Logo } from "../component/logo"
 import { logoThin, logos, type LogoKey } from "@/cli/logo"
 import { StarryBackground } from "../component/starry-background"
@@ -17,6 +19,12 @@ import { useLanguage } from "@tui/context/language"
 import { TuiPluginRuntime } from "../plugin"
 import { Global } from "@/global"
 import { isPlainTerminal } from "../util/terminal"
+import { useDialog } from "../ui/dialog"
+import { DialogSleepyLogin } from "../component/dialog-sleepy-login"
+import { useTheme } from "../context/theme"
+import { TextAttributes } from "@opentui/core"
+import { useExit } from "../context/exit"
+import { useVisualMode } from "../context/visual"
 
 let once = false
 
@@ -31,6 +39,24 @@ export function Home() {
   const kv = useKV()
   const t = useLanguage().t
   const plainTerminal = isPlainTerminal()
+  const dialog = useDialog()
+  const { theme } = useTheme()
+  const exit = useExit()
+  const visual = useVisualMode()
+  const gateConfigPath = path.join(Global.Path.config, "gateway.json")
+  const [isAuthed, setAuthed] = createSignal(fs.existsSync(gateConfigPath))
+  const modelReady = createMemo(() => isAuthed() && local.model.current() != null)
+  onMount(() => {
+    const interval = setInterval(() => setAuthed(fs.existsSync(gateConfigPath)), 1000)
+    onCleanup(() => clearInterval(interval))
+  })
+  useKeyboard((evt) => {
+    if (isAuthed()) return
+    if (evt.name === "l" && !evt.ctrl && !evt.meta) {
+      dialog.replace(() => <DialogSleepyLogin />)
+    }
+    if (evt.name === "escape") exit()
+  })
   const bgImagePath = createMemo(() => {
     const filename = kv.get("background_image")
     if (!filename || typeof filename !== "string") return undefined
@@ -40,8 +66,6 @@ export function Home() {
     const key = kv.get("logo_design")
     return typeof key === "string" && key in logos ? (key as LogoKey) : "thin"
   })
-  // 所有 logo 变体(含默认的 thin 纤细半块)都显示流星特效。
-  const showMeteor = () => true
   const placeholder = {
     get normal() {
       return [
@@ -83,7 +107,14 @@ export function Home() {
   return (
     <>
       <Show when={!plainTerminal}>
-        <Show when={bgImagePath()} fallback={<StarryBackground meteor={showMeteor} />}>
+        <Show
+          when={bgImagePath()}
+          fallback={
+            <Show when={visual.vivid()}>
+              <StarryBackground animated={visual.motion} />
+            </Show>
+          }
+        >
           {(p) => <BackgroundImage path={p()} />}
         </Show>
       </Show>
@@ -96,7 +127,7 @@ export function Home() {
             fallback={
               <TuiPluginRuntime.Slot name="home_logo" mode="replace">
                 <Show when={logoKey()} keyed>
-                  {(k) => <Logo shape={logos[k]} sweep />}
+                  {(k) => <Logo shape={logos[k]} animated={visual.motion()} sweep={visual.motion()} />}
                 </Show>
               </TuiPluginRuntime.Slot>
             }
@@ -112,44 +143,78 @@ export function Home() {
           </Show>
         </box>
         <box height={1} minHeight={0} flexShrink={1} />
-        <box
-          width="100%"
-          maxWidth={75}
-          zIndex={1000}
-          paddingTop={1}
-          flexShrink={0}
-        >
-          <Show
-            when={plainTerminal}
-            fallback={
-              <TuiPluginRuntime.Slot
-                name="home_prompt"
-                mode="replace"
-                workspace_id={project.workspace.current()}
-                ref={bind}
-              >
-                <Prompt
-                  ref={bind}
-                  workspaceID={project.workspace.current()}
-                  right={<TuiPluginRuntime.Slot name="home_prompt_right" workspace_id={project.workspace.current()} />}
-                  placeholders={placeholder}
-                />
-              </TuiPluginRuntime.Slot>
-            }
+        <Show when={isAuthed()}>
+          <box
+            width="100%"
+            maxWidth={75}
+            zIndex={1000}
+            paddingTop={1}
+            flexShrink={0}
           >
-            <Prompt
-              ref={bind}
-              workspaceID={project.workspace.current()}
-              placeholders={placeholder}
-            />
-          </Show>
-        </box>
+            <Show
+              when={plainTerminal}
+              fallback={
+                <TuiPluginRuntime.Slot
+                  name="home_prompt"
+                  mode="replace"
+                  workspace_id={project.workspace.current()}
+                  ref={bind}
+                >
+                  <Prompt
+                    ref={bind}
+                    disabled={!modelReady()}
+                    workspaceID={project.workspace.current()}
+                    right={<TuiPluginRuntime.Slot name="home_prompt_right" workspace_id={project.workspace.current()} />}
+                    placeholders={placeholder}
+                  />
+                </TuiPluginRuntime.Slot>
+              }
+            >
+              <Prompt
+                ref={bind}
+                disabled={!modelReady()}
+                workspaceID={project.workspace.current()}
+                placeholders={placeholder}
+              />
+            </Show>
+          </box>
+        </Show>
         <Show when={plainTerminal}>
           <box paddingTop={1} flexShrink={0}>
             <text selectable={false}>{t("tui.tips.plain_terminal")}</text>
           </box>
         </Show>
         <Show when={!plainTerminal}>
+          <Show when={!isAuthed()}>
+            <box paddingTop={2} alignItems="center" gap={2} flexShrink={0}>
+              <box
+                paddingLeft={3}
+                paddingRight={3}
+                paddingTop={1}
+                paddingBottom={1}
+                backgroundColor={theme.accent}
+                onMouseUp={() => dialog.replace(() => <DialogSleepyLogin />)}
+              >
+                <text fg={theme.background} attributes={TextAttributes.BOLD}>
+                  Login with Browser
+                </text>
+              </box>
+              <text
+                fg={theme.textMuted}
+                attributes={TextAttributes.UNDERLINE}
+                onMouseUp={() => exit()}
+              >
+                Exit
+              </text>
+            </box>
+          </Show>
+          <Show when={!isAuthed() && !plainTerminal}>
+            <box paddingTop={1} flexShrink={0}>
+              <text fg={theme.textMuted}>
+                Press <span style={{ fg: theme.accent }}>L</span> to login &middot; <span style={{ fg: theme.textMuted }}>Esc</span> to exit
+              </text>
+            </box>
+          </Show>
           <TuiPluginRuntime.Slot name="home_bottom" />
         </Show>
         <box flexGrow={1} minHeight={0} />

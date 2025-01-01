@@ -128,9 +128,10 @@ async function exchangeCodeForTokens(code: string, redirectUri: string, pkce: Pk
   return response.json()
 }
 
-async function refreshAccessToken(refreshToken: string): Promise<TokenResponse> {
+async function refreshAccessToken(refreshToken: string, signal?: AbortSignal | null): Promise<TokenResponse> {
   const response = await fetch(`${ISSUER}/oauth/token`, {
     method: "POST",
+    signal,
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       grant_type: "refresh_token",
@@ -147,7 +148,7 @@ async function refreshAccessToken(refreshToken: string): Promise<TokenResponse> 
 const HTML_SUCCESS = `<!doctype html>
 <html>
   <head>
-    <title>OpenCode - Codex Authorization Successful</title>
+    <title>SleepyCode - Codex Authorization Successful</title>
     <style>
       body {
         font-family:
@@ -178,7 +179,7 @@ const HTML_SUCCESS = `<!doctype html>
   <body>
     <div class="container">
       <h1>Authorization Successful</h1>
-      <p>You can close this window and return to OpenCode.</p>
+      <p>You can close this window and return to SleepyCode.</p>
     </div>
     <script>
       setTimeout(() => window.close(), 2000)
@@ -193,7 +194,7 @@ function escapeHtml(s: string): string {
 const HTML_ERROR = (error: string) => `<!doctype html>
 <html>
   <head>
-    <title>OpenCode - Codex Authorization Failed</title>
+    <title>SleepyCode - Codex Authorization Failed</title>
     <style>
       body {
         font-family:
@@ -368,25 +369,8 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
         const auth = await getAuth()
         if (auth.type !== "oauth") return {}
 
-        // Filter models to only allowed Codex models for OAuth
-        const allowedModels = new Set([
-          "gpt-5.1-codex",
-          "gpt-5.1-codex-max",
-          "gpt-5.1-codex-mini",
-          "gpt-5.2",
-          "gpt-5.2-codex",
-          "gpt-5.3-codex",
-          "gpt-5.4",
-          "gpt-5.4-mini",
-        ])
-        for (const [modelId, model] of Object.entries(provider.models)) {
-          if (modelId.includes("codex")) continue
-          if (allowedModels.has(model.api.id)) continue
-          delete provider.models[modelId]
-        }
-
         // Zero out costs for Codex (included with ChatGPT subscription)
-        for (const model of Object.values(provider.models)) {
+        for (const [modelID, model] of Object.entries(provider.models)) {
           model.cost = {
             input: 0,
             output: 0,
@@ -419,7 +403,7 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
             // Check if token needs refresh
             if (!currentAuth.access || currentAuth.expires < Date.now()) {
               log.info("refreshing codex access token")
-              const tokens = await refreshAccessToken(currentAuth.refresh)
+              const tokens = await refreshAccessToken(currentAuth.refresh, init?.signal)
               const newAccountId = extractAccountId(tokens) || authWithAccount.accountId
               await input.client.auth.set({
                 path: { id: "openai" },
@@ -478,7 +462,7 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
       },
       methods: [
         {
-          label: "ChatGPT Pro/Plus (browser)",
+          label: "Codex via ChatGPT Pro/Plus (browser)",
           type: "oauth",
           authorize: async () => {
             const { redirectUri } = await startOAuthServer()
@@ -490,7 +474,7 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
 
             return {
               url: authUrl,
-              instructions: "Complete authorization in your browser. This window will close automatically.",
+              instructions: "Complete Codex authorization in your browser. This window will close automatically.",
               method: "auto" as const,
               callback: async () => {
                 const tokens = await callbackPromise
@@ -508,7 +492,7 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
           },
         },
         {
-          label: "ChatGPT Pro/Plus (headless)",
+          label: "Codex via ChatGPT Pro/Plus (headless)",
           type: "oauth",
           authorize: async () => {
             const deviceResponse = await fetch(`${ISSUER}/api/accounts/deviceauth/usercode`, {

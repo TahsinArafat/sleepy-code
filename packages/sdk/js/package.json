@@ -1,12 +1,18 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "name": "@sleepy-ai/sdk",
-  "version": "0.1.4",
+  "version": "0.1.13",
   "description": "TypeScript SDK for the SleepyCode API",
-  "keywords": ["sleepy", "sleepycode", "ai", "sdk", "coding-assistant"],
+  "keywords": [
+    "sleepy",
+    "sleepycode",
+    "ai",
+    "sdk",
+    "coding-assistant"
+  ],
   "type": "module",
   "license": "MIT",
-  "author": "Xiaomi Sleepy Team",
+  "author": "Xiaomi MiMo Team",
   "homepage": "https://mimo.xiaomi.com/coder",
   "repository": {
     "type": "git",

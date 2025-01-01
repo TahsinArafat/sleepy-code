@@ -6,9 +6,14 @@ import { CliRenderer } from "@opentui/core"
 import { Filesystem } from "@/util"
 import { Process } from "@/util"
 
-export async function open(opts: { value: string; renderer: CliRenderer }): Promise<string | undefined> {
-  const editor = process.env["VISUAL"] || process.env["EDITOR"]
-  if (!editor) return
+export async function open(opts: { value: string; renderer: CliRenderer; cwd?: string }): Promise<string | undefined> {
+  const editor = process.env["VISUAL"] || process.env["EDITOR"] || "code"
+  
+  if (editor.startsWith("code") && (!opts.value || opts.value.trim() === "")) {
+    const targetDir = opts.cwd || process.cwd()
+    await Process.run(["code", targetDir], { nothrow: true })
+    return undefined
+  }
 
   const filepath = join(tmpdir(), `${Date.now()}.md`)
   await using _ = defer(async () => rm(filepath, { force: true }))
