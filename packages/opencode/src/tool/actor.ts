@@ -1,22 +1,24 @@
 import * as Tool from "./tool"
 import { RecoverableError } from "./recoverable"
 import DESCRIPTION from "./actor.txt"
-import SHELL_DESCRIPTION from "./actor.shell.txt"
-import { tokenize } from "./shell-tokenize"
+import DESCRIPTION_CHECKPOINT from "./actor.checkpoint.txt"
+import { withCheckpointDescription } from "./checkpoint-description"
 import z from "zod"
 import { Session } from "../session"
 import { SessionID, MessageID, PartID } from "../session/schema"
 import { MessageV2 } from "../session/message-v2"
 import { Agent } from "../agent/agent"
 import { Provider } from "../provider"
+import { sortVisionModels } from "../provider/provider"
 import type { SessionPrompt } from "../session/prompt"
 import { Config } from "../config"
 import { ActorRegistry } from "@/actor/registry"
 import { ActorWaiter } from "@/actor/waiter"
 import { spawnRef } from "@/actor/spawn-ref"
 import { TaskRegistry } from "@/task/registry"
+import { SYSTEM_SPAWNED_AGENT_TYPES } from "@/agent/config"
 import { TaskID } from "@/task/schema"
-import { SessionCheckpoint } from "@/session/checkpoint"
+import { EffectBridge } from "@/effect"
 import { inboxServiceRef } from "@/inbox/inbox-ref"
 import { Effect, Deferred } from "effect"
 
@@ -29,238 +31,7 @@ export interface ActorPromptOps {
 const id = "actor"
 
 const MODEL_PARAM_DESCRIPTION =
-  "(optional) Model for this subagent: a model group name (e.g. ultra/standard/lite) or a literal provider/model (e.g. sleepy-v2.5-pro). Overrides the agent's configured model; defaults to the agent's model, else the parent's. If no model_groups are configured, the tier names resolve to the default model."
-
-const KNOWN_ACTOR_VERBS = ["run", "spawn", "status", "wait", "cancel", "send"]
-
-function levenshteinActor(a: string, b: string): number {
-  const m = a.length, n = b.length
-  if (m === 0) return n
-  if (n === 0) return m
-  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0))
-  for (let i = 0; i <= m; i++) dp[i][0] = i
-  for (let j = 0; j <= n; j++) dp[0][j] = j
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1
-      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost)
-    }
-  }
-  return dp[m][n]
-}
-
-function suggestActorVerb(input: string): string | undefined {
-  const candidates = KNOWN_ACTOR_VERBS.map((v) => ({ v, d: levenshteinActor(input, v) })).filter((c) => c.d <= 2)
-  if (candidates.length !== 1) return undefined
-  return candidates[0].v
-}
-
-// Static args type for shell parsing — mirrors the discriminated union shape but
-// uses z.string() for subagent_type since the dynamic enum is only needed at
-// Zod validation time (inside execute), not at parse time.
-type ActorShellArgs =
-  | { operation: { action: "run"; subagent_type: string; description: string; prompt: string; model?: string; task_id?: string; actor_id?: string; timeout_ms?: number; command?: string; context?: "none" | "state" | "full"; output_schema?: Record<string, unknown> } }
-  | { operation: { action: "spawn"; subagent_type: string; description: string; prompt: string; model?: string; task_id?: string; actor_id?: string; command?: string; context?: "none" | "state" | "full"; output_schema?: Record<string, unknown> } }
-  | { operation: { action: "status"; actor_id: string } }
-  | { operation: { action: "wait"; actor_id: string; timeout_ms?: number } }
-  | { operation: { action: "cancel"; actor_id: string } }
-  | { operation: { action: "send"; to_actor_id: string; content: string; to_session_id?: string; type?: string } }
-
-function actorArityError(verb: string, expected: string, args: string[], line: number) {
-  return Effect.fail({
-    kind: "arity",
-    line,
-    detail: `actor: ${verb}: arity mismatch\n  got:      actor ${verb} ${args.join(" ")}\n  expected: actor ${verb} ${expected}`,
-  })
-}
-
-// Generic `--name value` / `--name=value` extractor for a fixed set of optional
-// flags. Positionals (and any unrecognized tokens) fall through to `rest`.
-function extractNamedFlags(
-  args: string[],
-  names: string[],
-  line: number,
-): Effect.Effect<{ flags: Record<string, string>; rest: string[] }, { kind: "flag"; line: number; detail: string }> {
-  const rest: string[] = []
-  const flags: Record<string, string> = {}
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i]
-    const bare = names.find((n) => a === `--${n}`)
-    if (bare) {
-      const next = args[i + 1]
-      if (next === undefined)
-        return Effect.fail({ kind: "flag" as const, line, detail: `actor: --${bare} requires a value` })
-      flags[bare] = next
-      i++
-      continue
-    }
-    const eq = names.find((n) => a.startsWith(`--${n}=`))
-    if (eq) {
-      const v = a.slice(`--${eq}=`.length)
-      if (v === "") return Effect.fail({ kind: "flag" as const, line, detail: `actor: --${eq} requires a value` })
-      flags[eq] = v
-      continue
-    }
-    rest.push(a)
-  }
-  return Effect.succeed({ flags, rest })
-}
-
-const mapActorVerb = Effect.fn("mapActorVerb")(function* (verb: string | undefined, args: string[], line: number) {
-  switch (verb) {
-    case "run": {
-      const { flags, rest } = yield* extractNamedFlags(
-        args,
-        ["model", "task", "actor", "timeout", "command", "context", "output-schema"],
-        line,
-      )
-      if (rest.length !== 3) return yield* actorArityError("run", '<subagent_type> "<description>" "<prompt>" [--model <ref>] [--task <TID>] [--actor <id>] [--timeout <ms>] [--command <cmd>] [--context none|state|full] [--output-schema <json>]', rest, line)
-      return {
-        operation: {
-          action: "run" as const,
-          subagent_type: rest[0],
-          description: rest[1],
-          prompt: rest[2],
-          ...(flags.model ? { model: flags.model } : {}),
-          ...(flags.task ? { task_id: flags.task } : {}),
-          ...(flags.actor ? { actor_id: flags.actor } : {}),
-          ...(flags.timeout ? { timeout_ms: Number(flags.timeout) } : {}),
-          ...(flags.command ? { command: flags.command } : {}),
-          ...(flags.context ? { context: flags.context } : {}),
-          // JSON.parse throw surfaces as a parse-error for the whole script (parse
-          // is all-or-nothing); bad enum/number flag values instead defer to zod at execute.
-          ...(flags["output-schema"] ? { output_schema: JSON.parse(flags["output-schema"]) } : {}),
-        },
-      } as ActorShellArgs
-    }
-    case "spawn": {
-      const { flags, rest } = yield* extractNamedFlags(
-        args,
-        ["model", "task", "actor", "command", "context", "output-schema"],
-        line,
-      )
-      if (rest.length !== 3) return yield* actorArityError("spawn", '<subagent_type> "<description>" "<prompt>" [--model <ref>] [--task <TID>] [--actor <id>] [--command <cmd>] [--context none|state|full] [--output-schema <json>]', rest, line)
-      return {
-        operation: {
-          action: "spawn" as const,
-          subagent_type: rest[0],
-          description: rest[1],
-          prompt: rest[2],
-          ...(flags.model ? { model: flags.model } : {}),
-          ...(flags.task ? { task_id: flags.task } : {}),
-          ...(flags.actor ? { actor_id: flags.actor } : {}),
-          ...(flags.command ? { command: flags.command } : {}),
-          ...(flags.context ? { context: flags.context } : {}),
-          ...(flags["output-schema"] ? { output_schema: JSON.parse(flags["output-schema"]) } : {}),
-        },
-      } as ActorShellArgs
-    }
-    case "status":
-      if (args.length !== 1) return yield* actorArityError("status", "<actor_id>", args, line)
-      return { operation: { action: "status" as const, actor_id: args[0] } } as ActorShellArgs
-    case "wait": {
-      const { flags, rest } = yield* extractNamedFlags(args, ["timeout"], line)
-      if (rest.length !== 1) return yield* actorArityError("wait", "<actor_id> [--timeout <ms>]", rest, line)
-      return {
-        operation: {
-          action: "wait" as const,
-          actor_id: rest[0],
-          ...(flags.timeout ? { timeout_ms: Number(flags.timeout) } : {}),
-        },
-      } as ActorShellArgs
-    }
-    case "cancel":
-      if (args.length !== 1) return yield* actorArityError("cancel", "<actor_id>", args, line)
-      return { operation: { action: "cancel" as const, actor_id: args[0] } } as ActorShellArgs
-    case "send": {
-      const { flags, rest } = yield* extractNamedFlags(args, ["session", "type"], line)
-      if (rest.length !== 2)
-        return yield* actorArityError("send", '<to_actor_id> "<content>" [--session <id>] [--type <t>]', rest, line)
-      return {
-        operation: {
-          action: "send" as const,
-          to_actor_id: rest[0],
-          content: rest[1],
-          ...(flags.session ? { to_session_id: flags.session } : {}),
-          ...(flags.type ? { type: flags.type } : {}),
-        },
-      } as ActorShellArgs
-    }
-    default: {
-      const suggestion = suggestActorVerb(verb ?? "")
-      const detail =
-        `actor: unknown verb "${verb ?? ""}"\n` +
-        `  available verbs: ${KNOWN_ACTOR_VERBS.join(", ")}` +
-        (suggestion ? `\n  did you mean: ${suggestion}?` : "")
-      return yield* Effect.fail({ kind: "unknown-verb", line, detail })
-    }
-  }
-})
-
-export function parseActorScript(
-  script: string,
-): Effect.Effect<ActorShellArgs[], unknown> {
-  return Effect.gen(function* () {
-    const argvList = yield* tokenize(script)
-    const out: ActorShellArgs[] = []
-    for (const argv of argvList) {
-      const [head, verb, ...rest] = argv.tokens
-      if (head !== "actor") {
-        return yield* Effect.fail({
-          kind: "unknown-verb",
-          line: argv.line,
-          detail: `actor: every command must start with 'actor' (got '${head ?? ""}')`,
-        })
-      }
-      const parsed = yield* mapActorVerb(verb, rest, argv.line)
-      out.push(parsed)
-    }
-    return out
-  })
-}
-
-function inferAction(o: Record<string, unknown>): "run" | "spawn" {
-  if (o.action === "spawn" || o.action === "run") return o.action
-  if (o.background === true || o.async === true) return "spawn"
-  return "run"
-}
-
-// Recover a shell-mode actor call that arrived shaped like the JSON tool args
-// (no `script`): the Task-prior bare `{subagent_type, description, prompt}`, a
-// stringified `{operation:"..."}` envelope, or an already-nested `{operation:{}}`.
-// Returns the parsed shape for shellWrap to route to execute (which zod-validates
-// it), or undefined if rawArgs can't be lifted.
-export function recoverActorArgs(rawArgs: unknown): ActorShellArgs | undefined {
-  if (rawArgs == null || typeof rawArgs !== "object") return undefined
-  let obj = rawArgs as Record<string, unknown>
-  if (typeof obj.operation === "string") {
-    try {
-      const inner = JSON.parse(obj.operation)
-      if (inner && typeof inner === "object" && !Array.isArray(inner)) obj = { operation: inner }
-    } catch {}
-  }
-  if (obj.operation && typeof obj.operation === "object" && !Array.isArray(obj.operation))
-    return { operation: obj.operation } as ActorShellArgs
-  const subagent_type = obj.subagent_type
-  const description = obj.description
-  const prompt = obj.prompt
-  if (typeof subagent_type === "string" && typeof description === "string" && typeof prompt === "string") {
-    const op: Record<string, unknown> = { action: inferAction(obj), subagent_type, description, prompt }
-    // Carry only the optional fields a confused model plausibly puts at top level
-    // alongside the bare Task-prior triple. This is a deliberate subset of the
-    // run/spawn schema's optionals (model, actor_id, timeout_ms, command, context,
-    // task_id, output_schema) — the others (timeout_ms/command/context/output_schema)
-    // are dropped here, falling back to their schema defaults. Low risk in practice:
-    // the bare shape sleepy emits is the 3 required fields, rarely with extras. When
-    // adding an actor schema field, decide whether bare-shape recover should carry
-    // it here, or this whitelist silently drifts from the schema.
-    if (typeof obj.model === "string") op.model = obj.model
-    if (typeof obj.task_id === "string") op.task_id = obj.task_id
-    if (typeof obj.actor_id === "string") op.actor_id = obj.actor_id
-    return { operation: op } as ActorShellArgs
-  }
-  return undefined
-}
+  "(optional) Model for this subagent: a model group name (e.g. ultra/standard/lite) or a literal provider/model (e.g. sleepy-v2.5-pro). Overrides the agent's configured model; defaults to the agent's model, else the parent's. If no model_groups are configured, the tier names resolve to the default model. To discover valid provider/model values (e.g. a vision-capable model for image tasks), run `actor models` (or `actor models --vision`)."
 
 export const ActorTool = Tool.define(
   id,
@@ -270,7 +41,6 @@ export const ActorTool = Tool.define(
     const provider = yield* Provider.Service
     const sessions = yield* Session.Service
     const actorRegistry = yield* ActorRegistry.Service
-    const checkpoint = yield* SessionCheckpoint.Service
     const waiter = yield* ActorWaiter.Service
     const tasks = yield* TaskRegistry.Service
 
@@ -284,7 +54,7 @@ export const ActorTool = Tool.define(
       if (!a) {
         return Effect.fail(
           new Error(
-            "Actor service unavailable — Actor.defaultLayer must be running for the actor tool to spawn or cancel actors",
+            "Actor service unavailable — Actor.appLayer must be running for the actor tool to spawn or cancel actors",
           ),
         )
       }
@@ -328,7 +98,11 @@ export const ActorTool = Tool.define(
         .describe("(optional) Milliseconds to wait before returning { status: 'timeout' }. Default 600000 (10 min).")
 
       const runSchema = z.strictObject({
-        action: z.literal("run").describe("Spawn a subagent and block until it completes; the result is returned inline as the tool response."),
+        action: z
+          .literal("run")
+          .describe(
+            "RARE EXCEPTION — launches a subagent and BLOCKS the whole conversation until it completes; the result is returned inline. Use it only when you cannot make your very next decision without the result in THIS turn and the work is a tiny, fast lookup. For ordinary analysis, review, or implementation work use `spawn` instead.",
+          ),
         description: z.string().min(1).describe("A short (3-5 words) description of the task."),
         prompt: z.string().min(1).describe("The task for the agent to perform."),
         subagent_type: subagentTypeEnum.describe("The type of specialized agent to use for this task."),
@@ -337,21 +111,8 @@ export const ActorTool = Tool.define(
           .min(1)
           .optional()
           .describe(MODEL_PARAM_DESCRIPTION),
-        actor_id: z
-          .string()
-          .min(1)
-          .optional()
-          .describe(
-            "(optional) If set, resume the specified prior actor session instead of creating a new one. Distinct from the user-task IDs (T1, T2, ...) used by the `task` tool.",
-          ),
         timeout_ms: timeoutField,
         command: z.string().min(1).optional().describe("(optional) The command that triggered this task."),
-        context: z
-          .enum(["none", "state", "full"])
-          .optional()
-          .describe(
-            "(optional) Context inheritance. 'none' (default): child sees only prompt. 'full': child sees parent conversation (prefix cache sharing). 'state': child gets checkpoint summary.",
-          ),
         task_id: z
           .string()
           .min(1)
@@ -368,7 +129,11 @@ export const ActorTool = Tool.define(
       })
 
       const spawnSchema = z.strictObject({
-        action: z.literal("spawn").describe("Spawn a subagent and return its actor_id immediately; result is delivered as a notification or via a separate `wait` call."),
+        action: z
+          .literal("spawn")
+          .describe(
+            "THE DEFAULT — launches a subagent in the BACKGROUND and returns its actor_id immediately, so subagents run in PARALLEL and you keep responding to the user. The result arrives as a notification, or collect it with `wait`/`status`.",
+          ),
         description: z.string().min(1).describe("A short (3-5 words) description of the task."),
         prompt: z.string().min(1).describe("The task for the agent to perform."),
         subagent_type: subagentTypeEnum.describe("The type of specialized agent to use for this task."),
@@ -377,18 +142,7 @@ export const ActorTool = Tool.define(
           .min(1)
           .optional()
           .describe(MODEL_PARAM_DESCRIPTION),
-        actor_id: z
-          .string()
-          .min(1)
-          .optional()
-          .describe(
-            "(optional) If set, resume the specified prior actor session instead of creating a new one.",
-          ),
         command: z.string().min(1).optional().describe("(optional) The command that triggered this task."),
-        context: z
-          .enum(["none", "state", "full"])
-          .optional()
-          .describe("(optional) Context inheritance. Default 'none'."),
         task_id: z
           .string()
           .min(1)
@@ -444,6 +198,12 @@ export const ActorTool = Tool.define(
           ),
       })
 
+      const modelsSchema = z.strictObject({
+        action: z.literal("models"),
+        vision: z.boolean().optional().describe("(optional) If true, list only vision-capable models (models that accept image input)."),
+        limit: z.number().int().positive().optional().describe("(optional) Max number of models to return. Default 50."),
+      })
+
       const parameters = z.strictObject({
         // .meta({ type: "object" }) is REQUIRED — without it the emitted JSON
         // schema's `operation` node has only `anyOf`, no `type`, and some models
@@ -454,19 +214,38 @@ export const ActorTool = Tool.define(
         // key (`operation`), so models can't drop the discriminator.
         operation: z
           .discriminatedUnion("action", [
-            runSchema,
+            // spawn first: it is the default action, and the model reads this
+            // union in order. run stays available but is listed as the exception.
             spawnSchema,
+            runSchema,
             statusSchema,
             waitSchema,
             cancelSchema,
             sendSchema,
+            modelsSchema,
           ])
           .meta({ type: "object" }),
       })
 
       const run = Effect.fn("ActorTool.execute")(function* (input: z.infer<typeof parameters>, ctx: Tool.Context) {
         const op = input.operation
+        const bridge = yield* EffectBridge.make()
         const cfg = yield* config.get()
+
+        // When called through exec, subagents may only use `send` to communicate
+        // with the parent. All other actions (spawn, run, cancel, status, wait,
+        // models) are restricted to primary agents. Peer actors have a primary
+        // agent type so they are unaffected by this guard.
+        if (ctx.extra?.fromExec) {
+          const caller = yield* agent.get(ctx.agent)
+          if (caller?.mode === "subagent" && op.action !== "send") {
+            return yield* Effect.fail(
+              new RecoverableError(
+                `Subagents can only use actor send to communicate with the parent agent. You are running as "${caller.name}"; use actor send with to_actor_id="main" to report progress or findings.`,
+              ),
+            )
+          }
+        }
 
         // Helper: "actor belongs to another session OR doesn't exist" response.
         // Same response for both cases — don't leak the difference (POSIX: you can
@@ -539,20 +318,23 @@ export const ActorTool = Tool.define(
         if (op.action ==="status") {
           const found = yield* findActor(op.actor_id)
           if (!found) return unknownResponse("status", op.actor_id)
-          const entry = found.entry
+          const entry = yield* waiter.status(found.entry)
           const snapshot = {
             status: entry.status,
+            executionActive: entry.executionActive,
+            executionState: entry.executionState,
             actor_id: entry.actorID,
             description: entry.description,
             agent: entry.agent,
             background: entry.background,
             turnCount: entry.turnCount,
             lastTurnTime: entry.lastTurnTime,
+            lastOutcome: entry.lastOutcome,
             ...(entry.lastError !== undefined ? { error: entry.lastError } : {}),
             time: entry.time,
           }
           return {
-            title: `Actor status: ${entry.status}`,
+            title: `Actor status: ${entry.executionState}`,
             output: JSON.stringify(snapshot),
             metadata: { actor_id: entry.actorID, status: entry.status } as Record<string, any>,
           }
@@ -616,9 +398,44 @@ export const ActorTool = Tool.define(
           }
         }
 
+        if (op.action === "models") {
+          const providers = yield* provider.list()
+          const allModels = Object.values(providers).flatMap((info) => Object.values(info.models))
+          const filtered = op.vision ? allModels.filter((m) => m.capabilities.input.image === true) : allModels
+          const ordered = op.vision
+            ? sortVisionModels(filtered)
+            : [...filtered].sort((a, b) => `${a.providerID}/${a.id}`.localeCompare(`${b.providerID}/${b.id}`))
+          const limit = op.limit ?? 50
+          const shown = ordered.slice(0, limit)
+          const lines = shown.map((m) => `${m.providerID}/${m.id}${m.capabilities.input.image ? " (vision)" : ""}`)
+          const header = op.vision ? `Vision-capable models` : `Available models`
+          const more = ordered.length > shown.length ? `\n… and ${ordered.length - shown.length} more (raise --limit)` : ""
+          const output = shown.length === 0
+            ? (op.vision ? "No vision-capable models are configured. Configure a vision model or use an OCR tool." : "No models are configured.")
+            : `${header} (${shown.length} of ${ordered.length}):\n${lines.join("\n")}${more}\nPass any of these to actor --model.`
+          return { title: header, output, metadata: { count: shown.length, total: ordered.length, vision: !!op.vision } as Record<string, any> }
+        }
+
         // op.action ==="run" or "spawn" — schema guarantees
         // description / prompt / subagent_type are present and non-empty.
+        //
+        // Final defence line for the no-nested-delegation invariant that
+        // ToolRegistry.available already enforces by masking `actor` out of every
+        // subagent's schema: refuse a spawn whose caller is itself a subagent, so
+        // a stale prompt-cached schema or a hand-rolled call site cannot recurse.
+        // bypassAgentCheck marks a dispatch that did NOT originate from a model
+        // deciding to delegate — handleSubtask (where ctx.agent is the CHILD being
+        // spawned, not the caller) and explicit user @agent mentions — so those
+        // legitimately pass through.
         if (!ctx.extra?.bypassAgentCheck) {
+          const caller = yield* agent.get(ctx.agent)
+          if (caller?.mode === "subagent" && !SYSTEM_SPAWNED_AGENT_TYPES.has(caller.name)) {
+            return yield* Effect.fail(
+              new RecoverableError(
+                `Subagents cannot spawn other subagents. You are running as "${caller.name}"; complete this task yourself with the tools available to you.`,
+              ),
+            )
+          }
           yield* ctx.ask({
             permission: "actor",
             patterns: [op.subagent_type],
@@ -639,27 +456,8 @@ export const ActorTool = Tool.define(
           )
         }
 
-        let prompt = op.prompt
+        const prompt = op.prompt
         const background = op.action ==="spawn"
-
-        // Inject checkpoint summaries for context="state" mode
-        if (op.context === "state") {
-          const latest = yield* checkpoint
-            .loadLatest(ctx.sessionID)
-            .pipe(Effect.catch(() => Effect.succeed(undefined)))
-          if (latest) {
-            prompt =
-              [
-                "<session-state>",
-                "Here is a summary of the parent session's progress:",
-                "",
-                latest,
-                "</session-state>",
-                "",
-              ].join("\n") + prompt
-          }
-          // If no checkpoint, fall through — child gets just the prompt (same as "none")
-        }
 
         const msg = yield* Effect.sync(() => MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.messageID }))
         if (msg.info.role !== "assistant") return yield* Effect.fail(new Error("Not an assistant message"))
@@ -705,7 +503,7 @@ export const ActorTool = Tool.define(
           agentType: next.name,
           description: op.description,
           task: prompt,
-          context: op.context ?? "none",
+          context: "none",
           tools: next.toolAllowlist ? [...next.toolAllowlist] : "INHERIT",
           model,
           background,
@@ -726,18 +524,17 @@ export const ActorTool = Tool.define(
             metadata: { sessionId: spawnResult.sessionID, actorId: spawnResult.actorID, model },
             output:
               (taskNotice ? taskNotice + "\n" : "") +
-              `Background actor started. actor_id: ${spawnResult.actorID}\nThe result will be delivered as a notification when complete.`,
+              `Background sub-session started. actor_id: ${spawnResult.actorID}\nThe result will be delivered as a notification when complete.`,
           }
         }
 
         // op.action ==="run": blocking path — await the authoritative
         // `outcome` Deferred. It is resolved in spawn's onSuccess AFTER the
-        // preStop loop AND the completion gate (but before the fire-and-forget
-        // postStop loop), so the parent sees the reconciled status/summary —
-        // unlike ActorWaiter, which resolves on the row's first `idle` and would
-        // miss the gate's downgrade.
+        // preStop loop (and before the fire-and-forget postStop loop), so the
+        // parent sees the settled status/summary — unlike ActorWaiter, which
+        // resolves on the row's first `idle`.
         function cancelHandler() {
-          Effect.runFork(actor.cancel(spawnResult.sessionID, spawnResult.actorID, "graceful"))
+          bridge.fork(actor.cancel(spawnResult.sessionID, spawnResult.actorID, "graceful"))
         }
         const outcome = yield* Effect.acquireUseRelease(
           Effect.sync(() => {
@@ -759,7 +556,8 @@ export const ActorTool = Tool.define(
         // error in output." (The explicit action="wait" returns the structured
         // snapshot as a regular tool result — that's a different contract.)
         if (outcome.status === "failure") {
-          return yield* Effect.fail(new Error(`Tool execution failed: ${outcome.error ?? "unknown"}`))
+          const partial = outcome.structured !== undefined ? JSON.stringify(outcome.structured) : outcome.finalText
+          return yield* Effect.fail(new Error(`Tool execution failed: ${outcome.error ?? "unknown"}${partial === undefined ? "" : `\nPartial result: ${partial}`}`))
         }
 
         const resultText =
@@ -780,24 +578,20 @@ export const ActorTool = Tool.define(
           metadata: { sessionId: spawnResult.sessionID, actorId: spawnResult.actorID, model } as Record<string, any>,
           output: [
             ...(taskNotice ? [taskNotice, ""] : []),
-            `actor_id: ${spawnResult.actorID} (for resuming to continue this task if needed)`,
+            `actor_id: ${spawnResult.actorID} (to give this subagent more work, \`send\` it another message)`,
             "",
             `<actor_result status="${statusAttr}"${summaryAttr}>`,
             resultText,
             "</actor_result>",
+            ...(outcome.status === "success" ? (outcome.warnings ?? []).map((warning) => `Warning: ${warning}`) : []),
           ].join("\n"),
         }
       })
 
       return {
-        description: DESCRIPTION,
+        description: withCheckpointDescription(DESCRIPTION, DESCRIPTION_CHECKPOINT),
         parameters,
         execute: (input: z.infer<typeof parameters>, ctx: Tool.Context) => run(input, ctx).pipe(Effect.orDie),
-        shell: {
-          description: SHELL_DESCRIPTION,
-          parse: parseActorScript,
-          recover: recoverActorArgs,
-        },
       }
     })
   }),

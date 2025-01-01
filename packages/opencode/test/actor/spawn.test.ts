@@ -27,7 +27,6 @@ import { SessionPrompt } from "../../src/session/prompt"
 import { SessionRevert } from "../../src/session/revert"
 import { SessionRunState } from "../../src/session/run-state"
 import { Goal } from "../../src/session/goal"
-import { TaskGateState } from "../../src/task/gate-state"
 import { SessionStatus } from "../../src/session/status"
 import { Skill } from "../../src/skill"
 import { SystemPrompt } from "../../src/session/system"
@@ -37,15 +36,18 @@ import { Truncate } from "../../src/tool"
 import { ActorRegistry } from "../../src/actor/registry"
 import { ActorWaiter } from "../../src/actor/waiter"
 import { Actor } from "../../src/actor/spawn"
+import { Worktree } from "../../src/worktree"
 import { Memory } from "../../src/memory"
 import { History } from "../../src/history"
 import { Team } from "../../src/team"
 import { SessionCheckpoint } from "../../src/session/checkpoint"
 import { SessionCompaction } from "../../src/session/compaction"
 import { TaskRegistry } from "../../src/task/registry"
+import { defaultLayer as SchedulerDefaultLayer } from "../../src/cron/scheduler"
 import { Auth } from "../../src/auth"
 import { Database } from "../../src/storage"
-import { MessageTable } from "../../src/session/session.sql"
+import { MessageTable, PartTable } from "../../src/session/session.sql"
+import { InboxTable } from "../../src/inbox/inbox.sql"
 import { MessageV2 } from "../../src/session/message-v2"
 import { MessageID, PartID } from "../../src/session/schema"
 import { Instance } from "../../src/project/instance"
@@ -57,6 +59,8 @@ import { testEffect } from "../lib/effect"
 import { TestLLMServer } from "../lib/llm-server"
 import { reply } from "../lib/llm-server"
 import { Inbox } from "../../src/inbox"
+import { inboxServiceRef } from "../../src/inbox/inbox-ref"
+import { Flag } from "../../src/flag/flag"
 
 afterEach(async () => {
   await Instance.disposeAll()
@@ -115,10 +119,12 @@ const lsp = Layer.succeed(
 )
 
 const status = SessionStatus.layer.pipe(Layer.provideMerge(Bus.layer))
-const run = SessionRunState.layer.pipe(Layer.provide(status))
+// Share ONE SessionStatus instance with SessionRunState (provideMerge exports it).
+// A second bare `status` in deps would be a separate InstanceState and hide busy/idle.
+const run = SessionRunState.layer.pipe(Layer.provideMerge(status))
 const infra = Layer.mergeAll(NodeFileSystem.layer, CrossSpawnSpawner.defaultLayer)
 
-function makeLayer() {
+function makeLayer(opts?: { settledError: () => NonNullable<MessageV2.Assistant["error"]> | undefined }) {
   const deps = Layer.mergeAll(
     Session.defaultLayer,
     Snapshot.defaultLayer,
@@ -133,7 +139,7 @@ function makeLayer() {
     lsp,
     mcp,
     AppFileSystem.defaultLayer,
-    status,
+    run,
   ).pipe(Layer.provideMerge(infra))
   const question = Question.layer.pipe(Layer.provideMerge(deps))
   const todo = Todo.layer.pipe(Layer.provideMerge(deps))
@@ -154,6 +160,7 @@ function makeLayer() {
     Layer.provide(Memory.defaultLayer),
     Layer.provide(History.defaultLayer),
     Layer.provide(TaskRegistry.defaultLayer),
+    Layer.provide(SchedulerDefaultLayer),
     Layer.provide(Auth.defaultLayer),
     Layer.provideMerge(todo),
     Layer.provideMerge(question),
@@ -164,7 +171,6 @@ function makeLayer() {
   const prune = SessionPrune.layer.pipe(Layer.provide(checkpoint), Layer.provideMerge(deps))
   const prompt = SessionPrompt.layer.pipe(
     Layer.provide(Goal.defaultLayer),
-    Layer.provide(TaskGateState.defaultLayer),
     Layer.provide(SessionRevert.defaultLayer),
     Layer.provide(summary),
     Layer.provide(checkpoint),
@@ -184,12 +190,60 @@ function makeLayer() {
   return Layer.mergeAll(
     TestLLMServer.layer,
     Actor.layer.pipe(
-      Layer.provideMerge(prompt),
+      Layer.provideMerge(opts?.settledError ? settledPromptLayer(opts.settledError, prompt) : prompt),
+      Layer.provide(Worktree.defaultLayer),
       Layer.provideMerge(taskRegistry),
       Layer.provide(TaskRegistry.defaultLayer),
+    Layer.provide(SchedulerDefaultLayer),
       Layer.provide(Inbox.defaultLayer),
     ),
   ).pipe(Layer.provide(summary))
+}
+
+/**
+ * Failure-classification tests only. Replaces SessionPrompt.prompt so the child's
+ * turn settles with a CHOSEN assistant error, then hands that to the real spawn
+ * machinery. Everything under test downstream of this point is production code:
+ * runAgentLoop's classify call, the failure carrier, Cause.squash in onFailure and
+ * the AgentOutcome assembly. Only the upstream provider round-trip is stood in for,
+ * which is what makes a transient case testable at all — SessionRetry's ladder is
+ * uncapped, so a genuinely retryable provider error never settles on its own.
+ */
+function settledPromptLayer<A, E, R>(
+  settledError: () => NonNullable<MessageV2.Assistant["error"]> | undefined,
+  real: Layer.Layer<A, E, R>,
+) {
+  return Layer.effect(
+    SessionPrompt.Service,
+    Effect.gen(function* () {
+      const inner = yield* SessionPrompt.Service
+      return SessionPrompt.Service.of({
+        ...inner,
+        prompt: (input) => {
+          const settled = settledError()
+          // Truthiness, not `!== undefined` — see AGENTS.md "Reading a nullable column".
+          if (!settled) return inner.prompt(input)
+          const info: MessageV2.Assistant = {
+            id: MessageID.ascending(),
+            sessionID: input.sessionID,
+            agentID: input.agentID,
+            role: "assistant",
+            time: { created: Date.now(), completed: Date.now() },
+            error: settled,
+            parentID: MessageID.ascending(),
+            modelID: ModelID.make("test-model"),
+            providerID: ProviderID.make("test"),
+            mode: "build",
+            agent: input.agent ?? "build",
+            path: { cwd: process.cwd(), root: process.cwd() },
+            cost: 0,
+            tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+          }
+          return Effect.succeed({ info, parts: [] } satisfies MessageV2.WithParts)
+        },
+      })
+    }),
+  ).pipe(Layer.provideMerge(real))
 }
 
 const it = testEffect(makeLayer())
@@ -246,6 +300,28 @@ function providerCfg(url: string) {
   }
 }
 
+function gptProviderCfg(url: string) {
+  const config = providerCfg(url)
+  return {
+    ...config,
+    provider: {
+      ...config.provider,
+      "gpt-test": {
+        ...config.provider.test,
+        id: "gpt-test",
+        name: "GPT Test",
+        models: {
+          "gpt-5.4": {
+            ...config.provider.test.models["test-model"],
+            id: "deployment-primary",
+            name: "GPT-5.4",
+          },
+        },
+      },
+    },
+  }
+}
+
 describe("Actor.spawn peer mode", () => {
   it.live("creates a new sessionID, registers actor with mode=peer", () =>
     provideTmpdirServer(
@@ -283,9 +359,192 @@ describe("Actor.spawn peer mode", () => {
       { git: true, config: providerCfg },
     ),
   )
+
+  // T42: a freshly-created peer is addressable the instant spawn returns —
+  // spawnPeer registers the receiver/actor-registry row (session_id === actor_id
+  // === child.id, mode "peer") SYNCHRONOUSLY before spawn resolves, so Inbox.send's
+  // ESRCH pre-check (reg.get) resolves even against a turnCount-0, never-run child.
+  // Guards the T43 --topic reuse prerequisite. LLM is hung so the child's first
+  // turn never runs: the row can ONLY come from spawn-time registration.
+  it.live("send to a just-created, never-run peer (turnCount 0) does NOT ESRCH and enqueues", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const actor = yield* Actor.Service
+        const session = yield* Session.Service
+        const reg = yield* ActorRegistry.Service
+        const inbox = inboxServiceRef.current!
+
+        const parent = yield* session.create({
+          title: "T42 parent",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        // Hang so the child's spawn turn never completes — the receiver row must
+        // exist purely from spawn-time registration, not first-turn arming.
+        yield* llm.hang
+
+        const result = yield* actor.spawn({
+          mode: "peer",
+          sessionID: parent.id,
+          agentType: "build",
+          task: "peer task",
+          context: "none",
+          tools: ["read"],
+          background: true,
+          model: ref,
+        })
+
+        // Row present at spawn: pending, zero turns (never ran).
+        const row = yield* reg.get(result.sessionID, result.actorID)
+        expect(row?.mode).toBe("peer")
+        expect(row?.turnCount).toBe(0)
+        expect(row?.status).toBe("pending")
+
+        // Both addressing forms resolve without ESRCH and enqueue a durable row.
+        const sent = yield* inbox
+          .send({
+            receiverSessionID: result.sessionID,
+            receiverActorID: result.actorID,
+            senderSessionID: parent.id,
+            senderActorID: "main",
+            content: "relayed while never-run",
+          })
+          .pipe(Effect.exit)
+        expect(sent._tag).toBe("Success")
+        if (sent._tag === "Success") expect(sent.value.inboxID).toBeTruthy()
+
+        yield* actor.cancel(result.sessionID, result.actorID, "forced")
+      }),
+      { git: true, config: providerCfg },
+    ),
+  )
 })
 
 describe("Actor.spawn subagent mode", () => {
+  it.live("exposes GPT tools through exec to read-only GPT subagents", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const actor = yield* Actor.Service
+        const session = yield* Session.Service
+        const parent = yield* session.create({ title: "GPT subagent tools" })
+
+        yield* llm.text("done")
+        const result = yield* actor.spawn({
+          mode: "subagent",
+          sessionID: parent.id,
+          agentType: "explore",
+          task: "verify tools",
+          context: "none",
+          tools: "INHERIT",
+          background: false,
+          model: { providerID: ProviderID.make("gpt-test"), modelID: ModelID.make("gpt-5.4") },
+        })
+        yield* Deferred.await(result.outcome)
+
+        const request = (yield* llm.hits).find(
+          (hit) =>
+            Array.isArray(hit.body.tools) &&
+            hit.body.tools.some((tool) => (tool as { function?: { name?: string } }).function?.name === "exec"),
+        )
+        const names = (request?.body.tools as Array<{ function?: { name?: string } }> | undefined)?.map(
+          (tool) => tool.function?.name,
+        )
+        expect(names).toContain("exec")
+        expect(names).not.toContain("view_image")
+        expect(names).not.toContain("apply_patch")
+        expect(names).not.toContain("read")
+        expect(names).not.toContain("edit")
+        expect(names).not.toContain("write")
+        const exec = (request?.body.tools as Array<{ function?: { name?: string; description?: string } }>).find(
+          (tool) => tool.function?.name === "exec",
+        )
+        expect(exec?.function?.description).toContain("view_image(input:")
+      }),
+      { git: true, config: gptProviderCfg },
+    ),
+    30000,
+  )
+
+  it.live("exposes the full GPT-specific tool set to general GPT subagents", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const actor = yield* Actor.Service
+        const session = yield* Session.Service
+        const parent = yield* session.create({ title: "General GPT subagent tools" })
+
+        yield* llm.text("done")
+        const result = yield* actor.spawn({
+          mode: "subagent",
+          sessionID: parent.id,
+          agentType: "general",
+          task: "verify tools",
+          context: "none",
+          tools: "INHERIT",
+          background: false,
+          model: { providerID: ProviderID.make("gpt-test"), modelID: ModelID.make("gpt-5.4") },
+        })
+        yield* Deferred.await(result.outcome)
+
+        const request = (yield* llm.hits).find(
+          (hit) =>
+            Array.isArray(hit.body.tools) &&
+            hit.body.tools.some((tool) => (tool as { function?: { name?: string } }).function?.name === "exec"),
+        )
+        const names = (request?.body.tools as Array<{ function?: { name?: string } }> | undefined)?.map(
+          (tool) => tool.function?.name,
+        )
+        expect(names).toContain("exec")
+        expect(names).not.toContain("apply_patch")
+        expect(names).not.toContain("view_image")
+        expect(names).not.toContain("read")
+        expect(names).not.toContain("edit")
+        expect(names).not.toContain("write")
+        const exec = (request?.body.tools as Array<{ function?: { name?: string; description?: string } }>).find(
+          (tool) => tool.function?.name === "exec",
+        )
+        expect(exec?.function?.description).toContain("apply_patch(input:")
+        expect(exec?.function?.description).toContain("view_image(input:")
+      }),
+      { git: true, config: gptProviderCfg },
+    ),
+    30000,
+  )
+
+  it.live("keeps the legacy tool set for non-GPT subagents", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const actor = yield* Actor.Service
+        const session = yield* Session.Service
+        const parent = yield* session.create({ title: "General non-GPT subagent tools" })
+
+        yield* llm.text("done")
+        const result = yield* actor.spawn({
+          mode: "subagent",
+          sessionID: parent.id,
+          agentType: "general",
+          task: "verify tools",
+          context: "none",
+          tools: "INHERIT",
+          background: false,
+          model: ref,
+        })
+        yield* Deferred.await(result.outcome)
+
+        const request = (yield* llm.hits).find((hit) => Array.isArray(hit.body.tools))
+        const names = (request?.body.tools as Array<{ function?: { name?: string } }> | undefined)?.map(
+          (tool) => tool.function?.name,
+        )
+        expect(names).toContain("read")
+        expect(names).toContain("edit")
+        expect(names).toContain("write")
+        expect(names).not.toContain("exec")
+        expect(names).not.toContain("apply_patch")
+        expect(names).not.toContain("view_image")
+      }),
+      { git: true, config: providerCfg },
+    ),
+    30000,
+  )
+
   it.live("does NOT create new session, allocates <type>-<n> actorID", () =>
     provideTmpdirServer(
       Effect.fnUntraced(function* ({ llm }) {
@@ -416,6 +675,202 @@ describe("Actor.cancel", () => {
       }),
       { git: true, config: providerCfg },
     ),
+  )
+})
+
+describe("SessionPrompt.cancel — process-group kill", () => {
+  // Product contract: session abort simulates a kill signal and must propagate
+  // to all same-session subagents (not only main). Independent of Orchestrator.
+  // Quiet abort: cancel notifications must not re-wake the aborted session.
+  it.live(
+    "session abort cascades running actors (registry cancelled, session idle, no wake)",
+    () =>
+      provideTmpdirServer(
+        Effect.fnUntraced(function* ({ llm }) {
+          const actor = yield* Actor.Service
+          const prompt = yield* SessionPrompt.Service
+          const reg = yield* ActorRegistry.Service
+          const status = yield* SessionStatus.Service
+          const session = yield* Session.Service
+          const runState = yield* SessionRunState.Service
+          const parent = yield* session.create({
+            title: "abort cascade",
+            permission: [{ permission: "*", pattern: "*", action: "allow" }],
+          })
+          // hang is a queued response per LLM request — enqueue one hang for
+          // main + actor A + actor B so all three model calls stay pending.
+          yield* llm.hang
+          yield* llm.hang
+          yield* llm.hang
+          // Real main turn (runLoop sets SessionStatus.busy for main) with hang LLM.
+          yield* prompt
+            .prompt({
+              sessionID: parent.id,
+              agent: "build",
+              agentID: "main",
+              parts: [{ type: "text", text: "main long turn" }],
+              model: ref,
+            })
+            .pipe(Effect.forkChild)
+          for (let i = 0; i < 80; i++) {
+            const st = yield* status.get(parent.id)
+            if (st.type === "busy") break
+            yield* Effect.sleep("50 millis")
+          }
+          expect((yield* status.get(parent.id)).type).toBe("busy")
+          const busyBefore = yield* runState.assertNotBusy(parent.id, "main").pipe(Effect.exit)
+          expect(busyBefore._tag).toBe("Failure")
+
+          const spawnOne = (task: string) =>
+            actor.spawn({
+              mode: "subagent",
+              sessionID: parent.id,
+              agentType: "build",
+              task,
+              context: "none",
+              tools: ["read"],
+              background: true,
+              model: ref,
+            })
+          const a = yield* spawnOne("long background task A")
+          const b = yield* spawnOne("long background task B")
+
+          // Wait until each actor is actually executing (running), not merely
+          // registered (pending). hang LLM keeps runTurn in running once entered.
+          const waitRunning = (sessionID: string, actorID: string) =>
+            Effect.gen(function* () {
+              let row = yield* reg.get(sessionID as never, actorID)
+              for (let i = 0; i < 80 && row?.status !== "running"; i++) {
+                yield* Effect.sleep("50 millis")
+                row = yield* reg.get(sessionID as never, actorID)
+              }
+              return row
+            })
+          const rowA = yield* waitRunning(a.sessionID, a.actorID)
+          const rowB = yield* waitRunning(b.sessionID, b.actorID)
+          expect(rowA?.status).toBe("running")
+          expect(rowB?.status).toBe("running")
+          // All three model requests must have actually arrived (hang-queued).
+          yield* llm.wait(3)
+
+          yield* prompt.cancel(parent.id)
+
+          const afterA = yield* reg.get(a.sessionID, a.actorID)
+          const afterB = yield* reg.get(b.sessionID, b.actorID)
+          expect(afterA?.status).toBe("idle")
+          expect(afterA?.lastOutcome).toBe("cancelled")
+          expect(afterB?.status).toBe("idle")
+          expect(afterB?.lastOutcome).toBe("cancelled")
+          expect((yield* status.get(parent.id)).type).toBe("idle")
+          const busyAfter = yield* runState.assertNotBusy(parent.id, "main").pipe(Effect.exit)
+          expect(busyAfter._tag).toBe("Success")
+
+          // Quiet abort: no wake — session stays idle, actors stay cancelled (not running).
+          yield* Effect.sleep("400 millis")
+          expect((yield* status.get(parent.id)).type).toBe("idle")
+          const laterA = yield* reg.get(a.sessionID, a.actorID)
+          const laterB = yield* reg.get(b.sessionID, b.actorID)
+          expect(laterA?.status).toBe("idle")
+          expect(laterA?.lastOutcome).toBe("cancelled")
+          expect(laterB?.status).toBe("idle")
+          expect(laterB?.lastOutcome).toBe("cancelled")
+          const busyLater = yield* runState.assertNotBusy(parent.id, "main").pipe(Effect.exit)
+          expect(busyLater._tag).toBe("Success")
+
+          // R14 terminal inline (TP-R14-14): quiet abort still materializes cancelled
+          // notifications into parent session history (synthetic message parts).
+          // wake:false only skips auto-fork — the part must exist for chat UI.
+          const parts = yield* Effect.sync(() =>
+            Database.use((db) =>
+              db
+                .select({ data: PartTable.data })
+                .from(PartTable)
+                .where(eq(PartTable.session_id, parent.id))
+                .all(),
+            ),
+          )
+          const notes = parts
+            .map((row) => row.data as { type?: string; synthetic?: boolean; text?: string })
+            .filter((d) => d?.type === "text" && d?.synthetic === true && typeof d.text === "string")
+            .map((d) => d.text as string)
+            .filter((text) => text.includes("<actor-notification>"))
+          expect(notes.length).toBeGreaterThanOrEqual(2)
+          expect(notes.filter((text) => text.includes("was cancelled")).length).toBeGreaterThanOrEqual(2)
+          // Drain consumed the quiet inbox rows — no leftover durable wake backlog.
+          const inboxLeft = yield* Effect.sync(() =>
+            Database.use((db) =>
+              db
+                .select({ id: InboxTable.id })
+                .from(InboxTable)
+                .where(and(eq(InboxTable.receiver_session_id, parent.id), eq(InboxTable.receiver_actor_id, "main")))
+                .all(),
+            ),
+          )
+          expect(inboxLeft.length).toBe(0)
+        }),
+        { git: true, config: providerCfg },
+      ),
+  )
+
+  // R006: registry-only quiet cancel (pending row, no live ActorExecution) must
+  // still materialize a cancelled inbox notification — wake:false only skips auto-fork.
+  it.live(
+    "registry-only quiet cancel materializes cancelled notification without wake",
+    () =>
+      provideTmpdirServer(
+        Effect.fnUntraced(function* () {
+          const actor = yield* Actor.Service
+          const reg = yield* ActorRegistry.Service
+          const sessions = yield* Session.Service
+          const parent = yield* sessions.create({
+            title: "registry-only abort",
+            permission: [{ permission: "*", pattern: "*", action: "allow" }],
+          })
+          yield* reg.register({
+            sessionID: parent.id,
+            actorID: "pending-1",
+            mode: "subagent",
+            agent: "build",
+            description: "pending child",
+            contextMode: "none",
+            parentActorID: "main",
+            background: true,
+            lifecycle: "ephemeral",
+          })
+          yield* reg.updateStatus(parent.id, "pending-1", { status: "pending" })
+
+          yield* actor.cancel(parent.id, "pending-1", "forced", { wake: false })
+
+          const after = yield* reg.get(parent.id, "pending-1")
+          expect(after?.status).toBe("idle")
+          expect(after?.lastOutcome).toBe("cancelled")
+          const rows = yield* Effect.sync(() =>
+            Database.use((db) =>
+              db
+                .select()
+                .from(InboxTable)
+                .where(and(eq(InboxTable.receiver_session_id, parent.id), eq(InboxTable.receiver_actor_id, "main")))
+                .all(),
+            ),
+          )
+          expect(rows.length).toBe(1)
+          const content = rows[0].content as { text?: string }
+          expect(content.text).toContain("cancelled")
+          // Second cancel is a no-op — no duplicate notify.
+          yield* actor.cancel(parent.id, "pending-1", "forced", { wake: false })
+          const again = yield* Effect.sync(() =>
+            Database.use((db) =>
+              db
+                .select()
+                .from(InboxTable)
+                .where(and(eq(InboxTable.receiver_session_id, parent.id), eq(InboxTable.receiver_actor_id, "main")))
+                .all(),
+            ),
+          )
+          expect(again.length).toBe(1)
+        }),
+        { git: true, config: providerCfg },
+      ),
   )
 })
 
@@ -637,7 +1092,7 @@ describe("Actor forkContext lifecycle", () => {
         })
 
         // Before cancel: forkContext must be present.
-        const before = yield* actor.getForkContext(result.actorID)
+        const before = yield* actor.getForkContext(result.sessionID, result.actorID)
         expect(before).toBeDefined()
         expect(before?.system).toEqual(["test-system"])
 
@@ -645,8 +1100,68 @@ describe("Actor forkContext lifecycle", () => {
         yield* actor.cancel(result.sessionID, result.actorID, "forced")
 
         // After cancel: forkContext must be gone.
-        const after = yield* actor.getForkContext(result.actorID)
+        const after = yield* actor.getForkContext(result.sessionID, result.actorID)
         expect(after).toBeUndefined()
+      }),
+      { git: true, config: providerCfg },
+    ),
+  )
+
+  it.live("keeps forkContexts isolated when actor ids repeat across sessions", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const actor = yield* Actor.Service
+        const session = yield* Session.Service
+        const first = yield* session.create({ title: "first fork context" })
+        const second = yield* session.create({ title: "second fork context" })
+        // Both executors must remain live while cancellation joins the first.
+        yield* llm.hang
+        yield* llm.hang
+
+        const firstResult = yield* actor.spawn({
+          mode: "subagent",
+          sessionID: first.id,
+          agentType: "explore",
+          task: "first",
+          context: "full",
+          tools: [],
+          background: true,
+          model: ref,
+          forkContext: {
+            system: ["first-system"],
+            tools: {},
+            inheritedMessages: [],
+            parentPermission: [],
+            watermarkMsgID: MessageID.ascending(),
+            model: ref,
+          },
+        })
+        const secondResult = yield* actor.spawn({
+          mode: "subagent",
+          sessionID: second.id,
+          agentType: "explore",
+          task: "second",
+          context: "full",
+          tools: [],
+          background: true,
+          model: ref,
+          forkContext: {
+            system: ["second-system"],
+            tools: {},
+            inheritedMessages: [],
+            parentPermission: [],
+            watermarkMsgID: MessageID.ascending(),
+            model: ref,
+          },
+        })
+
+        expect(firstResult.actorID).toBe(secondResult.actorID)
+        expect((yield* actor.getForkContext(firstResult.sessionID, firstResult.actorID))?.system).toEqual(["first-system"])
+        expect((yield* actor.getForkContext(secondResult.sessionID, secondResult.actorID))?.system).toEqual(["second-system"])
+
+        yield* actor.cancel(firstResult.sessionID, firstResult.actorID, "forced")
+        expect((yield* actor.getForkContext(secondResult.sessionID, secondResult.actorID))?.system).toEqual(["second-system"])
+        yield* actor.cancel(secondResult.sessionID, secondResult.actorID, "forced")
       }),
       { git: true, config: providerCfg },
     ),
@@ -688,7 +1203,7 @@ describe("mode × contextMode matrix", () => {
           forkContext: fakeForkCtx,
         })
 
-        const ctx = yield* actor.getForkContext(result.actorID)
+        const ctx = yield* actor.getForkContext(result.sessionID, result.actorID)
         expect(ctx).toBeDefined()
         expect(ctx?.system).toEqual(["test-system"])
 
@@ -723,7 +1238,7 @@ describe("mode × contextMode matrix", () => {
           // no forkContext
         })
 
-        const ctx = yield* actor.getForkContext(result.actorID)
+        const ctx = yield* actor.getForkContext(result.sessionID, result.actorID)
         expect(ctx).toBeUndefined()
 
         yield* actor.cancel(result.sessionID, result.actorID, "forced")
@@ -759,7 +1274,7 @@ describe("mode × contextMode matrix", () => {
 
         // For peer, result.actorID === child.id (the new session id)
         expect(result.actorID).not.toBe(parent.id)
-        const ctx = yield* actor.getForkContext(result.actorID)
+        const ctx = yield* actor.getForkContext(result.sessionID, result.actorID)
         expect(ctx).toBeDefined()
         expect(ctx?.system).toEqual(["test-system"])
 
@@ -794,7 +1309,7 @@ describe("mode × contextMode matrix", () => {
           // no forkContext
         })
 
-        const ctx = yield* actor.getForkContext(result.actorID)
+        const ctx = yield* actor.getForkContext(result.sessionID, result.actorID)
         expect(ctx).toBeUndefined()
 
         yield* actor.cancel(result.sessionID, result.actorID, "forced")
@@ -881,6 +1396,38 @@ describe("Actor.spawn structured output (P3)", () => {
           expect(outcome.structured).toBeUndefined()
           expect(outcome.finalText).toContain("plain answer")
         }
+      }),
+      { git: true, config: providerCfg },
+    ),
+  )
+
+  it.live("exhausted checkpoint-writer invalid output produces a failed actor outcome", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const actor = yield* Actor.Service
+        const session = yield* Session.Service
+        const parent = yield* session.create({
+          title: "invalid actor output",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+
+        yield* llm.push(
+          ...Array.from({ length: Flag.SLEEPYCODE_INVALID_OUTPUT_CONTINUATION_LIMIT + 1 }, () => reply().stop()),
+        )
+
+        const result = yield* actor.spawn({
+          mode: "subagent",
+          sessionID: parent.id,
+          agentType: "checkpoint-writer",
+          task: "return a result",
+          context: "none",
+          tools: ["read"],
+          background: false,
+          model: ref,
+        })
+
+        const outcome = yield* Deferred.await(result.outcome)
+        expect(outcome.status).toBe("failure")
       }),
       { git: true, config: providerCfg },
     ),
@@ -1099,6 +1646,158 @@ describe("Actor.spawn return-format injection (F21)", () => {
         const subAgentUser = msgs.find((m) => m.info.role === "user" && m.info.agentID === result.actorID)
         const text = subAgentUser?.parts.find((p) => p.type === "text")?.text ?? ""
         expect(text).not.toContain("Return format (required)")
+      }),
+      { git: true, config: providerCfg },
+    ),
+  )
+})
+
+// ---------------------------------------------------------------------------
+// AgentOutcome failure classification (see actor/spawn.ts FailureInfo).
+//
+// The point of these tests is that a consumer can tell a transient failure from
+// a deterministic one WITHOUT string-matching `error`. Both drive the real
+// construction path: runAgentLoop classifies the settled assistant error, raises
+// the carrier, and forkWork's onFailure squashes it back out and assembles the
+// AgentOutcome. Nothing here hand-builds an outcome object.
+// ---------------------------------------------------------------------------
+let settled: NonNullable<MessageV2.Assistant["error"]> | undefined
+const itSettled = testEffect(makeLayer({ settledError: () => settled }))
+
+describe("AgentOutcome failure classification", () => {
+  itSettled.live("a transient provider failure is classified retryable/transient", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* () {
+        const actor = yield* Actor.Service
+        const session = yield* Session.Service
+        const parent = yield* session.create({
+          title: "x",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        // A 429 the provider SDK itself marked retryable — SessionRetry.retryable
+        // returns a status for it, which is the oracle spawn.ts reuses.
+        settled = new MessageV2.APIError(
+          { message: "Too Many Requests", statusCode: 429, isRetryable: true },
+        ).toObject()
+        const result = yield* actor.spawn({
+          mode: "subagent",
+          sessionID: parent.id,
+          agentType: "build",
+          task: "t",
+          context: "none",
+          tools: ["read"],
+          background: false,
+          model: ref,
+        })
+        const outcome = yield* Deferred.await(result.outcome)
+        expect(outcome.status).toBe("failure")
+        if (outcome.status !== "failure") throw new Error("expected failure")
+        // The human string is still there and unchanged.
+        expect(outcome.error).toContain("Actor assistant failed: APIError")
+        // ...and the classification is there alongside it.
+        expect(outcome.failure).toBeTruthy()
+        expect(outcome.failure?.retryable).toBe(true)
+        expect(outcome.failure?.kind).toBe("transient")
+        expect(outcome.failure?.name).toBe("APIError")
+      }),
+      { git: true, config: providerCfg },
+    ),
+  )
+
+  itSettled.live("a deterministic overflow failure is classified non-retryable/overflow", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* () {
+        const actor = yield* Actor.Service
+        const session = yield* Session.Service
+        const parent = yield* session.create({
+          title: "x",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        // Context overflow is the canonical "will recur identically" failure:
+        // ProviderError.isOverflow matched it upstream and SessionRetry.retryable
+        // explicitly refuses to retry it.
+        settled = new MessageV2.ContextOverflowError({
+          message: "Input exceeds context window of this model",
+        }).toObject()
+        const result = yield* actor.spawn({
+          mode: "subagent",
+          sessionID: parent.id,
+          agentType: "build",
+          task: "t",
+          context: "none",
+          tools: ["read"],
+          background: false,
+          model: ref,
+        })
+        const outcome = yield* Deferred.await(result.outcome)
+        expect(outcome.status).toBe("failure")
+        if (outcome.status !== "failure") throw new Error("expected failure")
+        expect(outcome.error).toContain("Actor assistant failed: ContextOverflowError")
+        expect(outcome.failure).toBeTruthy()
+        expect(outcome.failure?.retryable).toBe(false)
+        expect(outcome.failure?.kind).toBe("overflow")
+        expect(outcome.failure?.name).toBe("ContextOverflowError")
+      }),
+      { git: true, config: providerCfg },
+    ),
+  )
+
+  itSettled.live("a rejected credential is classified non-retryable/auth", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* () {
+        const actor = yield* Actor.Service
+        const session = yield* Session.Service
+        const parent = yield* session.create({
+          title: "x",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        settled = new MessageV2.APIError(
+          { message: "Unauthorized", statusCode: 401, isRetryable: false },
+        ).toObject()
+        const result = yield* actor.spawn({
+          mode: "subagent",
+          sessionID: parent.id,
+          agentType: "build",
+          task: "t",
+          context: "none",
+          tools: ["read"],
+          background: false,
+          model: ref,
+        })
+        const outcome = yield* Deferred.await(result.outcome)
+        if (outcome.status !== "failure") throw new Error("expected failure")
+        expect(outcome.failure?.retryable).toBe(false)
+        expect(outcome.failure?.kind).toBe("auth")
+      }),
+      { git: true, config: providerCfg },
+    ),
+  )
+
+  it.live("a failure that never reached a provider carries no classification", () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const actor = yield* Actor.Service
+        const session = yield* Session.Service
+        const parent = yield* session.create({
+          title: "x",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        yield* llm.text("done")
+        const result = yield* actor.spawn({
+          mode: "subagent",
+          sessionID: parent.id,
+          agentType: "build",
+          task: "t",
+          context: "none",
+          tools: ["read"],
+          background: false,
+          model: ref,
+        })
+        const outcome = yield* Deferred.await(result.outcome)
+        // A clean turn must not invent a classification; `failure` is only ever
+        // present on a settled-assistant-error failure.
+        if (outcome.status === "failure") expect(outcome.failure == null).toBe(true)
+        else expect(outcome.status).toBe("success")
       }),
       { git: true, config: providerCfg },
     ),

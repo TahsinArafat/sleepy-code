@@ -1,9 +1,11 @@
 import z from "zod"
+import { childProcessEnv } from "@/util/child-process-env"
 import os from "os"
-import { createWriteStream, readFileSync } from "node:fs"
+import { createWriteStream, existsSync, realpathSync } from "node:fs"
 import * as Tool from "./tool"
 import path from "path"
 import DESCRIPTION from "./bash.txt"
+import GPT_DESCRIPTION from "./bash.gpt.txt"
 import { Log } from "../util"
 import { Instance } from "../project/instance"
 import { lazy } from "@/util/lazy"
@@ -15,17 +17,59 @@ import { Flag } from "@/flag/flag"
 import { Shell } from "@/shell/shell"
 
 import { SessionCwd } from "./session-cwd"
+import * as MergeConflict from "./merge-conflict-notice"
 import { BashArity } from "@/permission/arity"
 import * as Truncate from "./truncate"
 import { Plugin } from "@/plugin"
+import { Git } from "@/git"
 import { Effect, Stream } from "effect"
 import { ChildProcess } from "effect/unstable/process"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
 import * as BashInteractive from "./bash-interactive"
+import * as BashTokenEfficient from "./bash_token_efficient_pipeline"
+import * as BashTokenEfficientHeuristic from "./bash_token_efficient_heuristic"
 
 const MAX_METADATA_LENGTH = 30_000
+export const DEFAULT_MAX_OUTPUT_TOKENS = 30_000
 const DEFAULT_TIMEOUT = Flag.SLEEPYCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS || 2 * 60 * 1000
 const PS = new Set(["powershell", "pwsh"])
+// Delete targets under the OS temp dir are exempt from the forced-ask
+// confirmation: scratch space is where an agent legitimately churns files, and
+// nothing there is the user's durable work. The exemption is deliberately
+// narrow — see `tmpOnlyDelete`, which grants it ONLY when every path argument
+// of every delete command resolves, unambiguously, inside a temp root.
+//
+// macOS reports /tmp and /var as symlinks into /private, so containment must be
+// checked on REALPATHS: a lexical check would reject the literal "/tmp/x" even
+// though it lives inside the canonical os.tmpdir() jail. "/tmp" is listed
+// alongside os.tmpdir() because on macOS they are DIFFERENT directories
+// (/private/tmp vs /private/var/folders/...). Mirrors tool-script.ts's jail.
+function tmpRoots() {
+  return [os.tmpdir(), ...(process.platform === "win32" ? [] : ["/tmp"])]
+}
+
+function realpathBestEffort(p: string) {
+  let cur = p
+  let suffix = ""
+  while (true) {
+    try {
+      return path.join(realpathSync.native(cur), suffix)
+    } catch {
+      suffix = suffix ? path.join(path.basename(cur), suffix) : path.basename(cur)
+      const parent = path.dirname(cur)
+      if (parent === cur) return p
+      cur = parent
+    }
+  }
+}
+
+function insideTmp(resolved: string) {
+  const abs = realpathBestEffort(resolved)
+  return tmpRoots()
+    .map(realpathBestEffort)
+    .some((root) => abs !== root && abs.startsWith(root + path.sep))
+}
+
 const CWD = new Set(["cd", "push-location", "set-location"])
 const FILES = new Set([
   ...CWD,
@@ -52,13 +96,65 @@ const FILES = new Set([
 const FLAGS = new Set(["-destination", "-literalpath", "-path"])
 const SWITCHES = new Set(["-confirm", "-debug", "-force", "-nonewline", "-recurse", "-verbose", "-whatif"])
 
+export function bashDescription(gpt = false) {
+  const name = Shell.name(Shell.acceptable())
+  const chaining =
+    name === "powershell"
+      ? "If the commands depend on each other and must run sequentially, avoid '&&' in this shell because Windows PowerShell 5.1 does not support it. Use PowerShell conditionals such as `cmd1; if ($?) { cmd2 }` when later commands must depend on earlier success."
+      : "If the commands depend on each other and must run sequentially, use a single `bash` call with '&&' to chain them together (e.g., `git add . && git commit -m \"message\" && git push`). For instance, if one operation must complete before another starts (like mkdir before cp, or git add before git commit), run these operations sequentially in one command instead of assuming they will interleave correctly across calls."
+  return (gpt ? GPT_DESCRIPTION : DESCRIPTION)
+    .replaceAll("${directory}", Instance.directory)
+    .replaceAll("${os}", process.platform)
+    .replaceAll("${shell}", name)
+    .replaceAll("${chaining}", chaining)
+    .replaceAll("${maxTokens}", String(DEFAULT_MAX_OUTPUT_TOKENS))
+}
+
+// Irreversible file/directory removal commands. Names are matched
+// case-insensitively for PowerShell; bash is case-sensitive.
+const DELETE_COMMANDS = new Set([
+  "rm",
+  "rmdir",
+  "unlink",
+  "shred",
+  // Windows / PowerShell removal verbs and their common aliases. `remove-item`
+  // is the canonical verb; `ri`, `rd`, `del`, `erase` are aliases.
+  "del",
+  "erase",
+  "rd",
+  "remove-item",
+  "ri",
+])
+
+// git subcommands that destroy history, working tree state, or remote branches.
+// Value is the set of tokens (flag or subcommand keyword) that must appear
+// anywhere in the argv for the invocation to count as destructive. An empty
+// set means the subcommand is destructive on its own.
+const GIT_DESTRUCTIVE = new Map<string, Set<string>>([
+  ["reset", new Set(["--hard"])],
+  ["clean", new Set(["-f", "-ff", "-fd", "-fdx", "-df", "-dfx", "-fx", "--force"])],
+  ["branch", new Set(["-D", "--delete"])],
+  ["tag", new Set(["-d", "--delete"])],
+  ["worktree", new Set(["remove"])],
+  ["push", new Set(["--force", "-f"])],
+  ["stash", new Set(["drop", "clear"])],
+])
+
 const Parameters = z.object({
   command: z.string().describe("The command to execute"),
   timeout: z.number().describe("Optional timeout in milliseconds").optional(),
+  max_output_tokens: z
+    .number()
+    .int()
+    .positive()
+    .describe(
+      `Maximum approximate tokens returned inline. Defaults to ${DEFAULT_MAX_OUTPUT_TOKENS}. Full output is saved to tool storage when this limit is exceeded.`,
+    )
+    .optional(),
   workdir: z
     .string()
     .describe(
-      `The working directory to run the command in. Defaults to the current directory. Use this instead of 'cd' commands.`,
+      `Working directory for the command.`,
     )
     .optional(),
   interactive: z
@@ -83,6 +179,7 @@ type Scan = {
   dirs: Set<string>
   patterns: Set<string>
   always: Set<string>
+  deletes: Set<string>
 }
 
 type Chunk = {
@@ -133,6 +230,24 @@ function source(node: Node) {
 
 function commands(node: Node) {
   return node.descendantsOfType("command").filter((child): child is Node => Boolean(child))
+}
+
+// Returns true when `tokens` (the flat argv of a single command node) invokes
+// an irreversible deletion — either a direct removal command (rm, remove-item,
+// …) or a destructive git subcommand (git reset --hard, git clean -f, …).
+// `ps` toggles PowerShell case-insensitive matching.
+function isDelete(tokens: string[], ps: boolean) {
+  if (tokens.length === 0) return false
+  const head = ps ? tokens[0].toLowerCase() : tokens[0]
+  if (DELETE_COMMANDS.has(head)) return true
+  if (head === "git" && tokens.length >= 2) {
+    const sub = tokens[1]
+    const flags = GIT_DESTRUCTIVE.get(sub)
+    if (!flags) return false
+    if (flags.size === 0) return true
+    return tokens.slice(2).some((tok) => flags.has(tok))
+  }
+  return false
 }
 
 function unquote(text: string) {
@@ -228,35 +343,26 @@ function preview(text: string) {
   return "...\n\n" + text.slice(-MAX_METADATA_LENGTH)
 }
 
-const ERROR_PATTERN = /error|exception|failed|fatal|traceback|panic|exit code/i
-const HEAD_BYTES = Math.floor(Truncate.MAX_BYTES * 0.7)
-const HEAD_LINES = Math.floor(Truncate.MAX_LINES * 0.7)
-
-function head(text: string, maxLines: number, maxBytes: number): string {
-  const lines = text.split("\n")
-  const out: string[] = []
-  let bytes = 0
-  for (let i = 0; i < lines.length && out.length < maxLines; i++) {
-    const size = Buffer.byteLength(lines[i], "utf-8") + (i > 0 ? 1 : 0)
-    if (bytes + size > maxBytes) break
-    out.push(lines[i])
-    bytes += size
-  }
-  return out.join("\n")
+function headBytes(text: string, maxBytes: number) {
+  const buf = Buffer.from(text, "utf-8")
+  if (buf.length <= maxBytes) return text
+  let end = maxBytes
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) end--
+  return buf.subarray(0, end).toString("utf-8")
 }
 
-function tail(text: string, maxLines: number, maxBytes: number) {
-  const lines = text.split("\n")
-  if (lines.length <= maxLines && Buffer.byteLength(text, "utf-8") <= maxBytes) {
+function tail(text: string, maxBytes: number) {
+  if (Buffer.byteLength(text, "utf-8") <= maxBytes) {
     return {
       text,
       cut: false,
     }
   }
 
+  const lines = text.split("\n")
   const out: string[] = []
   let bytes = 0
-  for (let i = lines.length - 1; i >= 0 && out.length < maxLines; i--) {
+  for (let i = lines.length - 1; i >= 0; i--) {
     const size = Buffer.byteLength(lines[i], "utf-8") + (out.length > 0 ? 1 : 0)
     if (bytes + size > maxBytes) {
       if (out.length === 0) {
@@ -303,6 +409,24 @@ const ask = Effect.fn("BashTool.ask")(function* (ctx: Tool.Context, scan: Scan) 
     patterns: Array.from(scan.patterns),
     always: Array.from(scan.always),
     metadata: {},
+  })
+})
+
+// Secondary confirmation for irreversible deletion commands. Uses its own
+// permission type ("bash_delete"), which the Permission layer flags as
+// forced-ask: no `allow` rule (not even a broad `"*": allow`) can silently
+// pre-approve it — only an explicit `deny` blocks. `always` is empty because
+// a persisted "allow all deletes" rule is exactly what forced-ask exists to
+// prevent. The delete UI shows the full command, so this ask FULLY replaces
+// the regular bash/external_directory prompts when it fires (see the caller
+// below) — deletion is authorized in a single, unambiguous confirmation.
+const askDelete = Effect.fn("BashTool.askDelete")(function* (ctx: Tool.Context, scan: Scan, command: string) {
+  const patterns = Array.from(scan.deletes)
+  yield* ctx.ask({
+    permission: "bash_delete",
+    patterns,
+    always: [],
+    metadata: { command, deletes: patterns },
   })
 })
 
@@ -364,6 +488,60 @@ export const BashTool = Tool.define(
     const fs = yield* AppFileSystem.Service
     const trunc = yield* Truncate.Service
     const plugin = yield* Plugin.Service
+    const gitSvc = yield* Git.Service
+
+    // Layer-2 floor for git authorship: an agent may create a worktree/clone or
+    // commit in an ad-hoc dir via this bash tool, bypassing Worktree.setup()'s
+    // per-worktree local-config fix. Propagate the project repo's own identity so
+    // those commits are attributed the same way a commit in the project repo is.
+    //
+    // Behavioral contract of this floor and its cache:
+    //   - It only ever PROPAGATES an identity the repo itself already resolves.
+    //     It never invents one: when the repo has no identity — or there is no
+    //     repo at all — nothing is injected and git resolves authorship itself
+    //     (config, then `EMAIL`, then its own `user@hostname` autodetect, then
+    //     its own error). A hardcoded substitute would misattribute the commit
+    //     AND pre-empt resolution paths `git config` cannot see.
+    //   - It is delivered as GIT_AUTHOR_*/GIT_COMMITTER_* ENV, and git gives env
+    //     vars precedence OVER `user.name`/`user.email` config — including the
+    //     config of some OTHER repo the command happens to run in. That is
+    //     exactly why an unresolved field must inject nothing rather than a
+    //     placeholder: a placeholder would outrank that repo's correct config.
+    //   - Because the resolved value is memoized per worktree path for the
+    //     lifetime of the process, a `git config user.name ...` performed
+    //     mid-session is NOT picked up until the process restarts.
+    //   - Operator-set GIT_AUTHOR_*/GIT_COMMITTER_* still win: shellEnv only
+    //     fills the vars that are absent from the child environment baseline (see below).
+    //
+    // resolveGitIdentity and gitIdentityCache live in this outer setup block,
+    // not inside shellEnv, precisely so the cache persists across every bash
+    // invocation instead of being rebuilt (and re-spawning two `git config`
+    // subprocesses) on each call.
+    const gitIdentityCache = new Map<string, { name?: string; email?: string }>()
+    const resolveGitIdentity = Effect.fn("BashTool.resolveGitIdentity")(function* () {
+      const worktree = Instance.worktree
+      const cached = gitIdentityCache.get(worktree)
+      if (cached) return cached
+      // Non-git projects set worktree to "/". There is no project repo whose
+      // identity we could propagate, and whatever repo a git command does run in
+      // has its own config — which injected env would override. Inject nothing.
+      if (worktree === "/") {
+        const none: { name?: string; email?: string } = {}
+        gitIdentityCache.set(worktree, none)
+        return none
+      }
+      const name = (yield* gitSvc.run(["config", "user.name"], { cwd: worktree })).text().trim()
+      const email = (yield* gitSvc.run(["config", "user.email"], { cwd: worktree })).text().trim()
+      if (!name || !email)
+        log.warn("git identity not fully resolved from repo config; leaving authorship to git", {
+          worktree,
+          name: name ? "resolved" : "unset",
+          email: email ? "resolved" : "unset",
+        })
+      const identity = { ...(name ? { name } : {}), ...(email ? { email } : {}) }
+      gitIdentityCache.set(worktree, identity)
+      return identity
+    })
 
     const cygpath = Effect.fn("BashTool.cygpath")(function* (shell: string, text: string) {
       const lines = yield* spawner
@@ -394,11 +572,51 @@ export const BashTool = Tool.define(
       return yield* resolvePath(next, cwd, shell)
     })
 
+    // Whether EVERY delete in this command line is a plain removal confined to a
+    // temp root — the one case where the forced-ask confirmation is skipped.
+    //
+    // Fails closed on purpose, in four ways. Any single miss means "ask":
+    //   1. Only DELETE_COMMANDS qualify. Destructive git subcommands
+    //      (reset --hard, push --force, stash drop, …) act on repository state,
+    //      not on a path in tmp, so they can never earn the exemption.
+    //   2. A delete with no path arguments cannot be shown to be tmp-scoped.
+    //   3. An argument `argPath` declines to resolve — a glob, a `$VAR`, a `$(…)`
+    //      substitution (see `dynamic`) — is UNKNOWN, and unknown is not tmp.
+    //      This is the load-bearing case: `rm -rf $BUILD_DIR/*` must still ask.
+    //   4. A resolved path outside a temp root, including a root itself
+    //      (`insideTmp` requires a strict descendant, so `rm -rf /tmp` asks).
+    //   5. A path inside the PROJECT, even when the project itself lives under a
+    //      temp root (a real configuration — the test fixtures do exactly this).
+    //      Scratch space earns the exemption because it holds no durable work;
+    //      a checkout's own files are durable wherever they happen to sit.
+    const tmpOnlyDelete = Effect.fn("BashTool.tmpOnlyDelete")(function* (
+      root: Node,
+      cwd: string,
+      ps: boolean,
+      shell: string,
+    ) {
+      for (const node of commands(root)) {
+        const command = parts(node)
+        const tokens = command.map((item) => item.text)
+        if (!isDelete(tokens, ps)) continue
+        const head = ps ? tokens[0]?.toLowerCase() : tokens[0]
+        if (!head || !DELETE_COMMANDS.has(head)) return false
+        const args = pathArgs(command, ps)
+        if (args.length === 0) return false
+        for (const arg of args) {
+          const resolved = yield* argPath(arg, cwd, ps, shell)
+          if (!resolved || !insideTmp(resolved) || Instance.containsPath(resolved)) return false
+        }
+      }
+      return true
+    })
+
     const collect = Effect.fn("BashTool.collect")(function* (root: Node, cwd: string, ps: boolean, shell: string) {
       const scan: Scan = {
         dirs: new Set<string>(),
         patterns: new Set<string>(),
         always: new Set<string>(),
+        deletes: new Set<string>(),
       }
 
       for (const node of commands(root)) {
@@ -420,6 +638,8 @@ export const BashTool = Tool.define(
           scan.patterns.add(source(node))
           scan.always.add(BashArity.prefix(tokens).join(" ") + " *")
         }
+
+        if (isDelete(tokens, ps)) scan.deletes.add(source(node))
       }
 
       return scan
@@ -431,12 +651,28 @@ export const BashTool = Tool.define(
         { cwd, sessionID: ctx.sessionID, callID: ctx.callID },
         { env: {} },
       )
+      const identity = yield* resolveGitIdentity()
+      const inherited = childProcessEnv()
+      // Only fill vars the operator hasn't already set, so an explicit
+      // GIT_AUTHOR_* in the environment still wins over our floor — and only
+      // fields the repo itself resolved, so an unresolved field is left for git.
+      const gitFloor: Record<string, string> = {}
+      if (identity.name && !inherited["GIT_AUTHOR_NAME"]) gitFloor["GIT_AUTHOR_NAME"] = identity.name
+      if (identity.email && !inherited["GIT_AUTHOR_EMAIL"]) gitFloor["GIT_AUTHOR_EMAIL"] = identity.email
+      if (identity.name && !inherited["GIT_COMMITTER_NAME"]) gitFloor["GIT_COMMITTER_NAME"] = identity.name
+      if (identity.email && !inherited["GIT_COMMITTER_EMAIL"]) gitFloor["GIT_COMMITTER_EMAIL"] = identity.email
+      // childProcessEnv: this env goes to agent-authored commands.
       return {
-        ...process.env,
+        ...inherited,
         // Python ignores the console code page when stdout is a pipe and falls
         // back to the ANSI code page (GBK on zh-CN), producing mojibake. Force
         // UTF-8 for child Python processes on Windows.
         ...(process.platform === "win32" ? { PYTHONIOENCODING: "utf-8" } : {}),
+        // Git authorship floor. Placed after process.env so the spread order
+        // reads naturally, but it can never clobber an operator value: gitFloor
+        // only ever holds keys that were absent from the child baseline. A plugin's
+        // extra.env comes last and so can still override the floor.
+        ...gitFloor,
         ...extra.env,
       }
     })
@@ -449,17 +685,19 @@ export const BashTool = Tool.define(
         cwd: string
         env: NodeJS.ProcessEnv
         timeout: number
+        maxOutputTokens: number
         description: string
       },
       ctx: Tool.Context,
     ) {
-      const bytes = Truncate.MAX_BYTES
-      const lines = Truncate.MAX_LINES
+      const bytes = input.maxOutputTokens * 4
       const keep = bytes * 2
       let full = ""
+      let first = ""
       let last = ""
       const list: Chunk[] = []
       let used = 0
+      let total = 0
       let file = ""
       let sink: ReturnType<typeof createWriteStream> | undefined
       let cut = false
@@ -480,6 +718,10 @@ export const BashTool = Tool.define(
           yield* Effect.forkScoped(
             Stream.runForEach(Stream.decodeText(handle.all), (chunk) => {
               const size = Buffer.byteLength(chunk, "utf-8")
+              total += size
+              if (Buffer.byteLength(first, "utf-8") < Math.floor(bytes / 2)) {
+                first = headBytes(first + chunk, Math.floor(bytes / 2))
+              }
               list.push({ text: chunk, size })
               used += size
               while (used > keep && list.length > 1) {
@@ -562,40 +804,74 @@ export const BashTool = Tool.define(
       }
       if (aborted) meta.push("User aborted the command")
       const raw = list.map((item) => item.text).join("")
-      const end = tail(raw, lines, bytes)
+      const end = tail(raw, bytes)
       if (end.cut) cut = true
       if (!file && end.cut) {
         file = yield* trunc.write(raw)
       }
 
-      let output = end.text
+      // Token-efficient post-cleanse: RTK-style ANSI strip / progress fold /
+      // secret redact / long-line elide. Only applied when no tool storage is
+      // involved — once the output spills to a truncation file, the on-disk
+      // archive stays raw and cleaning is skipped to keep the inline preview
+      // consistent with the archive.
+      const cleaned =
+        !file && Flag.SLEEPYCODE_EXPERIMENTAL_TOKEN_EFFICIENCY
+          ? BashTokenEfficient.clean(end.text, { command: input.command })
+          : null
+      if (cleaned && cleaned.bytesOut < cleaned.bytesIn) {
+        log.info("bash output cleaned", {
+          bytesIn: cleaned.bytesIn,
+          bytesOut: cleaned.bytesOut,
+          saved: cleaned.bytesIn - cleaned.bytesOut,
+        })
+      }
+
+      // Heuristic (shape-based) pipeline runs AFTER the common pipeline and
+      // only when both flags are on. Same never-worse contract — a shape that
+      // doesn't shrink the bytes is discarded.
+      const heuristic =
+        !file &&
+        Flag.SLEEPYCODE_EXPERIMENTAL_TOKEN_EFFICIENCY &&
+        Flag.SLEEPYCODE_EXPERIMENTAL_TOKEN_EFFICIENCY_HEURISTIC
+          ? BashTokenEfficientHeuristic.cleanHeuristic(cleaned?.text ?? end.text, { command: input.command })
+          : null
+      if (heuristic && heuristic.bytesOut < heuristic.bytesIn) {
+        log.info("bash output heuristic cleaned", {
+          shape: heuristic.shape,
+          bytesIn: heuristic.bytesIn,
+          bytesOut: heuristic.bytesOut,
+          saved: heuristic.bytesIn - heuristic.bytesOut,
+        })
+      }
+
+      let output = heuristic?.text ?? cleaned?.text ?? end.text
       if (!output) output = "(no output)"
 
       if (cut && file) {
-        // Check if tail contains error patterns — if so, prepend head for context
-        const tailScan = end.text.length > 2048 ? end.text.slice(-2048) : end.text
-        const hasErrors = ERROR_PATTERN.test(tailScan)
-        if (hasErrors) {
-          let fileContent: string | undefined
-          try {
-            fileContent = readFileSync(file, "utf-8")
-          } catch {
-            fileContent = undefined
-          }
-          if (fileContent) {
-            const headText = head(fileContent, HEAD_LINES, HEAD_BYTES)
-            output = `...output truncated (head+tail shown due to errors)...\n\nFull output saved to: ${file}\n\n${headText}\n\n...middle omitted...\n\n${end.text}`
-          } else {
-            output = `...output truncated...\n\nFull output saved to: ${file}\n\n` + output
-          }
-        } else {
-          output = `...output truncated...\n\nFull output saved to: ${file}\n\n` + output
-        }
+        const suffix = tail(raw, bytes - Buffer.byteLength(first, "utf-8")).text
+        const shown = Buffer.byteLength(first, "utf-8") + Buffer.byteLength(suffix, "utf-8")
+        output = `Warning: truncated output (original token count: ${Math.ceil(total / 4)})\n\n${first}\n…${Math.ceil((total - shown) / 4)} tokens truncated…\n${suffix}`
       }
 
       if (meta.length > 0) {
         output += "\n\n<bash_metadata>\n" + meta.join("\n") + "\n</bash_metadata>"
       }
+
+      // Conflict-ownership affordance. When this command left git mid-merge with
+      // unmerged paths, the result itself carries the rule (the conflict belongs
+      // to the branch's owner) and the two literal commands that follow it —
+      // because the model reads a tool result before its next tool call, and does
+      // not re-read a system prompt assembled requests ago. Appended after command
+      // output and never blocking; a tool-storage pointer may follow it so a
+      // truncated result always ends with the address of its complete output.
+      output += yield* MergeConflict.annotate({
+        git: gitSvc,
+        cwd: input.cwd,
+        command: input.command,
+        output,
+      })
+      if (cut && file) output += `\n\nFull output saved to: ${file}`
       if (sink) {
         const stream = sink
         yield* Effect.promise(
@@ -624,19 +900,10 @@ export const BashTool = Tool.define(
       Effect.sync(() => {
         const shell = Shell.acceptable()
         const name = Shell.name(shell)
-        const chain =
-          name === "powershell"
-            ? "If the commands depend on each other and must run sequentially, avoid '&&' in this shell because Windows PowerShell 5.1 does not support it. Use PowerShell conditionals such as `cmd1; if ($?) { cmd2 }` when later commands must depend on earlier success."
-            : "If the commands depend on each other and must run sequentially, use a single Bash call with '&&' to chain them together (e.g., `git add . && git commit -m \"message\" && git push`). For instance, if one operation must complete before another starts (like mkdir before cp, Write before Bash for git operations, or git add before git commit), run these operations sequentially instead."
         log.info("bash tool using shell", { shell })
 
         return {
-          description: DESCRIPTION.replaceAll("${directory}", Instance.directory)
-            .replaceAll("${os}", process.platform)
-            .replaceAll("${shell}", name)
-            .replaceAll("${chaining}", chain)
-            .replaceAll("${maxLines}", String(Truncate.MAX_LINES))
-            .replaceAll("${maxBytes}", String(Truncate.MAX_BYTES)),
+          description: bashDescription(),
           parameters: Parameters,
           execute: (params: z.infer<typeof Parameters>, ctx: Tool.Context) =>
             Effect.gen(function* () {
@@ -652,7 +919,27 @@ export const BashTool = Tool.define(
               const root = yield* parse(params.command, ps)
               const scan = yield* collect(root, cwd, ps, shell)
               if (!Instance.containsPath(cwd)) scan.dirs.add(cwd)
-              yield* ask(ctx, scan)
+              // Delete-containing commands normally use askDelete alone — the
+              // delete UI shows the full command, so another bash prompt would
+              // duplicate the confirmation. Auto-approved deletes still pass
+              // through askDelete so an explicit `bash_delete: deny` wins, then
+              // fall back to the regular ask so `bash: deny` wins too.
+              // `tmpOnlyDelete` trusts one whose every target is provably inside
+              // a temp root; scratch space holds no durable user work, and that
+              // check fails closed on anything it cannot resolve.
+              // Instance-scoped, NOT a process-global: one server process serves
+              // many directories with independent permission state, so a global
+              // carrier would let a permissive directory silently auto-approve
+              // deletes in a strict one. Absent accessor ⇒ not exempt (ask).
+              const autoApproveDelete =
+                scan.deletes.size > 0 && ctx.autoApproveDelete ? yield* ctx.autoApproveDelete() : false
+              const skipDeleteAsk = scan.deletes.size === 0 || (yield* tmpOnlyDelete(root, cwd, ps, shell))
+              if (!skipDeleteAsk) {
+                yield* askDelete(ctx, scan, params.command)
+                if (autoApproveDelete) yield* ask(ctx, scan)
+              } else {
+                yield* ask(ctx, scan)
+              }
 
               // Interactive mode: hand terminal to user for direct interaction
               if (params.interactive) {
@@ -693,6 +980,7 @@ export const BashTool = Tool.define(
                   cwd,
                   env: yield* shellEnv(ctx, cwd),
                   timeout,
+                  maxOutputTokens: params.max_output_tokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
                   description: params.description,
                 },
                 ctx,

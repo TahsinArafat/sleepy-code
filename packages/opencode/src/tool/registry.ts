@@ -1,27 +1,34 @@
-import { PlanEnterTool, PlanExitTool } from "./plan"
+import { PlanExitTool } from "./plan"
 import { Session } from "../session"
 import { QuestionTool } from "./question"
-import { BashTool } from "./bash"
+import { BashTool, bashDescription } from "./bash"
 import { EditTool } from "./edit"
+import { MultiEditTool } from "./multiedit"
 import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
 import { HistoryTool } from "./history"
 import { MemoryTool } from "./memory"
-import { ReadTool } from "./read"
+import { ReadTool, describeMedia } from "./read"
+import { ViewImageTool } from "./view-image"
 import { ActorTool } from "./actor"
 import { TaskTool } from "./task"
+import { CronTool } from "./cron"
 import { WorkflowTool } from "./workflow"
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { NotebookEditTool } from "./notebook-edit"
 import { InvalidTool } from "./invalid"
 import { SkillTool } from "./skill"
+import { SkillSearchTool } from "./skill-search"
+import { MCP_TOOL_SEARCH_ID, McpToolSearchTool } from "./mcp-tool-search"
 import * as Tool from "./tool"
 import { Config } from "../config"
 import { type ToolContext as PluginToolContext, type ToolDefinition } from "@sleepy-ai/plugin"
 import z from "zod"
 import { Plugin } from "../plugin"
 import { Provider } from "../provider"
+import { Worktree } from "../worktree"
+import { Git } from "../git"
 import { ProviderID, type ModelID } from "../provider/schema"
 import { WebSearchTool } from "./websearch"
 import { CodeSearchTool } from "./codesearch"
@@ -30,10 +37,6 @@ import { Log } from "@/util"
 import { LspTool } from "./lsp"
 import * as Truncate from "./truncate"
 import { ApplyPatchTool } from "./apply_patch"
-import { ChangeDirectoryTool } from "./change-directory"
-import { Glob } from "@sleepy-ai/shared/util/glob"
-import path from "path"
-import { pathToFileURL } from "url"
 import { Effect, Layer, Context } from "effect"
 import { FetchHttpClient, HttpClient } from "effect/unstable/http"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
@@ -48,6 +51,7 @@ import { Instruction } from "../session/instruction"
 import { AppFileSystem } from "@sleepy-ai/shared/filesystem"
 import { Bus } from "../bus"
 import { Agent } from "../agent/agent"
+import { hasActorTool } from "@/agent/config"
 import { Skill } from "../skill"
 import { Permission } from "@/permission"
 import { ActorRegistry } from "@/actor/registry"
@@ -57,11 +61,13 @@ import { Memory } from "@/memory"
 import { History } from "@/history"
 import { SessionCheckpoint } from "@/session/checkpoint"
 import { TaskRegistry } from "@/task/registry"
+import { defaultLayer as SchedulerDefaultLayer } from "@/cron/scheduler"
 import { Auth } from "@/auth"
-import { shellWrap } from "./shell-wrap"
 import * as BashInteractive from "./bash-interactive"
-import { resolveInvocationStyle } from "./invocation-style"
 import { BuiltinWorkflow } from "@/workflow/builtin"
+import { ToolScriptTool, renderToolScriptDeclarations } from "./tool-script"
+import { GPT_TOP_LEVEL_TOOLS, TOOL_SCRIPT_EXCLUDED, toolScriptRegistry } from "./tool-script-ref"
+import { type HarnessMode, usesGPTToolset } from "./gpt"
 
 const log = Log.create({ service: "tool.registry" })
 
@@ -84,12 +90,7 @@ export function renderWorkflowCatalog(): string {
   ].join("\n")
 }
 
-const fallbackWarned = new Set<string>()
-function warnShellFallbackOnce(id: string) {
-  if (fallbackWarned.has(id)) return
-  fallbackWarned.add(id)
-  log.warn(`tool '${id}' configured with invocation_style='shell' but has no shell field; falling back to JSON`)
-}
+const reservedConflictWarned = new Set<string>()
 
 type ActorDef = Tool.InferDef<typeof ActorTool>
 type ReadDef = Tool.InferDef<typeof ReadTool>
@@ -105,12 +106,29 @@ export interface Interface {
   readonly ids: () => Effect.Effect<string[]>
   readonly all: () => Effect.Effect<Tool.Def[]>
   readonly named: () => Effect.Effect<{ actor: ActorDef; read: ReadDef }>
-  readonly tools: (model: { providerID: ProviderID; modelID: ModelID; agent: Agent.Info }) => Effect.Effect<Tool.Def[]>
+  readonly tools: (model: {
+    providerID: ProviderID
+    modelID: ModelID
+    apiModelID?: string
+    family?: string
+    agent: Agent.Info
+    harness?: HarnessMode
+  }) => Effect.Effect<Tool.Def[]>
+  readonly registered: (model: {
+    providerID: ProviderID
+    modelID: ModelID
+    apiModelID?: string
+    family?: string
+    agent: Agent.Info
+    harness?: HarnessMode
+  }) => Effect.Effect<Tool.Def[]>
   readonly reload: () => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/ToolRegistry") {}
 
+// Registry self-provides leaf layers (e.g. Git) rather than leaking them as
+// external requirements onto every consumer (production wiring + test harnesses).
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -119,14 +137,15 @@ export const layer = Layer.effect(
     const agents = yield* Agent.Service
     const skill = yield* Skill.Service
     const truncate = yield* Truncate.Service
+    const provider = yield* Provider.Service
 
     const invalid = yield* InvalidTool
     const actor = yield* ActorTool
     const read = yield* ReadTool
+    const viewimage = yield* ViewImageTool
     const question = yield* QuestionTool
     const lsptool = yield* LspTool
     const planexit = yield* PlanExitTool
-    const planenter = yield* PlanEnterTool
     const webfetch = yield* WebFetchTool
     const websearch = yield* WebSearchTool
     const bash = yield* BashTool
@@ -137,12 +156,15 @@ export const layer = Layer.effect(
     const edit = yield* EditTool
     const greptool = yield* GrepTool
     const patchtool = yield* ApplyPatchTool
-    const changedirtool = yield* ChangeDirectoryTool
     const skilltool = yield* SkillTool
+    const skillsearch = yield* SkillSearchTool
+    const mcptoolsearch = yield* McpToolSearchTool
     const historytool = yield* HistoryTool
     const memorytool = yield* MemoryTool
     const tasktool = yield* TaskTool
+    const crontool = yield* CronTool
     const workflowtool = yield* WorkflowTool
+    const toolscript = yield* ToolScriptTool
     const agent = yield* Agent.Service
 
     const state = yield* InstanceState.make<State>(
@@ -180,21 +202,6 @@ export const layer = Layer.effect(
           }
         }
 
-        const dirs = yield* config.directories()
-        const matches = dirs.flatMap((dir) =>
-          Glob.scanSync("{tool,tools}/*.{js,ts}", { cwd: dir, absolute: true, dot: true, symlink: true }),
-        )
-        if (matches.length) yield* config.waitForDependencies()
-        for (const match of matches) {
-          const namespace = path.basename(match, path.extname(match))
-          // `match` is an absolute filesystem path from `Glob.scanSync(..., { absolute: true })`.
-          // Import it as `file://` so Node on Windows accepts the dynamic import.
-          const mod = yield* Effect.promise(() => import(`${pathToFileURL(match).href}?v=${Date.now()}`))
-          for (const [id, def] of Object.entries<ToolDefinition>(mod)) {
-            custom.push(fromPlugin(id === "default" ? namespace : `${namespace}_${id}`, def))
-          }
-        }
-
         const plugins = yield* plugin.list()
         for (const p of plugins) {
           for (const [id, def] of Object.entries(p.tool ?? {})) {
@@ -210,6 +217,7 @@ export const layer = Layer.effect(
           invalid: Tool.init(invalid),
           bash: Tool.init(bash),
           read: Tool.init(read),
+          viewimage: Tool.init(viewimage),
           glob: Tool.init(globtool),
           grep: Tool.init(greptool),
           edit: Tool.init(edit),
@@ -220,16 +228,18 @@ export const layer = Layer.effect(
           search: Tool.init(websearch),
           code: Tool.init(codesearch),
           skill: Tool.init(skilltool),
+          skillsearch: Tool.init(skillsearch),
+          mcptoolsearch: Tool.init(mcptoolsearch),
           patch: Tool.init(patchtool),
-          changedir: Tool.init(changedirtool),
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
           planexit: Tool.init(planexit),
-          planenter: Tool.init(planenter),
           memory: Tool.init(memorytool),
           history: Tool.init(historytool),
           task: Tool.init(tasktool),
+          cron: Tool.init(crontool),
           workflow: Tool.init(workflowtool),
+          toolscript: Tool.init(toolscript),
         })
 
         return {
@@ -239,6 +249,7 @@ export const layer = Layer.effect(
             ...(questionEnabled ? [tool.question] : []),
             tool.bash,
             tool.read,
+            tool.viewimage,
             tool.glob,
             tool.grep,
             tool.edit,
@@ -248,15 +259,17 @@ export const layer = Layer.effect(
             tool.fetch,
             tool.search,
             tool.code,
+            tool.mcptoolsearch,
+            tool.skillsearch,
             tool.skill,
             tool.patch,
-            tool.changedir,
             ...(Flag.SLEEPYCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
             tool.planexit,
-            tool.planenter,
             tool.memory,
             tool.history,
             tool.task,
+            tool.toolscript,
+            ...(Flag.SLEEPYCODE_EXPERIMENTAL_CRON ? [tool.cron] : []),
             ...(Flag.SLEEPYCODE_EXPERIMENTAL_WORKFLOW_TOOL ? [tool.workflow] : []),
           ],
           actor: tool.actor,
@@ -267,36 +280,29 @@ export const layer = Layer.effect(
 
     const all: Interface["all"] = Effect.fn("ToolRegistry.all")(function* () {
       const s = yield* InstanceState.get(state)
-      const customIds = new Set(s.custom.map((t) => t.id))
+      const custom = s.custom.filter((tool) => {
+        if (tool.id !== MCP_TOOL_SEARCH_ID) return true
+        if (!reservedConflictWarned.has(tool.id)) {
+          reservedConflictWarned.add(tool.id)
+          log.warn(`custom tool '${tool.id}' conflicts with a reserved built-in and was ignored`)
+        }
+        return false
+      })
+      const customIds = new Set(custom.map((t) => t.id))
       const builtins = s.builtin.filter((t) => !customIds.has(t.id))
-      return [...builtins, ...s.custom] as Tool.Def[]
+      return [...builtins, ...custom] as Tool.Def[]
     })
 
     const ids: Interface["ids"] = Effect.fn("ToolRegistry.ids")(function* () {
       return (yield* all()).map((tool) => tool.id)
     })
 
-    const describeSkill = Effect.fn("ToolRegistry.describeSkill")(function* (agent: Agent.Info) {
-      const list = yield* skill.available(agent)
-      if (list.length === 0) return "No skills are currently available."
-      return [
-        "Load a specialized skill that provides domain-specific instructions and workflows.",
-        "",
-        "When you recognize that a task matches one of the available skills listed below, use this tool to load the full skill instructions.",
-        "",
-        "The skill will inject detailed instructions, workflows, and access to bundled resources (scripts, references, templates) into the conversation context.",
-        "",
-        'Tool output includes a `<skill_content name="...">` block with the loaded content.',
-        "",
-        "The following skills provide specialized sets of instructions for particular tasks",
-        "Invoke this tool to load a skill when a task matches one of the available skills listed below:",
-        "",
-        Skill.fmt(list, { verbose: false }),
-      ].join("\n")
-    })
-
     const describeWorkflow = Effect.fn("ToolRegistry.describeWorkflow")(function* () {
       return renderWorkflowCatalog()
+    })
+
+    const describeToolScript = Effect.fn("ToolRegistry.describeToolScript")(function* (defs: Tool.Def[]) {
+      return renderToolScriptDeclarations(defs)
     })
 
     const describeTask = Effect.fn("ToolRegistry.describeTask")(function* (agent: Agent.Info) {
@@ -316,8 +322,17 @@ export const layer = Layer.effect(
       return ["Available agent types and the tools they have access to:", description].join("\n")
     })
 
-    const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
+    const available = Effect.fn("ToolRegistry.available")(function* (input: {
+      providerID: ProviderID
+      modelID: ModelID
+      apiModelID?: string
+      family?: string
+      agent: Agent.Info
+      harness?: HarnessMode
+    }) {
+      const useGPTTools = usesGPTToolset(input.modelID, input.harness, input.apiModelID, input.family)
       let filtered = (yield* all()).filter((tool) => {
+        if (tool.id === ToolScriptTool.id) return useGPTTools || Flag.SLEEPYCODE_ENABLE_EXEC_TOOL
         if (tool.id === CodeSearchTool.id || tool.id === WebSearchTool.id) {
           if (tool.id === WebSearchTool.id) {
             return (
@@ -329,55 +344,126 @@ export const layer = Layer.effect(
           return input.providerID === ProviderID.opencode || Flag.SLEEPYCODE_ENABLE_EXA
         }
 
-        const usePatch =
-          input.modelID.includes("gpt-") && !input.modelID.includes("oss") && !input.modelID.includes("gpt-4")
-        if (tool.id === ApplyPatchTool.id) return usePatch
-        if (tool.id === EditTool.id || tool.id === WriteTool.id) return !usePatch
+        if (tool.id === ApplyPatchTool.id || tool.id === ViewImageTool.id) return useGPTTools
+        if (
+          tool.id === EditTool.id ||
+          tool.id === MultiEditTool.id ||
+          tool.id === WriteTool.id ||
+          tool.id === ReadTool.id ||
+          tool.id === GrepTool.id ||
+          tool.id === GlobTool.id ||
+          tool.id === NotebookEditTool.id
+        )
+          return !useGPTTools
 
         return true
       })
 
       if (input.agent.toolAllowlist) {
         const allowed = new Set(input.agent.toolAllowlist)
-        filtered = filtered.filter((tool) => tool.id === "invalid" || allowed.has(tool.id))
+        const allowExecGateway =
+          useGPTTools &&
+          [...allowed].some((toolID) => !GPT_TOP_LEVEL_TOOLS.has(toolID) && !TOOL_SCRIPT_EXCLUDED.has(toolID))
+        filtered = filtered.filter(
+          (tool) =>
+            tool.id === "invalid" ||
+            tool.id === MCP_TOOL_SEARCH_ID ||
+            allowed.has(tool.id) ||
+            (tool.id === ToolScriptTool.id && allowExecGateway),
+        )
       }
 
-      const cfg = yield* config.get()
-      const resolveStyle = (toolId: string): "json" | "shell" => resolveInvocationStyle(cfg.tool, toolId)
+      // No subagent may spawn further subagents. `actor` is the only tool that
+      // spawns/runs child agents, so mask it out for every `mode: "subagent"`
+      // agent — native (general/explore) AND user-config-defined, which default
+      // to `"*": "allow"` and would otherwise recurse. Gate on mode rather than
+      // agent name so a custom subagent cannot opt itself back in.
+      //
+      // SYSTEM_SPAWNED_AGENT_TYPES are exempt: they are spawned by the runtime,
+      // never by a model, so they pose no recursive-delegation risk. The
+      // exemption is also load-bearing for checkpoint-writer, a fork agent whose
+      // LLM-visible tool schema must stay byte-identical to its (primary) parent's
+      // captured ForkContext.tools or the prefix cache breaks — see ForkContext
+      // JSDoc in actor/spawn.ts. Its real tool authority is the actor.tools
+      // whitelist set in tryStartCheckpointWriter, which already omits `actor`.
+      // The condition lives in hasActorTool so prompt surfaces that name the tool
+      // read the same gate.
+      if (!hasActorTool(input.agent)) {
+        filtered = filtered.filter((tool) => tool.id !== ActorTool.id)
+      }
+
+      return { filtered, useGPTTools }
+    })
+
+    // Late-bound ref (see tool-script-ref.ts): exec dispatches through the full
+    // model- and agent-filtered set, including definitions hidden from the
+    // compact Codex top-level schema.
+    // The optional fallback is only for direct tool tests without model context.
+    toolScriptRegistry.current = (input) =>
+      input ? available(input).pipe(Effect.map((result) => result.filtered)) : all()
+
+    // The read tool's media paragraph depends on the model the turn runs on.
+    const describeReadMedia = Effect.fn("ToolRegistry.describeReadMedia")(function* (input: {
+      providerID: ProviderID
+      modelID: ModelID
+    }) {
+      const model = yield* provider
+        .getModel(input.providerID, input.modelID)
+        .pipe(Effect.catchDefect(() => Effect.succeed(undefined)))
+      return describeMedia(model)
+    })
+
+    const definitions = Effect.fn("ToolRegistry.definitions")(function* (
+      input: {
+        providerID: ProviderID
+        modelID: ModelID
+        apiModelID?: string
+        family?: string
+        agent: Agent.Info
+        harness?: HarnessMode
+      },
+      includeHidden: boolean,
+    ) {
+      const availableTools = yield* available(input)
+      const selected = availableTools.useGPTTools && !includeHidden
+        ? availableTools.filtered.filter((tool) => GPT_TOP_LEVEL_TOOLS.has(tool.id))
+        : availableTools.filtered
 
       return yield* Effect.forEach(
-        filtered,
+        selected,
         Effect.fnUntraced(function* (tool: Tool.Def) {
           using _ = log.time(tool.id)
           const output = {
-            description: tool.description,
+            description: tool.id === BashTool.id && availableTools.useGPTTools ? bashDescription(true) : tool.description,
             parameters: tool.parameters,
           }
           yield* plugin.trigger("tool.definition", { toolID: tool.id }, output)
-          const style = resolveStyle(tool.id)
-          const useShell = style === "shell" && tool.shell !== undefined
-          if (style === "shell" && !tool.shell) {
-            warnShellFallbackOnce(tool.id)
-          }
-          const effective: Tool.Def = useShell ? shellWrap(tool) : tool
-          const description = useShell ? tool.shell!.description : output.description
           return {
             id: tool.id,
             description: [
-              description,
+              output.description,
+              tool.id === ReadTool.id ? yield* describeReadMedia(input) : undefined,
               tool.id === ActorTool.id ? yield* describeTask(input.agent) : undefined,
-              tool.id === SkillTool.id ? yield* describeSkill(input.agent) : undefined,
               tool.id === WorkflowTool.id ? yield* describeWorkflow() : undefined,
+              tool.id === ToolScriptTool.id ? yield* describeToolScript(availableTools.filtered) : undefined,
             ]
               .filter(Boolean)
               .join("\n"),
-            parameters: useShell ? effective.parameters : output.parameters,
-            execute: effective.execute,
-            formatValidationError: effective.formatValidationError,
+            parameters: output.parameters,
+            execute: tool.execute,
+            formatValidationError: tool.formatValidationError,
           }
         }),
         { concurrency: "unbounded" },
       )
+    })
+
+    const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
+      return yield* definitions(input, false)
+    })
+
+    const registered: Interface["registered"] = Effect.fn("ToolRegistry.registered")(function* (input) {
+      return yield* definitions(input, true)
     })
 
     const named: Interface["named"] = Effect.fn("ToolRegistry.named")(function* () {
@@ -391,9 +477,9 @@ export const layer = Layer.effect(
       yield* InstanceState.invalidate(state)
     })
 
-    return Service.of({ ids, all, named, tools, reload })
+    return Service.of({ ids, all, named, tools, registered, reload })
   }),
-)
+).pipe(Layer.provide(Git.defaultLayer))
 
 export const defaultLayer = Layer.suspend(() =>
   layer.pipe(
@@ -414,7 +500,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(CrossSpawnSpawner.defaultLayer),
     Layer.provide(Ripgrep.defaultLayer),
     Layer.provide(Truncate.defaultLayer),
-    Layer.provide(Layer.mergeAll(ActorRegistry.defaultLayer, ActorWaiter.defaultLayer)),
+    Layer.provide(Layer.mergeAll(ActorRegistry.defaultLayer, ActorWaiter.defaultLayer, Worktree.defaultLayer)),
     Layer.provide(Team.defaultLayer),
     Layer.provide(
       Layer.mergeAll(
@@ -422,6 +508,7 @@ export const defaultLayer = Layer.suspend(() =>
         History.defaultLayer,
         SessionCheckpoint.defaultLayer,
         TaskRegistry.defaultLayer,
+        SchedulerDefaultLayer,
         Auth.defaultLayer,
       ),
     ),

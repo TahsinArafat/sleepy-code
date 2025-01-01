@@ -2,21 +2,21 @@ import { Context, Effect, Layer } from "effect"
 import { and, asc, desc, eq, sql } from "drizzle-orm"
 import { Database } from "../storage"
 import { MessageTable, PartTable } from "../session/session.sql"
+import { detail, page, summary } from "./media"
+import { projection } from "./projection"
+import type { PartID } from "../session/schema"
 import type { MessageID } from "../session/schema"
-import { Config } from "../config"
 import { Bus } from "../bus"
 import { Instance } from "../project/instance"
 import { buildFtsQuery } from "./fts-query"
-import type { Kind } from "./extract"
+import { basePartId } from "./chunk"
 import { layer as writerLayer, Service as WriterService } from "./writer"
-import { layer as backfillLayer, Service as BackfillService } from "./backfill"
 
 export type SearchHit = {
   part_id: string
   session_id: string
   message_id: string
   project_id: string
-  kind: Kind
   tool_name: string | null
   snippet: string
   score: number
@@ -39,11 +39,16 @@ export type MessageContext = {
 }
 
 export interface Interface {
+  readonly get: (input: {
+    part_id: string
+    offset?: number
+    length?: number
+  }) => Effect.Effect<(ReturnType<typeof page> & ReturnType<typeof detail>) | undefined, Error>
+
   readonly search: (input: {
     query: string
     scope?: "project" | "global"
     session_id?: string
-    kind?: Kind | Kind[]
     tool_name?: string
     time_after?: number
     time_before?: number
@@ -66,18 +71,14 @@ type Row = {
   session_id: string
   message_id: string
   project_id: string
-  kind: string
   tool_name: string | null
   snippet: string
   score: number
   time_created: number
 }
 
-export const defaultLayer: Layer.Layer<Service | WriterService | BackfillService, never, never> = Layer.suspend(() =>
-  Layer.mergeAll(layer, writerLayer, backfillLayer).pipe(
-    Layer.provide(Config.defaultLayer),
-    Layer.provide(Bus.defaultLayer),
-  ),
+export const defaultLayer: Layer.Layer<Service | WriterService, never, never> = Layer.suspend(() =>
+  Layer.mergeAll(layer, writerLayer).pipe(Layer.provide(Bus.defaultLayer)),
 )
 
 export const layer = Layer.effect(
@@ -101,11 +102,6 @@ export const layer = Layer.effect(
         conditions.push("history_fts.session_id = ?")
         params.push(input.session_id)
       }
-      if (input.kind) {
-        const kinds = Array.isArray(input.kind) ? input.kind : [input.kind]
-        conditions.push(`history_fts.kind IN (${kinds.map(() => "?").join(",")})`)
-        for (const k of kinds) params.push(k)
-      }
       if (input.tool_name) {
         conditions.push("history_fts.tool_name = ?")
         params.push(input.tool_name)
@@ -120,31 +116,51 @@ export const layer = Layer.effect(
       }
 
       const whereClause = conditions.length > 0 ? `AND ${conditions.join(" AND ")}` : ""
+      // Debt history-search-overfetch-after-v6: legacy multi-row FTS bodies may remain
+      // until migration v6 finishes. Over-fetch so one part cannot fill LIMIT before
+      // dedupe. When v6 is done on a DB (or once fleet v6 coverage is complete), tighten
+      // fetchLimit back to `limit` — tracked in docs/compose/spec/history-chunk-large-bodies.md.
+      const fetchLimit = Math.min(limit * 24, HARD_CAP * 24)
+      // CROSS JOIN fixes the loop order in SQLite: MATCH once, then rowid lookup.
+      // Node SQLite may otherwise scan a project first and rerun MATCH per row.
       const sqlText = `
         SELECT history_fts.part_id, history_fts.session_id, history_fts.message_id,
-               history_fts.project_id, history_fts.kind, history_fts.tool_name,
+               history_fts.project_id, history_fts.tool_name,
                history_fts.time_created,
-               snippet(history_fts_idx, 0, '<<', '>>', '...', 32) AS snippet,
+               substr(snippet(history_fts_idx, 0, '<<', '>>', '...', 32), 1, 1001) AS snippet,
                bm25(history_fts_idx) AS score
         FROM history_fts_idx
-        JOIN history_fts ON history_fts.rowid = history_fts_idx.rowid
+        CROSS JOIN history_fts ON history_fts.rowid = history_fts_idx.rowid
         WHERE history_fts_idx MATCH ?
         ${whereClause}
         ORDER BY score
         LIMIT ?
       `
-      const rows = Database.Client().$client.query(sqlText).all(ftsQuery, ...params, limit) as Row[]
-      return rows.map((r) => ({
-        part_id: r.part_id,
-        session_id: r.session_id,
-        message_id: r.message_id,
-        project_id: r.project_id,
-        kind: r.kind as Kind,
-        tool_name: r.tool_name,
-        snippet: r.snippet,
-        score: -r.score,
-        time_created: r.time_created,
-      }))
+      // `prepare` rather than `query`: both bun:sqlite and node:sqlite expose it with the same
+      // `.all(...positionalParams)` shape, so this path works under either driver (`#db`
+      // resolves to node:sqlite outside Bun). See the same note in memory/service.ts.
+      const rows = Database.Client()
+        .$client.prepare(sqlText)
+        .all(ftsQuery, ...params, fetchLimit) as Row[]
+      const seen = new Set<string>()
+      const hits = []
+      for (const r of rows) {
+        const partId = basePartId(r.part_id)
+        if (seen.has(partId)) continue
+        seen.add(partId)
+        hits.push({
+          part_id: partId,
+          session_id: r.session_id,
+          message_id: r.message_id,
+          project_id: r.project_id,
+          tool_name: r.tool_name,
+          snippet: summary(r.snippet),
+          score: -r.score,
+          time_created: r.time_created,
+        })
+        if (hits.length >= limit) break
+      }
+      return hits
     })
 
     const around = Effect.fn("History.around")(function* (input: Parameters<Interface["around"]>[0]) {
@@ -165,7 +181,11 @@ export const layer = Layer.effect(
 
       const beforeRows = Database.use((db) =>
         db
-          .select()
+          .select({
+            id: MessageTable.id,
+            time_created: MessageTable.time_created,
+            role: sql<string>`json_extract(${MessageTable.data}, '$.role')`,
+          })
           .from(MessageTable)
           .where(
             and(
@@ -179,7 +199,11 @@ export const layer = Layer.effect(
       )
       const afterRows = Database.use((db) =>
         db
-          .select()
+          .select({
+            id: MessageTable.id,
+            time_created: MessageTable.time_created,
+            role: sql<string>`json_extract(${MessageTable.data}, '$.role')`,
+          })
           .from(MessageTable)
           .where(
             and(
@@ -196,7 +220,7 @@ export const layer = Layer.effect(
       if (messages.length === 0) return { session_id: anchor.session_id, messages: [] }
       const parts = Database.use((db) =>
         db
-          .select()
+          .select(projection(true))
           .from(PartTable)
           .where(
             and(
@@ -217,10 +241,12 @@ export const layer = Layer.effect(
         list.push(p)
         byMessage.set(p.message_id, list)
       }
+      // Non-LLM search projection: PartID-asc is fine. Compose head order is a
+      // MessageV2 hydrate invariant for prompt/fork prefixes (see
+      // promoteComposeProtocolFirst); history summaries do not feed those paths.
 
       const out: MessageContext[] = messages.map((m) => {
-        const role: "user" | "assistant" =
-          (m.data as { role?: "user" | "assistant" })?.role === "user" ? "user" : "assistant"
+        const role: "user" | "assistant" = m.role === "user" ? "user" : "assistant"
         const partsHere = (byMessage.get(m.id) ?? []).map((p) => {
           const d = p.data as {
             type: string
@@ -228,18 +254,13 @@ export const layer = Layer.effect(
             tool?: string
             state?: { input?: unknown; output?: unknown; error?: string }
           }
-          const text =
-            d.type === "text" || d.type === "reasoning"
-              ? (d.text ?? "")
-              : d.type === "tool"
-                ? `tool: ${d.tool ?? ""}\ninput: ${JSON.stringify(d.state?.input ?? {})}\n${d.state?.error ? `error: ${d.state.error}` : `output: ${JSON.stringify(d.state?.output ?? "")}`}`
-                : `[${d.type}]`
+          const text = detail(d, false).text
           return {
             part_id: p.id,
             type: d.type,
             role,
             tool_name: d.type === "tool" ? (d.tool ?? null) : null,
-            text,
+            text: summary(text),
           }
         })
         return {
@@ -253,6 +274,23 @@ export const layer = Layer.effect(
       return { session_id: anchor.session_id, messages: out }
     })
 
-    return Service.of({ search, around })
+    const get = Effect.fn("History.get")(function* (input: Parameters<Interface["get"]>[0]) {
+      const row = Database.use((db) =>
+        db
+          .select({ data: PartTable.data })
+          .from(PartTable)
+          .where(eq(PartTable.id, basePartId(input.part_id) as PartID))
+          .get(),
+      )
+      if (!row) return undefined
+      const result = detail(row.data)
+      const slice = yield* Effect.try({
+        try: () => page(result.text, input.offset, input.length),
+        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+      })
+      return { ...result, ...slice }
+    })
+
+    return Service.of({ search, around, get })
   }),
 )

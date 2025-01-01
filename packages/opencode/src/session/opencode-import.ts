@@ -1,3 +1,4 @@
+import { indexImportedParts } from "../history/import"
 import { existsSync } from "fs"
 import { Log } from "../util"
 import { Database, eq, and, inArray } from "../storage"
@@ -196,7 +197,9 @@ export async function run(opts?: { force?: boolean; dbPath?: string }): Promise<
                 parent_id: sess.parent_id as SessionID | null,
                 slug: sess.slug,
                 directory: sess.directory,
-                title: sess.title,
+                title: sess.title.trim() ? sess.title : "Untitled",
+                title_source: sess.title.trim() ? "user" : "fallback",
+                title_revision: 0,
                 version: sess.version,
                 time_created: sess.time_created,
                 time_updated: sess.time_updated,
@@ -245,6 +248,8 @@ export async function run(opts?: { force?: boolean; dbPath?: string }): Promise<
               })
               .run()
           }
+
+          indexImportedParts(tx, parts.map((p) => p.id))
 
           tx.insert(ExternalImportTable)
             .values({

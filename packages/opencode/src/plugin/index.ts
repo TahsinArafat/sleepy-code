@@ -12,12 +12,14 @@ import type {
 import { z } from "zod"
 import { matchesActor } from "./matcher"
 import { Config } from "../config"
+import { Global } from "../global"
 import { Bus } from "../bus"
 import { BusEvent } from "../bus/bus-event"
 import { Log } from "../util"
 import { createOpencodeClient } from "@sleepy-ai/sdk"
 import { Flag } from "../flag/flag"
 import { CodexAuthPlugin } from "./codex"
+import { XaiAuthPlugin } from "./xai"
 import { SleepyAuthPlugin, AnthropicProxyPlugin } from "./sleepy"
 import { Session } from "../session"
 import type { SessionID } from "../session/schema"
@@ -91,6 +93,19 @@ type State = {
   hooksWithMeta: HookEntry[]
 }
 
+type FileHookState = {
+  hooks: Hooks[]
+  meta: HookEntry[]
+  dirs: string[]
+  /** Absolute path -> mtimeMs at load time, for cheap staleness checks. */
+  files: Record<string, number>
+  /** Mutable box: last staleness check timestamp (throttle). */
+  lastCheck: { value: number }
+}
+
+const FILE_HOOK_GLOB = "{hook,hooks}/*.{js,ts}"
+const FILE_HOOK_CHECK_INTERVAL_MS = 500
+
 export type ActorStopAggregatedDecision = ActorStopOutput & {
   contributingPluginNames: string[]
   contributingHookIDs: string[]
@@ -129,6 +144,7 @@ const INTERNAL_PLUGINS: PluginInstance[] = [
   SleepyAuthPlugin,
   AnthropicProxyPlugin,
   CodexAuthPlugin,
+  XaiAuthPlugin,
   CopilotAuthPlugin,
   // gitlab/poe auth are external npm packages typed against the published
   // upstream plugin package, which carries a duplicate (nominal) copy of the
@@ -143,6 +159,23 @@ const INTERNAL_PLUGINS: PluginInstance[] = [
 
 function isServerPlugin(value: unknown): value is PluginInstance {
   return typeof value === "function"
+}
+
+function isHookObject(value: unknown): value is Hooks {
+  return value != null && typeof value === "object"
+}
+
+function registerHook(hooks: Hooks[], hooksWithMeta: HookEntry[], hook: unknown, pluginName: string) {
+  if (!isHookObject(hook)) {
+    log.warn("plugin did not return a hook object, skipping", { pluginName })
+    return
+  }
+  hooks.push(hook)
+  hooksWithMeta.push({
+    hook,
+    pluginName,
+    hookIDFor: (event: string) => `${pluginName}#${event}`,
+  })
 }
 
 function getServerPlugin(value: unknown) {
@@ -177,13 +210,7 @@ async function applyPlugin(
   if (plugin) {
     await resolvePluginId(load.source, load.spec, load.target, readPluginId(plugin.id, load.spec), load.pkg)
     const pluginName = readPluginId(plugin.id, load.spec) ?? load.pkg?.pkg ?? load.spec
-    const hookObj = await (plugin as PluginModule).server(input, load.options)
-    hooks.push(hookObj)
-    hooksWithMeta.push({
-      hook: hookObj,
-      pluginName,
-      hookIDFor: (event: string) => `${pluginName}#${event}`,
-    })
+    registerHook(hooks, hooksWithMeta, await (plugin as PluginModule).server(input, load.options), pluginName)
     return
   }
 
@@ -192,13 +219,7 @@ async function applyPlugin(
     const pluginName = fnName && fnName !== "default" && fnName !== ""
       ? fnName
       : (load.pkg?.pkg ?? load.spec)
-    const hookObj = await server(input, load.options)
-    hooks.push(hookObj)
-    hooksWithMeta.push({
-      hook: hookObj,
-      pluginName,
-      hookIDFor: (event: string) => `${pluginName}#${event}`,
-    })
+    registerHook(hooks, hooksWithMeta, await server(input, load.options), pluginName)
   }
 }
 
@@ -221,7 +242,7 @@ export const layer = Layer.effect(
         const { Server } = yield* Effect.promise(() => import("../server/server"))
 
         const client = createOpencodeClient({
-          baseUrl: "http://localhost:4096",
+          baseUrl: "http://sleepycode.internal",
           directory: ctx.directory,
           headers: Flag.SLEEPYCODE_SERVER_PASSWORD
             ? {
@@ -242,13 +263,18 @@ export const layer = Layer.effect(
             },
           },
           get serverUrl(): URL {
-            return Server.url ?? new URL("http://localhost:4096")
+            // Real URL after listen; placeholder origin has no conventional port hardcode.
+            return Server.url ?? new URL("http://sleepycode.internal")
           },
           // @ts-expect-error
           $: typeof Bun === "undefined" ? undefined : Bun.$,
         }
 
         for (const plugin of INTERNAL_PLUGINS) {
+          if (typeof plugin !== "function") {
+            log.warn("skipping invalid internal plugin")
+            continue
+          }
           log.info("loading internal plugin", { name: plugin.name })
           const init = yield* Effect.tryPromise({
             try: () => plugin(input),
@@ -256,14 +282,7 @@ export const layer = Layer.effect(
               log.error("failed to load internal plugin", { name: plugin.name, error: err })
             },
           }).pipe(Effect.option)
-          if (init._tag === "Some") {
-            hooks.push(init.value)
-            hooksWithMeta.push({
-              hook: init.value,
-              pluginName: plugin.name,
-              hookIDFor: (event: string) => `${plugin.name}#${event}`,
-            })
-          }
+          if (init._tag === "Some") registerHook(hooks, hooksWithMeta, init.value, plugin.name || "internal")
         }
 
         // Load optional local extensions under src/ext/. Prefers the generated
@@ -299,19 +318,12 @@ export const layer = Layer.effect(
             ([exportName, v]) => typeof v === "function" && exportName.endsWith("Plugin"),
           )?.[1] as PluginInstance | undefined
           if (!overlay) continue
-          log.info("loading extension", { name })
+          // log.info("loading extension", { name })
           const init = yield* Effect.tryPromise({
             try: () => overlay(input),
             catch: (err) => log.error("failed to load extension", { name, error: err }),
           }).pipe(Effect.option)
-          if (init._tag === "Some") {
-            hooks.push(init.value)
-            hooksWithMeta.push({
-              hook: init.value,
-              pluginName: name,
-              hookIDFor: (event: string) => `${name}#${event}`,
-            })
-          }
+          if (init._tag === "Some") registerHook(hooks, hooksWithMeta, init.value, name)
         }
 
         const plugins = Flag.SLEEPYCODE_PURE ? [] : (cfg.plugin_origins ?? [])
@@ -388,6 +400,7 @@ export const layer = Layer.effect(
 
         // Notify plugins of current config
         for (const hook of hooks) {
+          if (!isHookObject(hook)) continue
           yield* Effect.tryPromise({
             try: () => Promise.resolve((hook as any).config?.(cfg)),
             catch: (err) => {
@@ -401,6 +414,7 @@ export const layer = Layer.effect(
           Stream.runForEach((input) =>
             Effect.sync(() => {
               for (const hook of hooks) {
+                if (!isHookObject(hook)) continue
                 void hook["event"]?.({ event: input as any })
               }
             }),
@@ -412,26 +426,55 @@ export const layer = Layer.effect(
       }),
     )
 
-    const fileHookState = yield* InstanceState.make<{ hooks: Hooks[]; meta: HookEntry[] }>(
+    const fileHookState = yield* InstanceState.make<FileHookState>(
       Effect.fn("Plugin.fileHooks")(function* () {
         const hooks: Hooks[] = []
         const meta: HookEntry[] = []
-        const cfg = yield* config.get()
-        const dirs = yield* config.directories()
+        const files: Record<string, number> = {}
+        yield* config.get()
+        // Exclude home-level file hooks from both initial discovery and reloads.
+        const dirs = (yield* config.directories()).filter(
+          (dir) => path.resolve(dir) !== path.resolve(Global.Path.home, ".sleepycode"),
+        )
 
         for (const dir of dirs) {
-          const matches = Glob.scanSync("{hook,hooks}/*.{js,ts}", { cwd: dir, absolute: true, dot: true, symlink: true })
+          const matches = Glob.scanSync(FILE_HOOK_GLOB, { cwd: dir, absolute: true, dot: true, symlink: true })
           for (const match of matches) {
+            const stat = yield* Effect.tryPromise({
+              try: () => fs.promises.stat(match),
+              catch: (err) => err,
+            }).pipe(Effect.catch(() => Effect.succeed(undefined)))
+            files[match] = stat?.mtimeMs ?? 0
+            // Transpile and load the hook file. We use Bun.build to produce a
+            // temporary .js artifact, then dynamic-import that artifact. This
+            // avoids two pitfalls: (1) Bun's import() ignores query-string cache
+            // busters so re-imports return stale modules, (2) require() transpiles
+            // .ts in some contexts but not others (CI Linux edge case).
             const mod = yield* Effect.tryPromise({
-              try: () => import(`${pathToFileURL(match).href}?v=${Date.now()}`),
+              try: async () => {
+                const result = await Bun.build({
+                  entrypoints: [match],
+                  target: "bun",
+                  format: "esm",
+                })
+                if (!result.success) throw new Error(result.logs.map(String).join("\n"))
+                const blob = result.outputs[0]
+                const tmpFile = `${match}.${Date.now()}.mjs`
+                await Bun.write(tmpFile, blob)
+                try {
+                  return await import(tmpFile) as Record<string, unknown>
+                } finally {
+                  fs.promises.unlink(tmpFile).catch(() => {})
+                }
+              },
               catch: (err) => err,
             }).pipe(Effect.catch((err) => {
               log.error("failed to load file hook", { path: match, error: errorMessage(err) })
               return Effect.succeed(undefined)
             }))
             if (!mod) continue
-            const hookObj: Hooks = mod.default ?? mod
-            if (hookObj && typeof hookObj === "object") {
+            const hookObj = mod.default ?? mod
+            if (isHookObject(hookObj)) {
               const name = path.basename(match, path.extname(match))
               hooks.push(hookObj)
               meta.push({ hook: hookObj, pluginName: `file:${name}`, hookIDFor: (event: string) => `file:${name}#${event}` })
@@ -440,9 +483,67 @@ export const layer = Layer.effect(
           }
         }
 
-        return { hooks, meta }
+        // Dispatch bus events to file hooks' `event` handlers. Scoped to this
+        // cache entry: invalidation interrupts the fiber, and the rebuild
+        // re-subscribes with the fresh hook set.
+        if (hooks.some((hook) => typeof hook.event === "function")) {
+          yield* bus.subscribeAll().pipe(
+            Stream.runForEach((input) =>
+              Effect.sync(() => {
+                for (const entry of meta) {
+                  const fn = entry?.hook?.event
+                  if (!fn) continue
+                  try {
+                    void Promise.resolve(fn({ event: input as any })).catch((err) => {
+                      log.error("file hook event handler failed", { hook: entry.pluginName, error: errorMessage(err) })
+                    })
+                  } catch (err) {
+                    log.error("file hook event handler failed", { hook: entry.pluginName, error: errorMessage(err) })
+                  }
+                }
+              }),
+            ),
+            Effect.forkScoped,
+          )
+        }
+
+        return { hooks, meta, dirs, files, lastCheck: { value: Date.now() } }
       }),
     )
+
+    // Staleness check: re-stat known hook files and re-glob hook dirs. Any
+    // mtime change, added, or removed file invalidates the cache so the next
+    // InstanceState.get rebuilds it. Covers ALL writers (editors, git, other
+    // processes) — not just this process's write/edit tools. Throttled to
+    // avoid stat storms on hot trigger paths.
+    const freshFileHooks = Effect.gen(function* () {
+      const fh = yield* InstanceState.get(fileHookState)
+      const now = Date.now()
+      if (now - fh.lastCheck.value < FILE_HOOK_CHECK_INTERVAL_MS) return fh
+      fh.lastCheck.value = now
+
+      const stale = yield* Effect.promise(async () => {
+        const known = Object.keys(fh.files)
+        const seen = new Set<string>()
+        for (const dir of fh.dirs) {
+          for (const match of Glob.scanSync(FILE_HOOK_GLOB, { cwd: dir, absolute: true, dot: true, symlink: true })) {
+            seen.add(match)
+            if (!(match in fh.files)) return true
+          }
+        }
+        for (const file of known) {
+          if (!seen.has(file)) return true
+          const stat = await fs.promises.stat(file).catch(() => undefined)
+          if ((stat?.mtimeMs ?? 0) !== fh.files[file]) return true
+        }
+        return false
+      })
+
+      if (!stale) return fh
+      log.info("file hooks changed on disk, reloading")
+      yield* InstanceState.invalidate(fileHookState)
+      return yield* InstanceState.get(fileHookState)
+    })
 
     const aggregateDecision = (
       input: ActorPreStopInput | ActorPostStopInput,
@@ -450,14 +551,16 @@ export const layer = Layer.effect(
     ) =>
       Effect.gen(function* () {
         const s = yield* InstanceState.get(state)
-        const fh = yield* InstanceState.get(fileHookState)
+        const fh = yield* freshFileHooks
         const reasons: string[] = []
         const pluginNames: string[] = []
         const hookIDs: string[] = []
         let anyContinue = false
 
-        for (const entry of [...s.hooksWithMeta, ...fh.meta]) {
-          const reg = entry.hook[eventName]
+        for (const entry of [...(s.hooksWithMeta ?? []), ...(fh.meta ?? [])]) {
+          const hook = entry?.hook
+          if (!isHookObject(hook)) continue
+          const reg = hook[eventName]
           if (!reg) continue
 
           const fn = typeof reg === "function" ? reg : reg.run
@@ -564,17 +667,17 @@ export const layer = Layer.effect(
     >(name: Name, input: Input, output: Output) {
       if (!name) return output
       const s = yield* InstanceState.get(state)
-      const fh = yield* InstanceState.get(fileHookState)
+      const fh = yield* freshFileHooks
 
-      for (const entry of s.hooksWithMeta) {
-        const fn = entry.hook[name] as any
-        if (!fn) continue
+      for (const entry of s.hooksWithMeta ?? []) {
+        const fn = entry?.hook?.[name] as ((input: Input, output: Output) => unknown) | undefined
+        if (typeof fn !== "function") continue
         yield* Effect.promise(async () => fn(input, output))
       }
 
-      for (const entry of fh.meta) {
-        const fn = entry.hook[name] as any
-        if (!fn) continue
+      for (const entry of fh.meta ?? []) {
+        const fn = entry?.hook?.[name] as ((input: Input, output: Output) => unknown) | undefined
+        if (typeof fn !== "function") continue
         const hookID = entry.hookIDFor(name)
 
         if ((hookFailures.get(hookID) ?? 0) >= CIRCUIT_BREAKER_THRESHOLD) {

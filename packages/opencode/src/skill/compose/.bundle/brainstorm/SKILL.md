@@ -1,6 +1,5 @@
 ---
 name: compose:brainstorm
-hidden: true
 description: "You MUST use this before any creative work - creating features, building components, adding functionality, or modifying behavior. Explores user intent, requirements and design before implementation."
 ---
 
@@ -50,7 +49,7 @@ You MUST create a task for each of these items and complete them in order:
 - **Spec self-review** (fix inline)
 - **User reviews spec?** — Changes requested → back to write design doc / Approved → **invoke compose:plan**
 
-**The terminal state is invoking compose:plan.** Do NOT invoke frontend-design, mcp-builder, or any other implementation skill. The ONLY skill you invoke after brainstorming is compose:plan.
+**The terminal state is invoking compose:plan.** Do NOT invoke implementation skills. The ONLY skill you invoke after brainstorming is compose:plan.
 
 ## The Process
 

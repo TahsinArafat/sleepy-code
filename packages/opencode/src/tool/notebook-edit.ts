@@ -11,16 +11,15 @@ import { FileWatcher } from "../file/watcher"
 import { Instance } from "../project/instance"
 import { SessionCwd } from "./session-cwd"
 import { assertWriteAllowed, askEditUnlessMemory } from "./external-directory"
-import { assertFileRead } from "./read-state"
 import { trimDiff } from "./edit"
 
 const Parameters = z.object({
-  notebook_path: z.string().describe("The absolute path to the .ipynb file to modify"),
+  notebook_path: z.string().describe("Path to the .ipynb file"),
   cell_id: z
     .string()
     .optional()
     .describe(
-      "Cell id from the Read tool's <cell id=\"...\"> output. Required for replace/delete; for insert, the new cell is added after this cell (or at the beginning if omitted).",
+      "Cell id from the `read` tool's <cell id=\"...\"> output. Required for replace/delete; for insert, the new cell is added after this cell (or at the beginning if omitted).",
     ),
   new_source: z.string().optional().describe("The cell's new content. Required for replace and insert; ignored for delete."),
   cell_type: z
@@ -116,7 +115,6 @@ export const NotebookEditTool = Tool.define(
           }
 
           yield* assertWriteAllowed(ctx, notebookPath)
-          assertFileRead(ctx, notebookPath, "notebook_edit")
 
           const exists = yield* fs.existsSafe(notebookPath)
           if (!exists) throw new Error(`Notebook not found: ${notebookPath}`)

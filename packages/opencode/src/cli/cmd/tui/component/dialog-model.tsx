@@ -15,6 +15,7 @@ import { useLanguage } from "@tui/context/language"
 import * as Model from "../util/model"
 import { PROVIDER_PRIORITY } from "@/util/provider-priority"
 import * as fuzzysort from "fuzzysort"
+import { createFreeApiSunsetSignal, freeApiModelNameKey, isFreeApiModel } from "@tui/util/free-api-sunset"
 
 const ADD_MODEL_SENTINEL = "__add_model__"
 
@@ -37,8 +38,11 @@ export function DialogModel(props: { providerID?: string }) {
   const connected = useConnected()
   const providers = createDialogProviderOptions()
   const t = useLanguage().t
+  const freeApiSunset = createFreeApiSunsetSignal()
   const modelName = (providerID: string, modelID: string) =>
-    modelID === "sleepy-auto" ? t("tui.model.sleepy_auto.name") : Model.name(sync.data.provider, providerID, modelID)
+    isFreeApiModel({ providerID, modelID })
+      ? t(freeApiModelNameKey(freeApiSunset()))
+      : Model.name(sync.data.provider, providerID, modelID)
 
   const showExtra = createMemo(() => connected() && !props.providerID)
 
@@ -154,8 +158,8 @@ export function DialogModel(props: { providerID?: string }) {
 
     const providerOptions = pipe(
       sync.data.provider,
-      // Exclude xiaomi/sleepy from regular list only when pinned section is shown
-      filter((provider) => !showPinned || (provider.id !== "xiaomi" && provider.id !== "sleepy")),
+      // All xiaomi models are pinned; other sleepy models still belong in their provider group.
+      filter((provider) => !showPinned || provider.id !== "xiaomi"),
       sortBy(
         (provider) => provider.id !== "opencode",
         (provider) => PROVIDER_PRIORITY[provider.id] ?? 99,
@@ -166,6 +170,7 @@ export function DialogModel(props: { providerID?: string }) {
           provider.models,
           entries(),
           filter(([_, info]) => info.status !== "deprecated"),
+          filter(([model]) => !showPinned || provider.id !== "sleepy" || model !== "sleepy-auto"),
           // Scoped views ("you just connected provider X, pick a model from X")
           // intentionally show only that provider's own models. The free
           // sleepy-auto belongs to the `sleepy` provider, so it is NOT surfaced

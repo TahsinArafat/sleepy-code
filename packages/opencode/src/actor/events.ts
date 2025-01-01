@@ -29,6 +29,7 @@ export const ActorStatusChanged = BusEvent.define(
   }),
 )
 
+// Legacy wire event; no runtime scanner emits it.
 export const ActorStuck = BusEvent.define(
   "actor.stuck",
   z.object({
@@ -37,6 +38,18 @@ export const ActorStuck = BusEvent.define(
     description: z.string(),
     lastTurnTime: z.number(),
     stuckDuration: z.number(),
+  }),
+)
+
+// Legacy wire event retained for old clients/history. No runtime scanner emits it.
+export const ActorStalled = BusEvent.define(
+  "actor.stalled",
+  z.object({
+    sessionID: SessionID.zod,
+    actorID: z.string(),
+    description: z.string(),
+    lastActivityTime: z.number(),
+    stalledDuration: z.number(),
   }),
 )
 

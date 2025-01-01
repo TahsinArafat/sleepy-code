@@ -124,6 +124,36 @@ async function promptWorkspaceTrust(directory: string, level: "untrusted" | "dan
   return result
 }
 
+// Startup gate for --dangerously-skip-permissions. Mirrors Claude Code's
+// bypass-permissions warning: an explicit, red-highlighted accept is required
+// before every permission check is auto-approved. Returns false to abort.
+async function promptDangerousPermissions(): Promise<boolean> {
+  const prompts = await import("@clack/prompts")
+  const { EOL } = await import("os")
+
+  const asRoot = typeof process.getuid === "function" && process.getuid() === 0
+
+  prompts.log.warning(
+    [
+      UI.Style.TEXT_DANGER + t("skip_permissions.title") + UI.Style.TEXT_NORMAL,
+      "",
+      t("skip_permissions.body"),
+      "",
+      UI.Style.TEXT_DANGER + t("skip_permissions.plugin_warn") + UI.Style.TEXT_NORMAL,
+      ...(asRoot ? ["", UI.Style.TEXT_DANGER + t("skip_permissions.root_warn") + UI.Style.TEXT_NORMAL] : []),
+    ].join(EOL),
+  )
+  const result = await prompts.select({
+    message: "",
+    options: [
+      { label: t("skip_permissions.option.no"), value: false },
+      { label: t("skip_permissions.option.yes"), value: true },
+    ],
+  })
+  if (prompts.isCancel(result)) return false
+  return result
+}
+
 export const TuiThreadCommand = cmd({
   command: "$0 [project]",
   describe: "start sleepycode tui",
@@ -170,6 +200,12 @@ export const TuiThreadCommand = cmd({
         type: "boolean",
         describe: "skip workspace trust prompt and trust the directory",
         default: false,
+      })
+      .option("dangerously-skip-permissions", {
+        alias: ["yolo"],
+        type: "boolean",
+        describe: "auto-approve permissions that are not explicitly denied (dangerous!)",
+        default: false,
       }),
   handler: async (args) => {
     // Keep ENABLE_PROCESSED_INPUT cleared even if other code flips it.
@@ -206,11 +242,25 @@ export const TuiThreadCommand = cmd({
         if (trustLevel !== "trusted") {
           const accepted = await promptWorkspaceTrust(cwd, trustLevel)
           if (!accepted) {
-            process.exit(0)
             return
           }
           if (trustLevel === "untrusted") await markTrusted(cwd)
         }
+      }
+
+      if (args["dangerously-skip-permissions"]) {
+        // Require an explicit accept when interactive; skip the gate with no TTY
+        // (CI / piped stdin) so automation still works.
+        if (process.stdin.isTTY) {
+          const accepted = await promptDangerousPermissions()
+          if (!accepted) {
+            return
+          }
+        }
+        // Propagate to the worker (which loads config) via the env it inherits
+        // from sanitizedProcessEnv. Config injects an allow-all base under the
+        // user's permission rules so denies still win.
+        process.env.SLEEPYCODE_DANGEROUSLY_SKIP_PERMISSIONS = "1"
       }
 
       const env = sanitizedProcessEnv({
@@ -285,6 +335,19 @@ export const TuiThreadCommand = cmd({
             events: createEventSource(client),
           }
 
+      // Bind a loopback listener even when this TUI talks to the worker in-process.
+      // The transport above stays as it was on purpose: routing the TUI's own traffic
+      // through TCP and JSON would be a pointless downgrade. What the socket is for is
+      // everything OUTSIDE this process — the OpenAI-compatible `/v1` surface a skill or
+      // subprocess borrows a model through, which cannot exist without one. Awaited
+      // rather than fired off, so a consumer spawned in the first turn finds it already
+      // there; the call is idempotent and generates its own credential.
+      if (!external) {
+        await client
+          .call("server", undefined)
+          .catch((error) => Log.Default.warn("failed to bind loopback listener", { error: errorMessage(error) }))
+      }
+
       setTimeout(() => {
         client.call("checkUpgrade", { directory: cwd }).catch(() => {})
       }, 1000).unref?.()
@@ -317,7 +380,6 @@ export const TuiThreadCommand = cmd({
     } finally {
       unguard?.()
     }
-    process.exit(0)
   },
 })
 // scratch

@@ -3,6 +3,7 @@ import path from "path"
 import fs from "fs/promises"
 import { Effect, Layer, ManagedRuntime } from "effect"
 import { EditTool } from "../../src/tool/edit"
+import { WriteTool } from "../../src/tool/write"
 import { Instance } from "../../src/project/instance"
 import { tmpdir } from "../fixture/fixture"
 import { LSP } from "../../src/lsp"
@@ -87,6 +88,14 @@ const resolve = () =>
   runtime.runPromise(
     Effect.gen(function* () {
       const info = yield* EditTool
+      return yield* info.init()
+    }),
+  )
+
+const resolveWrite = () =>
+  runtime.runPromise(
+    Effect.gen(function* () {
+      const info = yield* WriteTool
       return yield* info.init()
     }),
   )
@@ -218,6 +227,106 @@ describe("tool.edit", () => {
 
           const content = await fs.readFile(filepath, "utf-8")
           expect(content).toBe("new content here")
+        },
+      })
+    })
+
+    test("replaces text without a prior read tool call in the conversation", async () => {
+      await using tmp = await tmpdir()
+      const filepath = path.join(tmp.path, "existing.txt")
+      await fs.writeFile(filepath, "old content here", "utf-8")
+
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const edit = await resolve()
+          const result = await Effect.runPromise(
+            edit.execute(
+              {
+                file_path: filepath,
+                old_string: "old content",
+                new_string: "new content",
+              },
+              baseCtx,
+            ),
+          )
+
+          expect(result.output).toContain("Edit applied successfully")
+
+          const content = await fs.readFile(filepath, "utf-8")
+          expect(content).toBe("new content here")
+        },
+      })
+    })
+
+    test("edits a file the session just wrote via the write tool, without a prior read", async () => {
+      await using tmp = await tmpdir()
+      const filepath = path.join(tmp.path, "self-written.txt")
+
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const write = await resolveWrite()
+          await Effect.runPromise(
+            write.execute(
+              {
+                file_path: filepath,
+                content: "self written draft",
+              },
+              baseCtx,
+            ),
+          )
+
+          const edit = await resolve()
+          const result = await Effect.runPromise(
+            edit.execute(
+              {
+                file_path: filepath,
+                old_string: "draft",
+                new_string: "final",
+              },
+              baseCtx,
+            ),
+          )
+
+          expect(result.output).toContain("Edit applied successfully")
+          expect(await fs.readFile(filepath, "utf-8")).toBe("self written final")
+        },
+      })
+    })
+
+    test("edits a file created via edit old_string=\"\" without a prior read", async () => {
+      await using tmp = await tmpdir()
+      const filepath = path.join(tmp.path, "via-edit-create.txt")
+
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const edit = await resolve()
+          await Effect.runPromise(
+            edit.execute(
+              {
+                file_path: filepath,
+                old_string: "",
+                new_string: "created by edit",
+              },
+              baseCtx,
+            ),
+          )
+
+          const result = await Effect.runPromise(
+            edit.execute(
+              {
+                file_path: filepath,
+                old_string: "created",
+                new_string: "updated",
+              },
+              baseCtx,
+            ),
+          )
+
+          expect(result.output).toContain("Edit applied successfully")
+          expect(await fs.readFile(filepath, "utf-8")).toBe("updated by edit")
         },
       })
     })

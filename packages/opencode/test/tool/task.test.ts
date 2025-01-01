@@ -9,7 +9,6 @@ import { MessageID, SessionID } from "../../src/session/schema"
 import { TaskRegistry } from "../../src/task/registry"
 import { Truncate } from "../../src/tool"
 import { TaskTool } from "../../src/tool/task"
-import { shellWrap } from "../../src/tool/shell-wrap"
 import { provideTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
@@ -97,6 +96,66 @@ describe("task tool", () => {
         yield* tool.execute({ operation: { action: "rename", id: t.id, summary: "new name" } }, ctx(sess.id))
         const after = yield* reg.get({ session_id: sess.id, id: t.id })
         expect(after?.summary).toBe("new name")
+      }),
+    ),
+  )
+
+  it.live("subagent start on a task owned by another actor does not steal ownership", () =>
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const session = yield* Session.Service
+        const reg = yield* TaskRegistry.Service
+        const sess = yield* session.create({ title: "Test" })
+        const t = yield* reg.create({ session_id: sess.id, summary: "main's task", owner: "main" })
+        const info = yield* TaskTool
+        const tool = yield* info.init()
+        yield* tool.execute(
+          { operation: { action: "start", id: t.id } },
+          { ...ctx(sess.id), actorID: "explore-1" },
+        )
+        const after = yield* reg.get({ session_id: sess.id, id: t.id })
+        expect(after?.status).toBe("in_progress")
+        expect(after?.owner).toBe("main")
+      }),
+    ),
+  )
+
+  it.live("subagent start on its own task sets it as owner", () =>
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const session = yield* Session.Service
+        const reg = yield* TaskRegistry.Service
+        const sess = yield* session.create({ title: "Test" })
+        const t = yield* reg.create({ session_id: sess.id, summary: "unowned" })
+        const info = yield* TaskTool
+        const tool = yield* info.init()
+        yield* tool.execute(
+          { operation: { action: "start", id: t.id } },
+          { ...ctx(sess.id), actorID: "explore-1" },
+        )
+        const after = yield* reg.get({ session_id: sess.id, id: t.id })
+        expect(after?.status).toBe("in_progress")
+        expect(after?.owner).toBe("explore-1")
+      }),
+    ),
+  )
+
+  it.live("main start on a subagent-owned task still takes over (handoff preserved)", () =>
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const session = yield* Session.Service
+        const reg = yield* TaskRegistry.Service
+        const sess = yield* session.create({ title: "Test" })
+        const t = yield* reg.create({ session_id: sess.id, summary: "orphan", owner: "explore-1" })
+        const info = yield* TaskTool
+        const tool = yield* info.init()
+        yield* tool.execute(
+          { operation: { action: "start", id: t.id } },
+          { ...ctx(sess.id), actorID: "main" },
+        )
+        const after = yield* reg.get({ session_id: sess.id, id: t.id })
+        expect(after?.status).toBe("in_progress")
+        expect(after?.owner).toBe("main")
       }),
     ),
   )
@@ -275,22 +334,4 @@ describe("task tool: independent lifecycle verbs", () => {
     ),
   )
 
-  it.live("shell-wrapped task create does not crash and renders operation=create", () =>
-    provideTmpdirInstance(() =>
-      Effect.gen(function* () {
-        const session = yield* Session.Service
-        const sess = yield* session.create({ title: "Test" })
-        const info = yield* TaskTool
-        const def = yield* info.init()
-        const wrapped = shellWrap({ ...def, id: info.id })
-        const result = yield* wrapped.execute({ script: 'task create "x"' }, ctx(sess.id) as any)
-        // Regression: nested discriminator { operation: { action } } used to crash
-        // shell-wrap with "H.replace is not a function". The XML attribute must
-        // reflect the action verb, not "[object Object]".
-        expect(result.output).toContain('operation="create"')
-        expect(result.output).not.toContain("[object Object]")
-        expect(result.metadata.success).toBe(1)
-      }),
-    ),
-  )
 })

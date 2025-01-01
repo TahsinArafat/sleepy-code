@@ -1,12 +1,14 @@
 import path from "path"
-import { Effect } from "effect"
+import { Effect, Option } from "effect"
 import { EffectLogger } from "@/effect"
 import { InstanceState } from "@/effect"
 import { Global } from "@/global"
+import { Config } from "@/config"
+import { isMemoryWriteEnabled } from "@/memory/write-gate"
 import type * as Tool from "./tool"
 import { Instance } from "../project/instance"
 import { ProjectID } from "../project/schema"
-import { assertMemoryWriteAllowed } from "./memory-path-guard"
+import { assertMemoryWriteAllowed, assertAgentWriteSandbox } from "./memory-path-guard"
 import { AppFileSystem } from "@sleepy-ai/shared/filesystem"
 
 type Kind = "file" | "directory"
@@ -36,6 +38,16 @@ export const assertExternalDirectoryEffect = Effect.fn("Tool.assertExternalDirec
   // tasks/<taskId>/*.md and rejects cross-task / wrong-agent writes.
   if (AppFileSystem.contains(path.join(Global.Path.data, "memory"), full)) return
 
+  // App-managed worktrees live under <data>/worktree/<projectID>/<name>. They are
+  // TRUSTED workspaces created and owned by the app itself (workflow isolation and
+  // related tooling), not foreign user paths. A subagent may inherit the spawner's
+  // (main-checkout) Instance boundary, which does not contain the worktree path —
+  // every in-worktree write would then hit external_directory:ask, and a background
+  // child has no interactive replier so the ask fails closed. Trust the managed
+  // base here, exactly as the memory subtree above. Genuinely external user paths
+  // are unaffected and still prompt.
+  if (AppFileSystem.contains(path.join(Global.Path.data, "worktree"), full)) return
+
   const kind = options?.kind ?? "file"
   const dir = kind === "directory" ? full : path.dirname(full)
   const glob =
@@ -59,19 +71,33 @@ export async function assertExternalDirectory(ctx: Tool.Context, target?: string
 }
 
 /**
+ * Whether new memory may be written (see memory/write-gate.ts for the field).
+ *
+ * Resolved with `Effect.serviceOption` rather than `yield* Config.Service` on
+ * purpose: `Tool.Def.execute` is typed `Effect<ExecuteResult>` with NO
+ * requirements, so every helper a write tool calls must keep R = never.
+ * serviceOption reads the service out of the ambient runtime when present
+ * (always, in-app) without adding it to the requirement set.
+ *
+ * Fails OPEN — no Config service (unit tests, detached fibers) means writing
+ * stays enabled. A config we cannot read must never silently block memory writes.
+ */
+const memoryWriteEnabled = Effect.gen(function* () {
+  const svc = yield* Effect.serviceOption(Config.Service)
+  if (Option.isNone(svc)) return true
+  return isMemoryWriteEnabled(yield* svc.value.get())
+})
+
+/**
  * The single write-permission gate for file-mutating tools (edit, write,
- * apply_patch). Runs the two checks every write must pass, in order:
+ * apply_patch, notebook_edit). Runs every write check in order:
  *   1. external_directory — asks before touching paths outside the worktree
  *      (defers the memory subtree to the memory guard; see the early return above).
- *   2. memory-path-guard — finer authority over the memory tree: a task-bound
- *      subagent may write its own tasks/<taskId>/*.md, the checkpoint-writer its
- *      canonical paths, and everything else is rejected.
+ *   2. memory-path-guard — finer authority over the memory tree.
  *
- * Collapsing both into one call removes the per-tool duplication and, more
- * importantly, makes "call external_directory but forget the memory guard"
- * unrepresentable — a new write tool that calls this one gate cannot drift into
- * leaving the memory tree unguarded. Read-only tools (read/grep/glob/lsp) keep
- * calling assertExternalDirectoryEffect directly; the memory guard is write-only.
+ * Collapsing into one call makes "call one gate but forget another"
+ * unrepresentable — a new write tool that calls this cannot drift into
+ * leaving memory unguarded.
  */
 export const assertWriteAllowed = Effect.fn("Tool.assertWriteAllowed")(function* (
   ctx: Tool.Context,
@@ -94,6 +120,15 @@ export const assertWriteAllowed = Effect.fn("Tool.assertWriteAllowed")(function*
     }
   })()
 
+  // System-agent write sandbox: checkpoint-writer is memory-only, while
+  // dream/distill may also write <worktree>/.sleepycode.
+  assertAgentWriteSandbox({
+    target,
+    agentName: ctx.agent,
+    memoryRoot: path.join(Global.Path.data, "memory"),
+    worktree: (yield* InstanceState.context).worktree,
+  })
+
   assertMemoryWriteAllowed({
     target,
     agentName: ctx.agent,
@@ -101,6 +136,7 @@ export const assertWriteAllowed = Effect.fn("Tool.assertWriteAllowed")(function*
     projectID,
     sessionID: ctx.sessionID,
     taskId: ctx.taskId,
+    writeEnabled: yield* memoryWriteEnabled,
   })
 })
 

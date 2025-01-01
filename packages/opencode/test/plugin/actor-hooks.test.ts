@@ -11,6 +11,7 @@ import { Plugin, HookEvent } from "../../src/plugin"
 import { Bus } from "../../src/bus"
 import { AppRuntime } from "../../src/effect/app-runtime"
 import { Actor } from "../../src/actor/spawn"
+import { ActorWaiter } from "../../src/actor/waiter"
 import { startScriptedLLMServer, textStopResponse } from "../lib/scripted-llm-server"
 
 void Log.init({ print: false })
@@ -66,7 +67,7 @@ describe("provenance plumbing", () => {
     }
   })
 
-  test("source=spawn (default) leaves provenance undefined", async () => {
+  test("source=spawn for a same-session subagent leaves provenance undefined", async () => {
     await using tmp = await tmpdir({})
 
     const result = await Instance.provide({
@@ -77,14 +78,21 @@ describe("provenance plumbing", () => {
             const sessions = yield* Session.Service
             const prompt = yield* SessionPrompt.Service
             const created = yield* sessions.create({ title: "test" })
-            return yield* prompt.prompt({
+            const message = yield* prompt.prompt({
               sessionID: created.id,
               agent: "build",
-              agentID: "main",
+              agentID: "build-1",
               source: "spawn",
               parts: [{ type: "text", text: "regular task" }],
               noReply: true,
             })
+            const persisted = yield* sessions.messages({ sessionID: created.id, agentID: "build-1" })
+            expect(persisted).toHaveLength(1)
+            expect(persisted[0].info).toMatchObject({ id: message.info.id, agentID: "build-1" })
+            expect(persisted[0].info).not.toHaveProperty("provenance")
+            expect(persisted[0].parts[0]).toMatchObject({ type: "text", text: "regular task" })
+            expect(persisted[0].parts[0]).not.toHaveProperty("synthetic", true)
+            return message
           }),
         ),
     })
@@ -440,7 +448,7 @@ describe("actor.preStop ReAct loop", () => {
 })
 
 describe("actor.postStop ReAct loop", () => {
-  test("postStop runs after delivery; caller's outcome.finalText is delivery snapshot", async () => {
+  test("[TP-R14-11] postStop settles before delivery without replacing the main result", async () => {
     // Use a marker file so the test plugin can record postStop completion.
     const markerPath = path.join("/tmp", `marker-${Date.now()}-${Math.random()}`)
 
@@ -517,13 +525,7 @@ describe("actor.postStop ReAct loop", () => {
           ),
       })
 
-      expect(callerFinalText).toBe("first")  // delivery snapshot, NOT "second"
-
-      // Wait for postStop chain to complete (marker file exists)
-      for (let i = 0; i < 20; i++) {
-        if (await Bun.file(markerPath).exists()) break
-        await Bun.sleep(50)
-      }
+      expect(callerFinalText).toBe("first")
       expect(await Bun.file(markerPath).exists()).toBe(true)
       expect(server.captures.length).toBe(2)  // delivery turn + postStop turn
     } finally {
@@ -535,7 +537,6 @@ describe("actor.postStop ReAct loop", () => {
   test("postStop caps at MAX_POST_REACT re-entries", async () => {
     // postStop hook that always requests continuation → should cap at MAX_POST_REACT (3).
     // Total LLM calls: 1 (delivery) + 3 (postStop re-entries) = 4.
-    // Caller's finalText is still from the delivery turn (not a postStop turn).
     const server = startScriptedLLMServer([
       { lines: textStopResponse("delivery-text") },
       { lines: textStopResponse("post1") },
@@ -607,14 +608,7 @@ describe("actor.postStop ReAct loop", () => {
           ),
       })
 
-      // Caller sees delivery-text, NOT any postStop turn text
       expect(callerFinalText).toBe("delivery-text")
-
-      // Wait briefly for postStop turns to fully complete
-      for (let i = 0; i < 20; i++) {
-        if (server.captures.length >= 4) break
-        await Bun.sleep(50)
-      }
 
       // 1 delivery + 3 postStop re-entries (MAX_POST_REACT cap) = 4 total
       expect(server.captures.length).toBe(4)
@@ -623,10 +617,7 @@ describe("actor.postStop ReAct loop", () => {
     }
   })
 
-  test("postStop LLM failure breaks loop without affecting caller", async () => {
-    // Delivery turn succeeds; postStop turn returns HTTP 400 (no retry),
-    // which the Effect.catch swallow converts to undefined → loop breaks.
-    // Caller still receives delivery finalText; no exception escapes.
+  test("[TP-R14-07] postStop LLM failure preserves the successful result with a warning", async () => {
     const server = startScriptedLLMServer([
       { lines: textStopResponse("delivered") },     // delivery turn
       { lines: [], status: 400 },                   // postStop turn — HTTP 400 triggers LLM error (no retry)
@@ -691,14 +682,17 @@ describe("actor.postStop ReAct loop", () => {
                 background: false,
               })
               const outcome = yield* Deferred.await(result.outcome)
-              // Brief wait for postStop to attempt and fail
-              yield* Effect.sleep("200 millis")
+              expect(outcome.status).toBe("success")
+              if (outcome.status === "success") expect(outcome.warnings?.join(" ")).toContain("postStop")
+              const waited = yield* ActorWaiter.Service.use((waiter) => waiter.wait({ sessionID: result.sessionID, actor_id: result.actorID }))
+                .pipe(Effect.provide(ActorWaiter.defaultLayer))
+              expect(waited.result).toBe("delivered")
+              expect(waited.warnings?.join(" ")).toContain("postStop")
               return outcome.status === "success" ? outcome.finalText : undefined
             }),
           ),
       })
 
-      // Caller sees delivery snapshot — postStop failure does NOT propagate
       expect(callerFinalText).toBe("delivered")
       // Server saw 2 calls: delivery + 1 postStop attempt (which failed)
       expect(server.captures.length).toBe(2)

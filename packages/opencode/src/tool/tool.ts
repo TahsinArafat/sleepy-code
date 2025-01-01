@@ -26,6 +26,15 @@ export type Context<M extends Metadata = Metadata> = {
   messages: MessageV2.WithParts[]
   metadata(input: { title?: string; metadata?: M }): Effect.Effect<void>
   ask(input: Omit<Permission.Request, "id" | "sessionID" | "tool">): Effect.Effect<void>
+  // Whether this instance currently exempts irreversible deletes from the extra
+  // bash_delete confirmation. Supplied by the caller (which holds the Permission
+  // service) instead of read from a process-global, so it stays instance-scoped:
+  // one server process serves many directories with independent permission state,
+  // and a global carrier would let a permissive directory silently auto-approve
+  // deletes in a strict one.
+  // Optional so the handful of synthetic contexts need not care; absent means
+  // "not exempt" — i.e. keep asking, which is the fail-closed direction.
+  autoApproveDelete?(): Effect.Effect<boolean>
 }
 
 export interface ExecuteResult<M extends Metadata = Metadata> {
@@ -41,15 +50,6 @@ export interface Def<Parameters extends z.ZodType = z.ZodType, M extends Metadat
   parameters: Parameters
   execute(args: z.infer<Parameters>, ctx: Context): Effect.Effect<ExecuteResult<M>>
   formatValidationError?(error: z.ZodError): string
-  shell?: {
-    description: string
-    parse(script: string): Effect.Effect<z.infer<Parameters>[], unknown>
-    // Optional recovery for shell-mode calls that arrive shaped like the tool's
-    // JSON args (no usable `script`). Returns the tool's parsed JSON shape to be
-    // routed to execute, or undefined if rawArgs can't be lifted. Lets shell mode
-    // transparently accept a JSON-shape call instead of erroring.
-    recover?(rawArgs: unknown): z.infer<Parameters> | undefined
-  }
 }
 export type DefWithoutID<Parameters extends z.ZodType = z.ZodType, M extends Metadata = Metadata> = Omit<
   Def<Parameters, M>,

@@ -1,17 +1,56 @@
-import { Effect, Layer, Context, Schedule } from "effect"
-import { Database, inArray, eq, and, lte, sql } from "@/storage"
+import { Effect, Layer, Context } from "effect"
+import { Database, inArray, eq, and, ne, sql } from "@/storage"
 import { Bus } from "@/bus"
 import type { SessionID, MessageID } from "@/session/schema"
 import { ActorRegistryTable } from "./actor.sql"
-import type { Actor, ActorStatus, ActorOutcome, ContextMode, Lifecycle, SpawnMode, ToolWhitelist } from "./schema"
+import { SessionTable } from "@/session/session.sql"
+import type {
+  Actor,
+  ActorStatus,
+  ActorOutcome,
+  ContextMode,
+  Lifecycle,
+  SpawnMode,
+  ToolWhitelist,
+  Liveness,
+} from "./schema"
+import { deriveLiveness, DEFAULT_LIVENESS_ABANDON_MS } from "./schema"
 import * as Events from "./events"
-import { Log } from "@/util"
 import { SYSTEM_SPAWNED_AGENT_TYPES } from "@/agent/config"
+import { randomUUID } from "node:crypto"
 
-const log = Log.create({ service: "actor.registry" })
+// Identifies the registering process; a different token does not prove termination.
+const PROCESS_INSTANCE_ID = randomUUID()
 
-const STUCK_THRESHOLD_MS = 5 * 60 * 1000 // 5 minutes
-const SCAN_INTERVAL_MS = 60 * 1000 // every 60s
+/**
+ * Settle abandoned other-process actors so waiters can observe their terminal
+ * status. Bootstrap must only inspect registry metadata: persisted question
+ * parts are repaired by the selected session's execution lifecycle, never by
+ * scanning transcript history on the caller's thread during project startup.
+ */
+export function sweepAbandonedZombies(): void {
+  const cutoff = Date.now() - DEFAULT_LIVENESS_ABANDON_MS
+  // Keep this a top-level transaction; Database.use would bypass its boundary.
+  Database.transaction((tx) => {
+    tx.update(ActorRegistryTable)
+      .set({
+        status: "idle",
+        last_outcome: "failure",
+        last_error:
+          "Process restarted while actor was active; settled by abandon threshold. Not final — actor send can recover.",
+        time_completed: Date.now(),
+        time_updated: Date.now(),
+      })
+      .where(
+        and(
+          inArray(ActorRegistryTable.status, ["running", "pending"]),
+          ne(ActorRegistryTable.instance_id, PROCESS_INSTANCE_ID),
+          sql`COALESCE(${ActorRegistryTable.last_activity_time}, ${ActorRegistryTable.time_created}) < ${cutoff}`,
+        ),
+      )
+      .run()
+  })
+}
 
 type ActorRow = typeof ActorRegistryTable.$inferSelect
 
@@ -23,6 +62,7 @@ function fromRow(row: ActorRow): Actor {
     parentActorID: row.parent_actor_id ?? undefined,
     status: row.status,
     lastOutcome: row.last_outcome ?? undefined,
+    ...(row.result_message_id ? { resultMessageID: row.result_message_id } : {}),
     lifecycle: row.lifecycle,
     agent: row.agent,
     description: row.description,
@@ -32,6 +72,7 @@ function fromRow(row: ActorRow): Actor {
     tools: row.tools ?? undefined,
     lastTurnTime: row.last_turn_time,
     turnCount: row.turn_count,
+    lastActivityTime: row.last_activity_time ?? undefined,
     lastError: row.last_error ?? undefined,
     time: {
       created: row.time_created,
@@ -63,16 +104,34 @@ export interface Interface {
       status: ActorStatus
       lastOutcome?: ActorOutcome | undefined
       lastError?: string | undefined
+      resultMessageID?: MessageID | undefined
     },
   ) => Effect.Effect<void>
   readonly updateTurn: (sessionID: SessionID, actorID: string) => Effect.Effect<void>
+  readonly updateAgent: (sessionID: SessionID, actorID: string, agent: string) => Effect.Effect<void>
   readonly get: (sessionID: SessionID, actorID: string) => Effect.Effect<Actor | undefined>
+  // Derived pull-side liveness for a single actor row (progressing/stalled/
+  // terminal), computed from honest registry fields. Returns undefined when the
+  // row is absent. Pass stallMs to override the default staleness window.
+  readonly liveness: (
+    sessionID: SessionID,
+    actorID: string,
+    stallMs?: number,
+  ) => Effect.Effect<{ liveness: Liveness; actor: Actor } | undefined>
   readonly listBySession: (sessionID: SessionID) => Effect.Effect<Actor[]>
   readonly listActive: () => Effect.Effect<Actor[]>
   readonly listByParent: (sessionID: SessionID, parentActorID: string) => Effect.Effect<Actor[]>
+  // Peer CHILD sessions of a parent session, joined to their session title.
+  // Peers key their registry row by their own child session id, so the parent
+  // link lives on the Session row (parent_id) — not on session_id here.
+  readonly listPeerChildren: (
+    parentSessionID: SessionID,
+    parentActorID: string,
+  ) => Effect.Effect<{ actor: Actor; title: string }[]>
   readonly renderForAgent: (sessionID: SessionID) => Effect.Effect<string>
   readonly agentTypeFor: (sessionID: SessionID, actorID: string) => Effect.Effect<string>
   readonly isSystemSpawned: (sessionID: SessionID, actorID: string) => Effect.Effect<boolean>
+  readonly servesCheckpoint: (sessionID: SessionID, actorID: string | undefined) => Effect.Effect<boolean>
   readonly allocateActorID: (sessionID: SessionID, agentType: string) => Effect.Effect<string>
 }
 
@@ -82,6 +141,10 @@ export const layer: Layer.Layer<Service, never, Bus.Service> = Layer.effect(
   Service,
   Effect.gen(function* () {
     const bus = yield* Bus.Service
+
+    // Layer rebuilds retain the same process identity.
+    // This is stable across layer rebuilds within the same process.
+    const instanceID = PROCESS_INSTANCE_ID
 
     // --- CRUD methods ---
 
@@ -106,6 +169,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service> = Layer.effect(
         parent_actor_id: input.parentActorID ?? null,
         status: "pending" as const,
         last_outcome: null,
+        result_message_id: null,
         lifecycle: input.lifecycle,
         agent: input.agent,
         description: input.description,
@@ -115,7 +179,12 @@ export const layer: Layer.Layer<Service, never, Bus.Service> = Layer.effect(
         tools: input.tools ?? null,
         last_turn_time: now,
         turn_count: 0,
+        // No part has landed for this actor yet. NULL, not `now`: deriveLiveness
+        // falls back to time_created when activity is absent, so seeding a fake
+        // activity timestamp here would assert something happened that did not.
+        last_activity_time: null,
         last_error: null,
+        instance_id: instanceID,
         time_completed: null,
         time_created: now,
         time_updated: now,
@@ -140,14 +209,20 @@ export const layer: Layer.Layer<Service, never, Bus.Service> = Layer.effect(
         status: ActorStatus
         lastOutcome?: ActorOutcome | undefined
         lastError?: string | undefined
+        resultMessageID?: MessageID | undefined
       },
     ) {
       const now = Date.now()
       const isTerminal = patch.status === "idle" && patch.lastOutcome !== undefined
+      // Running clears result_message_id so a wait in flight cannot resolve
+      // against a delivery from the previous turn. Terminal writes the new
+      // pointer (or null when settle produced no delivery) — a failure without
+      // output must not reuse an older success (TP-R14-11).
       const set: Record<string, unknown> = {
         status: patch.status,
         time_updated: now,
-        ...(isTerminal ? { time_completed: now } : {}),
+        ...(isTerminal ? { time_completed: now, result_message_id: patch.resultMessageID ?? null } : {}),
+        ...(patch.status === "running" ? { result_message_id: null } : {}),
       }
       if (patch.lastOutcome !== undefined) set.last_outcome = patch.lastOutcome
       if (patch.lastError !== undefined) set.last_error = patch.lastError
@@ -157,9 +232,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service> = Layer.effect(
           db
             .update(ActorRegistryTable)
             .set(set)
-            .where(
-              and(eq(ActorRegistryTable.session_id, sessionID), eq(ActorRegistryTable.actor_id, actorID)),
-            )
+            .where(and(eq(ActorRegistryTable.session_id, sessionID), eq(ActorRegistryTable.actor_id, actorID)))
             .run(),
         ),
       )
@@ -171,9 +244,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service> = Layer.effect(
           db
             .select()
             .from(ActorRegistryTable)
-            .where(
-              and(eq(ActorRegistryTable.session_id, sessionID), eq(ActorRegistryTable.actor_id, actorID)),
-            )
+            .where(and(eq(ActorRegistryTable.session_id, sessionID), eq(ActorRegistryTable.actor_id, actorID)))
             .get(),
         ),
       )
@@ -200,9 +271,23 @@ export const layer: Layer.Layer<Service, never, Bus.Service> = Layer.effect(
               turn_count: sql`${ActorRegistryTable.turn_count} + 1`,
               time_updated: now,
             })
-            .where(
-              and(eq(ActorRegistryTable.session_id, sessionID), eq(ActorRegistryTable.actor_id, actorID)),
-            )
+            .where(and(eq(ActorRegistryTable.session_id, sessionID), eq(ActorRegistryTable.actor_id, actorID)))
+            .run(),
+        ),
+      )
+    })
+
+    const updateAgent = Effect.fn("ActorRegistry.updateAgent")(function* (
+      sessionID: SessionID,
+      actorID: string,
+      agent: string,
+    ) {
+      yield* Effect.sync(() =>
+        Database.use((db) =>
+          db
+            .update(ActorRegistryTable)
+            .set({ agent, time_updated: Date.now() })
+            .where(and(eq(ActorRegistryTable.session_id, sessionID), eq(ActorRegistryTable.actor_id, actorID)))
             .run(),
         ),
       )
@@ -214,13 +299,21 @@ export const layer: Layer.Layer<Service, never, Bus.Service> = Layer.effect(
           db
             .select()
             .from(ActorRegistryTable)
-            .where(
-              and(eq(ActorRegistryTable.session_id, sessionID), eq(ActorRegistryTable.actor_id, actorID)),
-            )
+            .where(and(eq(ActorRegistryTable.session_id, sessionID), eq(ActorRegistryTable.actor_id, actorID)))
             .get(),
         ),
       )
       return row ? fromRow(row) : undefined
+    })
+
+    const liveness = Effect.fn("ActorRegistry.liveness")(function* (
+      sessionID: SessionID,
+      actorID: string,
+      stallMs?: number,
+    ) {
+      const actor = yield* get(sessionID, actorID)
+      if (!actor) return undefined
+      return { liveness: deriveLiveness(actor, Date.now(), stallMs), actor }
     })
 
     const listBySession = Effect.fn("ActorRegistry.listBySession")(function* (sessionID: SessionID) {
@@ -239,10 +332,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service> = Layer.effect(
             .select()
             .from(ActorRegistryTable)
             .where(
-              and(
-                inArray(ActorRegistryTable.status, ["pending", "running"]),
-                eq(ActorRegistryTable.background, true),
-              ),
+              and(inArray(ActorRegistryTable.status, ["pending", "running"]), eq(ActorRegistryTable.background, true)),
             )
             .all(),
         ),
@@ -260,10 +350,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service> = Layer.effect(
             .select()
             .from(ActorRegistryTable)
             .where(
-              and(
-                eq(ActorRegistryTable.session_id, sessionID),
-                eq(ActorRegistryTable.parent_actor_id, parentActorID),
-              ),
+              and(eq(ActorRegistryTable.session_id, sessionID), eq(ActorRegistryTable.parent_actor_id, parentActorID)),
             )
             .all(),
         ),
@@ -271,9 +358,41 @@ export const layer: Layer.Layer<Service, never, Bus.Service> = Layer.effect(
       return rows.map(fromRow)
     })
 
+    // Peer children register with session_id === actor_id === their OWN child
+    // session id (Actor.spawnPeer), so listByParent — which filters on
+    // session_id === the parent's id — can never match them. The reliable
+    // parent link is the Session row's parent_id. Join on it so a caller with
+    // no Session.Service (e.g. the LLM layer building the orchestrator's
+    // fleet roster) can still enumerate its peer children, and
+    // carry the child's title along since that is the routing signal.
+    const listPeerChildren = Effect.fn("ActorRegistry.listPeerChildren")(function* (
+      parentSessionID: SessionID,
+      parentActorID: string,
+    ) {
+      const rows = yield* Effect.sync(() =>
+        Database.use((db) =>
+          db
+            .select({ actor: ActorRegistryTable, title: SessionTable.title })
+            .from(ActorRegistryTable)
+            .innerJoin(SessionTable, eq(SessionTable.id, ActorRegistryTable.session_id))
+            .where(
+              and(
+                eq(SessionTable.parent_id, parentSessionID),
+                eq(ActorRegistryTable.mode, "peer"),
+                eq(ActorRegistryTable.parent_actor_id, parentActorID),
+              ),
+            )
+            .all(),
+        ),
+      )
+      return rows.map((row) => ({ actor: fromRow(row.actor), title: row.title }))
+    })
+
     const renderForAgent = Effect.fn("ActorRegistry.renderForAgent")(function* (sessionID: SessionID) {
       const actors = yield* listBySession(sessionID)
-      const active = actors.filter((actor) => actor.background && (actor.status === "pending" || actor.status === "running"))
+      const active = actors.filter(
+        (actor) => actor.background && (actor.status === "pending" || actor.status === "running"),
+      )
       if (active.length === 0) return ""
 
       const lines: string[] = []
@@ -292,10 +411,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service> = Layer.effect(
       return lines.join("\n")
     })
 
-    const agentTypeFor = Effect.fn("ActorRegistry.agentTypeFor")(function* (
-      sessionID: SessionID,
-      actorID: string,
-    ) {
+    const agentTypeFor = Effect.fn("ActorRegistry.agentTypeFor")(function* (sessionID: SessionID, actorID: string) {
       if (actorID === "main") return "main"
       const actor = yield* get(sessionID, actorID)
       return actor?.agent ?? "main"
@@ -309,6 +425,29 @@ export const layer: Layer.Layer<Service, never, Bus.Service> = Layer.effect(
       const actor = yield* get(sessionID, actorID)
       if (!actor) return false
       return SYSTEM_SPAWNED_AGENT_TYPES.has(actor.agent)
+    })
+
+    // Whether this actor's context is maintained by the session checkpoint flow.
+    // Checkpoint serves main + peer only; subagents use per-actor compaction, and
+    // system-spawned agents (checkpoint-writer/dream/distill) maintain nothing.
+    // Single source of truth for both the memory-instructions gate (LLM.buildSystemArray)
+    // and the checkpoint self-trigger gate (SessionPrune.fireCheckpoints). Two
+    // orthogonal exclusions kept explicit (agent TYPE vs MODE) so a future system
+    // agent spawned as mode:"peer" can't silently slip back in — see prune.ts.
+    const servesCheckpoint = Effect.fn("ActorRegistry.servesCheckpoint")(function* (
+      sessionID: SessionID,
+      actorID: string | undefined,
+    ) {
+      // No agentID (or literal "main") → main runLoop. Fail open: main and peer
+      // must never silently lose checkpoints / memory instructions. "main" has no
+      // registry row, so short-circuit before the read.
+      if (!actorID || actorID === "main") return true
+      // Single read, two orthogonal exclusions derived from it: agent TYPE
+      // (system-spawned) and actor MODE (subagent). Unregistered/race → fail open.
+      const actor = yield* get(sessionID, actorID)
+      if (!actor) return true
+      if (SYSTEM_SPAWNED_AGENT_TYPES.has(actor.agent)) return false
+      return actor.mode !== "subagent"
     })
 
     const allocateActorID = Effect.fn("ActorRegistry.allocateActorID")(function* (
@@ -335,73 +474,37 @@ export const layer: Layer.Layer<Service, never, Bus.Service> = Layer.effect(
       return `${agentType}-${max + 1}`
     })
 
-    // --- Orphan Recovery ---
-    // On init, mark all pending/running actors as idle with failure outcome.
-    // Per spec B6: don't auto-revive — they wake on next sender's send.
-    yield* Effect.sync(() =>
-      Database.use((db) => {
-        const now = Date.now()
-        db.update(ActorRegistryTable)
-          .set({
-            status: "idle",
-            last_outcome: "failure",
-            last_error: "orphaned: process restarted",
-            time_updated: now,
-            time_completed: now,
-          })
-          .where(inArray(ActorRegistryTable.status, ["pending", "running"]))
-          .run()
-      }),
-    )
-    log.info("orphan recovery complete")
-
-    // --- Stuck Detection ---
-    const scanStuck = Effect.gen(function* () {
-      const cutoff = Date.now() - STUCK_THRESHOLD_MS
-      const stuck = yield* Effect.sync(() =>
-        Database.use((db) =>
-          db
-            .select()
-            .from(ActorRegistryTable)
-            .where(
-              and(
-                eq(ActorRegistryTable.status, "running"),
-                lte(ActorRegistryTable.last_turn_time, cutoff),
-              ),
-            )
-            .all(),
-        ),
-      )
-      for (const row of stuck) {
-        const entry = fromRow(row)
-        yield* bus.publish(Events.ActorStuck, {
-          sessionID: entry.sessionID,
-          actorID: entry.actorID,
-          description: entry.description,
-          lastTurnTime: entry.lastTurnTime,
-          stuckDuration: Date.now() - entry.lastTurnTime,
-        })
-      }
-    })
-
-    // Fork stuck detection fiber in the layer scope
-    yield* scanStuck.pipe(
-      Effect.repeat(Schedule.fixed(SCAN_INTERVAL_MS)),
-      Effect.ignore,
-      Effect.forkScoped,
-    )
+    // Initialization cannot infer execution failure from another instance ID.
+    // Only the executor settles its turn; no background scan sends stall notifications.
+    //
+    // Time-based zombie sweep: a crashed process leaves running/pending rows
+    // that nothing will ever settle. deriveLiveness already returns "idle" for
+    // them at read time (abandon threshold), but the DB row stays non-terminal
+    // and ActorWaiter only resolves on status==='idle'. Persist the terminal
+    // state once at init so restarts don't leave parents waiting forever.
+    // Exclude this process's instance_id: a same-process layer rebuild must
+    // never settle a still-running fiber that merely has not written a part
+    // for >abandon (long LLM step). Other-instance abandoned rows are fair
+    // game — their process is gone or silent past the abandon threshold.
+    //
+    // Bootstrap settles actor metadata only. Question parts follow the selected
+    // session's prompt/run cleanup; registry initialization never scans history.
 
     return Service.of({
       register,
       updateStatus,
       updateTurn,
+      updateAgent,
       get,
+      liveness,
       listBySession,
       listActive,
       listByParent,
+      listPeerChildren,
       renderForAgent,
       agentTypeFor,
       isSystemSpawned,
+      servesCheckpoint,
       allocateActorID,
     })
   }),

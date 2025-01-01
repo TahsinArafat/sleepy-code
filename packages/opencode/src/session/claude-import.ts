@@ -1,3 +1,4 @@
+import { indexImportedParts } from "../history/import"
 import path from "path"
 import { existsSync } from "fs"
 import { readFile } from "fs/promises"
@@ -326,7 +327,9 @@ export async function run(opts?: { force?: boolean }) {
               project_id: project.id,
               slug: Slug.create(),
               directory: parsed.cwd,
-              title: parsed.title,
+              title: parsed.title.trim() ? parsed.title : "Untitled",
+              title_source: parsed.title.trim() ? "user" : "fallback",
+              title_revision: 0,
               version: parsed.version ?? "claude-code",
               time_created: parsed.timeCreated,
               time_updated: parsed.timeUpdated,
@@ -348,6 +351,8 @@ export async function run(opts?: { force?: boolean }) {
               .run()
           }
         }
+
+        indexImportedParts(tx, parsed.messages.flatMap((m) => m.parts.map((p) => p.part.id)))
 
         tx.insert(ExternalImportTable)
           .values({

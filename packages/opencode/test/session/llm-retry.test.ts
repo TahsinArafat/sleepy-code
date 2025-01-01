@@ -26,7 +26,7 @@ describe("isTransientCapacityError", () => {
   })
 
   test("returns false for non-retryable HTTP statuses", () => {
-    for (const status of [400, 401, 403, 404, 422]) {
+    for (const status of [400, 401, 403, 404, 422, 501, 505]) {
       const err = Object.assign(new Error("client"), { status })
       expect(isTransientCapacityError(err)).toBe(false)
     }
@@ -48,8 +48,15 @@ describe("isTransientCapacityError", () => {
     expect(isTransientCapacityError(new Error("SSE read timed out"))).toBe(true)
   })
 
-  test("returns false for an unrelated 'timed out' message", () => {
-    expect(isTransientCapacityError(new Error("connection timed out after 30s"))).toBe(false)
+  test("returns true for connection timed out (shape-based network)", () => {
+    // Shape classification treats connection timeouts as recoverable network errors
+    // (previously message allow-list only covered ETIMEDOUT via code, not this text).
+    expect(isTransientCapacityError(new Error("connection timed out after 30s"))).toBe(true)
+  })
+
+  test("returns false for non-network timeout messages", () => {
+    expect(isTransientCapacityError(new Error("operation timed out after 30s"))).toBe(false)
+    expect(isTransientCapacityError(new Error("job timed out"))).toBe(false)
   })
 
   test("returns false for a user-initiated AbortError", () => {

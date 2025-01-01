@@ -2,9 +2,9 @@ name: test
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
-    branches: [main, dev]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -34,10 +34,41 @@ jobs:
           git config --global user.email "ci@sleepy.ai"
           git config --global user.name "sleepy-ci"
 
+      # These MCP suites mock SDK modules process-wide. Run each in its own
+      # process below so they neither replace real transports in integration tests
+      # nor inherit a ManagedClient subclass bound to another suite's SDK Client.
+      # runtime-worktree and stdio-exit-observe also keep their isolated runs.
+      # Path-hash sharding keeps existing files in the same shard when files change.
       - name: Run unit tests (shard ${{ matrix.shard }})
         timeout-minutes: 8
         working-directory: packages/opencode
-        run: bun run test:ci --shard ${{ matrix.shard }}
+        run: |
+          shard=${{ matrix.shard }}
+          idx=${shard%/*}
+          n=${shard#*/}
+          files=$(while IFS= read -r f; do
+            h=$(printf '%s' "$f" | cksum | awk '{print $1}')
+            if [ $((h % n)) -eq $((idx - 1)) ]; then
+              printf '%s\n' "$f"
+            fi
+          done < <(find test -name '*.test.ts' \
+            ! -name 'runtime-worktree.test.ts' \
+            ! -name 'stdio-exit-observe.test.ts' \
+            ! -path 'test/mcp/lifecycle.test.ts' \
+            ! -path 'test/mcp/headers.test.ts' \
+            ! -path 'test/mcp/oauth-auto-connect.test.ts' \
+            ! -path 'test/mcp/oauth-browser.test.ts' | sort))
+          # Empty shard: `bun test` with no file args discovers everything,
+          # including the excluded isolation files. Skip instead of running
+          # the whole suite in this leg.
+          if [ -z "${files//[[:space:]]/}" ]; then
+            echo "shard $shard is empty, skipping"
+            mkdir -p .artifacts/unit
+            printf '<?xml version="1.0" encoding="UTF-8"?><testsuites/>\n' > .artifacts/unit/junit.xml
+            exit 0
+          fi
+          mkdir -p .artifacts/unit
+          bun test $files --timeout 120000 --reporter=junit --reporter-outfile=.artifacts/unit/junit.xml
 
       - name: Upload JUnit
         if: always()
@@ -45,3 +76,31 @@ jobs:
         with:
           name: junit-shard-${{ strategy.job-index }}
           path: packages/opencode/.artifacts/unit/junit.xml
+
+      - name: Run MCP mock suites (isolated)
+        if: matrix.shard == '4/4'
+        timeout-minutes: 3
+        working-directory: packages/opencode
+        run: |
+          for file in \
+            test/mcp/lifecycle.test.ts \
+            test/mcp/headers.test.ts \
+            test/mcp/oauth-auto-connect.test.ts \
+            test/mcp/oauth-browser.test.ts; do
+            bun test "$file" --timeout 120000
+          done
+
+      # Run deadline worktree test in isolation (shard 4/4 only).
+      - name: Run deadline worktree test (isolated)
+        if: matrix.shard == '4/4'
+        timeout-minutes: 3
+        working-directory: packages/opencode
+        run: bun test test/workflow/runtime-worktree.test.ts -t 'deadline-fired' --timeout 120000
+
+      # Run stdio-exit-observe in isolation (shard 4/4 only): needs the real
+      # ObservingStdioTransport, which lifecycle.test.ts mock.module's away.
+      - name: Run stdio-exit-observe test (isolated)
+        if: matrix.shard == '4/4'
+        timeout-minutes: 2
+        working-directory: packages/opencode
+        run: bun test test/mcp/stdio-exit-observe.test.ts --timeout 120000

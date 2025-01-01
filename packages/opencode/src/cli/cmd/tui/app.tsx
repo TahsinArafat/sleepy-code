@@ -16,6 +16,7 @@ import {
 } from "solid-js"
 import { win32DisableProcessedInput, win32InstallCtrlCGuard } from "./win32"
 import { Flag } from "@/flag/flag"
+import { isSystemSession } from "@/session/auto-dream"
 import semver from "semver"
 import { DialogProvider, useDialog } from "@tui/ui/dialog"
 import { DialogSleepyLogin } from "@tui/component/dialog-sleepy-login"
@@ -54,6 +55,7 @@ import { ExitProvider, useExit } from "./context/exit"
 import { Session as SessionApi } from "@/session"
 import { TuiEvent } from "./event"
 import { KVProvider, useKV } from "./context/kv"
+import { resolveVisualMode, toggleVisualMode } from "./context/visual"
 import { LanguageProvider, UiI18nBridge, useLanguage } from "./context/language"
 import type { Locale } from "./i18n/locales"
 import { LOCALES } from "./i18n/locales"
@@ -67,10 +69,20 @@ import { TuiConfigProvider, useTuiConfig } from "./context/tui-config"
 import { TuiConfig } from "@/cli/cmd/tui/config/tui"
 import { createTuiApi, TuiPluginRuntime, type RouteMap } from "./plugin"
 import { FormatError, FormatUnknownError } from "@/cli/error"
-import { isPlainTerminal } from "./util/terminal"
+import { isPlainTerminal, isWindowsTerminal } from "./util/terminal"
+import {
+  detectionFromPart,
+  formatHarnessReminder,
+  handoffTargets,
+  type HandoffDetection,
+  type HandoffTarget,
+} from "./util/handoff"
 
 import type { EventSource } from "./context/sdk"
 import { DialogVariant } from "./component/dialog-variant"
+import { DialogModalities } from "./component/dialog-modalities"
+import { DialogContextLimit } from "./component/dialog-context-limit"
+import { DialogPermissionTimeout } from "./component/dialog-permission-timeout"
 
 function rendererConfig(_config: TuiConfig.Info, plainTerminal: boolean): CliRendererConfig {
   const mouseEnabled = !plainTerminal && !Flag.SLEEPYCODE_DISABLE_MOUSE && (_config.mouse ?? true)
@@ -222,7 +234,7 @@ export function tui(input: {
   })
 }
 
-function App(props: { onSnapshot?: () => Promise<string[]> }) {
+export function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const tuiConfig = useTuiConfig()
   const plainTerminal = isPlainTerminal()
   const route = useRoute()
@@ -380,7 +392,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     if (continued || sync.status === "loading" || !args.continue) return
     const match = sync.data.session
       .toSorted((a, b) => b.time.updated - a.time.updated)
-      .find((x) => x.parentID === undefined)?.id
+      .find((x) => x.parentID === undefined && !isSystemSession(x))?.id
     if (match) {
       continued = true
       if (args.fork) {
@@ -412,7 +424,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       }
     })
   })
-
 
   const connected = useConnected()
 
@@ -535,6 +546,40 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       },
     },
     {
+      title: t("tui.command.agent.force.title"),
+      value: "agent.force",
+      keybind: "agent_force",
+      category: "agent",
+      slash: {
+        name: "force-agent",
+      },
+      onSelect: () => {
+        dialog.replace(() => <DialogAgent force />)
+      },
+    },
+    {
+      title: t("tui.command.modalities.title"),
+      value: "model.modalities",
+      category: "agent",
+      slash: {
+        name: "modalities",
+      },
+      onSelect: () => {
+        DialogModalities.show(dialog)
+      },
+    },
+    {
+      title: t("tui.command.context_limit.title"),
+      value: "model.context_limit",
+      category: "agent",
+      slash: {
+        name: "context-limit",
+      },
+      onSelect: () => {
+        DialogContextLimit.show(dialog)
+      },
+    },
+    {
       title: local.neverAsk.current()
         ? t("tui.command.never_ask.title_on")
         : t("tui.command.never_ask.title_off"),
@@ -551,6 +596,35 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           message: next ? t("tui.command.never_ask.toast_on") : t("tui.command.never_ask.toast_off"),
           duration: 4000,
         })
+      },
+    },
+    {
+      title: local.skipPermissions.current()
+        ? t("tui.command.skip_permissions.title_on")
+        : t("tui.command.skip_permissions.title_off"),
+      value: "permission.skip_all.toggle",
+      category: "agent",
+      slash: {
+        name: "skip-permissions",
+      },
+      onSelect: () => {
+        const next = local.skipPermissions.toggle()
+        toast.show({
+          variant: next ? "warning" : "info",
+          message: next ? t("tui.command.skip_permissions.toast_on") : t("tui.command.skip_permissions.toast_off"),
+          duration: 5000,
+        })
+      },
+    },
+    {
+      title: t("tui.command.permission_timeout.title"),
+      value: "permission.ask_timeout",
+      category: "agent",
+      slash: {
+        name: "permission-timeout",
+      },
+      onSelect: () => {
+        DialogPermissionTimeout.show(dialog)
       },
     },
     {
@@ -718,6 +792,28 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         dialog.replace(() => <DialogLogoDesign />)
       },
       category: "system",
+    },
+    {
+      title: t(
+        resolveVisualMode(kv.get("visual_mode", "vivid")) === "vivid"
+          ? "tui.command.visual_mode.title_on"
+          : "tui.command.visual_mode.title_off",
+      ),
+      value: "app.toggle.visual_mode",
+      slash: {
+        name: "vivid",
+      },
+      category: "system",
+      onSelect: (dialog) => {
+        const next = toggleVisualMode(kv.get("visual_mode", "vivid"))
+        kv.set("visual_mode", next)
+        toast.show({
+          message: t(next === "vivid" ? "tui.visual_mode.enabled" : "tui.visual_mode.disabled"),
+          variant: "info",
+          duration: 3000,
+        })
+        dialog.clear()
+      },
     },
     {
       title: t("tui.command.theme.switch_mode.to_dark"),
@@ -957,16 +1053,141 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     })
   })
 
+  let lastTryBestDialog: { key: string; time: number } | undefined
+  const showTryBest = (detection: HandoffDetection) => {
+    const key = JSON.stringify([
+      detection.sessionID,
+      detection.reason,
+      detection.evidence.tool,
+      detection.evidence.path,
+      detection.evidence.command,
+      detection.evidence.count,
+    ])
+    if (lastTryBestDialog?.key === key && Date.now() - lastTryBestDialog.time < 2000) return
+    lastTryBestDialog = { key, time: Date.now() }
+    if (route.data.type !== "session" || route.data.sessionID !== detection.sessionID) {
+      toast.show({
+        variant: "warning",
+        message: t("tui.toast.try_best.paused_other", { session: detection.sessionID.slice(0, 8) }),
+        duration: 5000,
+      })
+      return
+    }
+    const detail =
+      detection.reason === "edit_repeat"
+        ? detection.evidence.path
+          ? t("tui.dialog.try_best.reason.edit_repeat_path", {
+              count: detection.evidence.count,
+              path: detection.evidence.path,
+            })
+          : t("tui.dialog.try_best.reason.edit_repeat", { count: detection.evidence.count })
+        : detection.reason === "bash_retry"
+          ? t("tui.dialog.try_best.reason.bash_retry", { count: detection.evidence.count })
+          : t("tui.dialog.try_best.reason.action_streak", {
+              count: detection.evidence.count,
+              action: t(`tui.dialog.try_best.action.${detection.evidence.action ?? "same_kind"}`),
+            })
+    const modelDetail =
+      detection.reason === "edit_repeat"
+        ? `Near-identical edits repeated ${detection.evidence.count} times${detection.evidence.path ? ` in ${detection.evidence.path}` : ""}.`
+        : detection.reason === "bash_retry"
+          ? `The same failing command was retried ${detection.evidence.count} times without a successful edit.`
+          : `${detection.evidence.count} consecutive ${detection.evidence.action ?? "same-kind"} actions made no observable progress.`
+    const handoff = (target: HandoffTarget, current: { clear(): void }) => {
+      current.clear()
+      void sdk.client.session
+        .promptAsync({
+          sessionID: detection.sessionID,
+          model: { providerID: detection.providerID, modelID: detection.modelID },
+          parts: [
+            {
+              type: "text",
+              synthetic: true,
+              text: formatHarnessReminder({ target, detail: modelDetail }),
+            },
+          ],
+        })
+        .catch((error) =>
+          toast.show({
+            variant: "error",
+            message: error instanceof Error ? error.message : t("tui.toast.try_best.handoff_failed"),
+          }),
+        )
+    }
+    const options = handoffTargets(detection.providerID, detection.modelID)
+      .filter((target) =>
+        sync.data.command.some((command) => command.name === (target === "codex" ? "codex" : "claude-code")),
+      )
+      .map((target) => ({
+        title: t("tui.dialog.try_best.handoff.title", {
+          target: target === "codex" ? "Codex CLI" : "Claude Code CLI",
+        }),
+        value: target,
+        description: t("tui.dialog.try_best.handoff.description"),
+        onSelect: (current: { clear(): void }) => handoff(target, current),
+      }))
+    dialog.replace(() => (
+      <DialogSelect<HandoffTarget | "continue">
+        title={t("tui.dialog.try_best.title")}
+        hint={detail}
+        skipFilter
+        options={[
+          ...options,
+          {
+            title: t("tui.dialog.try_best.continue.title", { model: detection.modelID }),
+            value: "continue",
+            description: t("tui.dialog.try_best.continue.description"),
+            onSelect: (current) => {
+              void sdk.client.session
+                .promptAsync({
+                  sessionID: detection.sessionID,
+                  model: { providerID: detection.providerID, modelID: detection.modelID },
+                  parts: [
+                    {
+                      type: "text",
+                      text: `The previous turn was paused by try-best loop detection: ${modelDetail} Abandon that approach. Inspect the current workspace state, explain why the attempt stalled, and continue with a materially different strategy. Do not repeat the same edit or command unchanged.`,
+                    },
+                  ],
+                })
+                .catch((error) =>
+                  toast.show({
+                    variant: "error",
+                    message: error instanceof Error ? error.message : t("tui.toast.try_best.continue_failed"),
+                  }),
+                )
+              current.clear()
+            },
+          },
+        ]}
+      />
+    ))
+  }
+
+  event.on("session.try_best.detected", (evt) => {
+    showTryBest(evt.properties)
+  })
+
+  event.on("message.part.updated", (evt) => {
+    const detection = detectionFromPart(evt.properties.part)
+    if (detection) showTryBest(detection)
+  })
+
   event.on("installation.update-available", async (evt) => {
     const version = evt.properties.version
+    const method = evt.properties.method
+    const isPkgManager = method === "npm" || method === "pnpm" || method === "bun"
 
     const skipped = kv.get("skipped_version")
     if (skipped && !semver.gt(version, skipped)) return
 
+    const confirmMsg = isPkgManager
+      ? t("tui.toast.update_available.confirm", { version }) + "\n" + t("tui.toast.native_installer_tip")
+      : t("tui.toast.update_available.confirm", { version })
+
     const choice = await DialogConfirm.show(
       dialog,
       t("tui.toast.update_available.title"),
-      t("tui.toast.update_available.confirm", { version }),
+      confirmMsg,
       "skip",
     )
 
@@ -1005,10 +1226,14 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   })
 
   event.on("installation.updated", (evt) => {
+    const isPkgManager = evt.properties.method === "npm" || evt.properties.method === "pnpm" || evt.properties.method === "bun"
+    const msg = isPkgManager
+      ? t("tui.toast.updated.message", { version: evt.properties.version }) + " " + t("tui.toast.native_installer_tip")
+      : t("tui.toast.updated.message", { version: evt.properties.version })
     toast.show({
       variant: "success",
       title: t("tui.toast.updated.title"),
-      message: t("tui.toast.updated.message", { version: evt.properties.version }),
+      message: msg,
       duration: 10000,
     })
   })
@@ -1028,6 +1253,9 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     void (async () => {
       renderer.suspend()
       renderer.currentRenderBuffer.clear()
+      // Clear alternate screen buffer so child processes that enter alt screen
+      // (e.g. Go TUI tools like glab) don't see stale TUI content
+      process.stdout.write("\x1b[?1049h\x1b[2J\x1b[?1049l")
       let exitCode = 1
       let output = ""
       try {
@@ -1109,7 +1337,11 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           return
         }
 
-        promptRef.current?.paste()
+        // Windows Terminal (and WSL launched from it) already pastes on
+        // right-click, so calling paste() here double-inserts (notably images).
+        // Skip it there; other terminals don't self-paste, so this stays the
+        // right-click paste path.
+        if (!isWindowsTerminal()) promptRef.current?.paste()
         evt.preventDefault()
         evt.stopPropagation()
       }}

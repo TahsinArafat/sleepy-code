@@ -15,7 +15,8 @@ import * as Effect from "effect/Effect"
 import { Config } from "@/config"
 import { Metrics } from "@/metrics"
 import { Memory } from "@/memory"
-import { WriterService, BackfillService } from "@/history"
+import { WriterService } from "@/history"
+import { sweepAbandonedZombies } from "@/actor/registry"
 
 export const InstanceBootstrap = Effect.gen(function* () {
   Log.Default.info("bootstrapping", { directory: Instance.directory })
@@ -23,6 +24,15 @@ export const InstanceBootstrap = Effect.gen(function* () {
   yield* Config.Service.use((svc) => svc.get())
   // Plugin can mutate config so it has to be initialized before anything else.
   yield* Plugin.Service.use((svc) => svc.init())
+  // Keep startup independent of transcript size. Only actor metadata is
+  // reclaimed here; orphan tools are handled when their session runs.
+  yield* Effect.sync(() => {
+    sweepAbandonedZombies()
+  }).pipe(
+    Effect.catch((err: unknown) =>
+      Effect.sync(() => Log.Default.warn("abandoned actor sweep failed", { error: String(err) })),
+    ),
+  )
   yield* Effect.all(
     [
       LSP.Service,
@@ -33,7 +43,6 @@ export const InstanceBootstrap = Effect.gen(function* () {
       Vcs.Service,
       Snapshot.Service,
       WriterService,
-      BackfillService,
     ].map((s) => Effect.forkDetach(s.use((i) => i.init()))),
   ).pipe(Effect.withSpan("InstanceBootstrap.init"))
 

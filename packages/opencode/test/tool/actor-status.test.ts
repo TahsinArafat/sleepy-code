@@ -1,3 +1,4 @@
+import { ActorExecution } from "../../src/actor/execution"
 import { afterEach, describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import { Agent } from "../../src/agent/agent"
@@ -34,7 +35,11 @@ const it = testEffect(
     Truncate.defaultLayer,
     ToolRegistry.defaultLayer,
     ActorRegistry.defaultLayer,
-    ActorWaiter.layer.pipe(Layer.provide(Bus.layer), Layer.provide(ActorRegistry.defaultLayer), Layer.provide(Session.defaultLayer)),
+    ActorWaiter.layer.pipe(
+      Layer.provide(Bus.layer),
+      Layer.provide(ActorRegistry.defaultLayer),
+      Layer.provide(Session.defaultLayer),
+    ),
     Team.defaultLayer,
     SessionCheckpoint.defaultLayer,
     TaskRegistry.defaultLayer,
@@ -43,6 +48,7 @@ const it = testEffect(
 
 interface StatusResponse {
   status: "pending" | "running" | "idle" | "completed" | "failed" | "cancelled" | "unknown"
+  executionState?: string
   actor_id: string
   description?: string
   agent?: string
@@ -71,6 +77,89 @@ function ctxFor(sessionID: SessionID) {
 }
 
 describe("actor tool — status action", () => {
+  for (const [outcome, state] of [
+    ["success", "completed"],
+    ["failure", "failed"],
+    ["cancelled", "cancelled"],
+  ] as const) {
+    it.live(
+      `status and wait distinguish ${state} from an interrupted actor`,
+      provideTmpdirInstance(() =>
+        Effect.gen(function* () {
+          const sessions = yield* Session.Service
+          const registry = yield* ActorRegistry.Service
+          const chat = yield* sessions.create({ title: "Outcome query" })
+          yield* registry.register({
+            sessionID: chat.id,
+            actorID: "explore-1",
+            mode: "subagent",
+            agent: "explore",
+            description: "Outcome fixture",
+            contextMode: "none",
+            background: true,
+            lifecycle: "ephemeral",
+          })
+          yield* registry.updateStatus(chat.id, "explore-1", { status: "idle", lastOutcome: outcome })
+          const tool = yield* ActorTool
+          const def = yield* tool.init()
+          for (const action of ["status", "wait"] as const) {
+            const result = yield* def.execute({ operation: { action, actor_id: "explore-1" } }, ctxFor(chat.id))
+            expect(JSON.parse(result.output)).toMatchObject({ executionState: state, lastOutcome: outcome })
+          }
+          const executions = yield* ActorExecution.Service
+          const execution = yield* executions.reserve(chat.id, "explore-1")
+          const running = yield* def.execute(
+            { operation: { action: "status", actor_id: "explore-1" } },
+            ctxFor(chat.id),
+          )
+          expect(JSON.parse(running.output)).toMatchObject({ executionState: "running", executionActive: true })
+          yield* executions.release(execution)
+        }),
+      ),
+    )
+  }
+
+  for (const storedStatus of ["pending", "running"] as const) {
+    it.live(
+      `restarted ${storedStatus} actor is idle for status and wait without rewriting history`,
+      provideTmpdirInstance(() =>
+        Effect.gen(function* () {
+          const sessions = yield* Session.Service
+          const registry = yield* ActorRegistry.Service
+          const chat = yield* sessions.create({ title: "restart query" })
+          yield* registry.register({
+            sessionID: chat.id,
+            actorID: "explore-1",
+            mode: "subagent",
+            agent: "explore",
+            description: "Interrupted work",
+            contextMode: "none",
+            background: true,
+            lifecycle: "ephemeral",
+          })
+          yield* registry.updateStatus(chat.id, "explore-1", { status: storedStatus })
+          const before = yield* registry.get(chat.id, "explore-1")
+          const tool = yield* ActorTool
+          const def = yield* tool.init()
+          for (const action of ["status", "wait"] as const) {
+            const result = yield* def.execute(
+              { operation: { action, actor_id: "explore-1", ...(action === "wait" ? { timeout_ms: 1 } : {}) } },
+              ctxFor(chat.id),
+            )
+            expect(JSON.parse(result.output)).toMatchObject({
+              status: "idle",
+              executionActive: false,
+              executionState: "stopped",
+              actor_id: "explore-1",
+            })
+            expect(JSON.parse(result.output).lastOutcome).toBeUndefined()
+          }
+          expect(yield* registry.get(chat.id, "explore-1")).toEqual(before)
+        }),
+      ),
+    )
+  }
+
   it.live(
     "status on unknown actor_id returns { status: 'unknown' }",
     provideTmpdirInstance(() =>
@@ -145,6 +234,8 @@ describe("actor tool — status action", () => {
         })
         yield* registry.updateStatus(chat.id, actorID, { status: "running" })
 
+        const executions = yield* ActorExecution.Service
+        const execution = yield* executions.reserve(chat.id, actorID)
         const tool = yield* ActorTool
         const def = yield* tool.init()
         const result = yield* def.execute(
@@ -157,8 +248,10 @@ describe("actor tool — status action", () => {
           ctxFor(chat.id),
         )
 
+        yield* executions.release(execution)
         const snap = parseOutput(result.output)
         expect(snap.status).toBe("running")
+        expect(snap.executionState).toBe("running")
         expect(snap.actor_id).toBe(actorID)
         expect(snap.description).toBe("inspect bug")
         expect(snap.agent).toBe("general")
@@ -206,6 +299,7 @@ describe("actor tool — status action", () => {
         const snap = parseOutput(result.output)
         expect(snap.status).toBe("idle")
         expect(snap.time?.completed).toBeGreaterThan(0)
+        expect(snap.executionState).toBe("completed")
       }),
     ),
   )
@@ -228,7 +322,11 @@ describe("actor tool — status action", () => {
           background: true,
           lifecycle: "ephemeral",
         })
-        yield* registry.updateStatus(chat.id, actorID, { status: "idle", lastOutcome: "failure", lastError: "network unreachable" })
+        yield* registry.updateStatus(chat.id, actorID, {
+          status: "idle",
+          lastOutcome: "failure",
+          lastError: "network unreachable",
+        })
 
         const tool = yield* ActorTool
         const def = yield* tool.init()
@@ -245,6 +343,7 @@ describe("actor tool — status action", () => {
         const snap = parseOutput(result.output)
         expect(snap.status).toBe("idle")
         expect(snap.error).toBe("network unreachable")
+        expect(snap.executionState).toBe("failed")
       }),
     ),
   )

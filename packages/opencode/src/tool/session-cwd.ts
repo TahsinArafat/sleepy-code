@@ -1,15 +1,9 @@
 import { BusEvent } from "@/bus/bus-event"
 import { Instance } from "@/project/instance"
-import { registerDisposer } from "@/effect/instance-registry"
 import { SessionID } from "@/session/schema"
 import z from "zod"
 
-const store = new Map<string, string>()
-
-registerDisposer(async () => {
-  store.clear()
-})
-
+// Kept for SDK compatibility. Session cwd overrides are no longer mutable.
 export const Event = {
   Changed: BusEvent.define(
     "session.cwd",
@@ -20,16 +14,8 @@ export const Event = {
   ),
 }
 
-export function get(sessionID: SessionID): string {
-  return store.get(sessionID) ?? Instance.directory
-}
-
-export function set(sessionID: SessionID, dir: string): void {
-  store.set(sessionID, dir)
-}
-
-export function clear(sessionID: SessionID): void {
-  store.delete(sessionID)
+export function get(_sessionID: SessionID): string {
+  return Instance.directory
 }
 
 export * as SessionCwd from "./session-cwd"

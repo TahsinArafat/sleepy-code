@@ -1,15 +1,31 @@
 import { Context, Deferred, Effect, Layer } from "effect"
 import { Bus } from "@/bus"
+import { ActorExecution } from "@/actor/execution"
+import { SessionRunState } from "@/session/run-state"
 import { ActorRegistry } from "@/actor/registry"
 import type { Actor } from "@/actor/schema"
 import { Session } from "@/session"
-import type { SessionID } from "@/session/schema"
+import type { SessionID, MessageID } from "@/session/schema"
 import { ActorStatusChanged } from "@/actor/events"
 import { parseReturnHeader, type ReturnStatus } from "@/actor/return-header"
+
+export type ExecutionState = "running" | "completed" | "failed" | "cancelled" | "stopped"
+
+// A read-only projection, not another persisted lifecycle. Idle only describes
+// scheduling; successful completion must have a recorded outcome.
+function executionState(entry: Actor, active: boolean): ExecutionState {
+  if (active) return "running"
+  if (entry.lastOutcome === "success") return "completed"
+  if (entry.lastOutcome === "failure") return "failed"
+  if (entry.lastOutcome === "cancelled") return "cancelled"
+  return "stopped"
+}
 
 export interface WaitResult {
   status: Actor["status"] | "timeout" | "unknown"
   actor_id: string
+  executionActive?: boolean
+  executionState?: ExecutionState
   description?: string
   agent?: string
   background?: boolean
@@ -21,9 +37,10 @@ export interface WaitResult {
   lastOutcome?: Actor["lastOutcome"]
   // Best-effort parse of the subagent's **Status**/**Summary** header. Used by
   // the `wait` polling path; the blocking `run` path reads the authoritative
-  // reconciled status from the spawn outcome Deferred instead.
+  // status from the spawn outcome Deferred instead.
   reportedStatus?: ReturnStatus
   reportedSummary?: string
+  warnings?: string[]
   time?: { created: number; updated: number; completed?: number }
 }
 
@@ -40,32 +57,59 @@ function isWaitResolving(entry: Pick<Actor, "status" | "lastOutcome" | "lifecycl
 }
 
 export interface Interface {
-  readonly wait: (input: {
-    sessionID: SessionID
-    actor_id: string
-    timeout_ms?: number
-  }) => Effect.Effect<WaitResult>
+  readonly status: (entry: Actor) => Effect.Effect<Actor & { executionActive: boolean; executionState: ExecutionState }>
+  readonly wait: (input: { sessionID: SessionID; actor_id: string; timeout_ms?: number }) => Effect.Effect<WaitResult>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/ActorWaiter") {}
 
-export const layer: Layer.Layer<Service, never, Bus.Service | ActorRegistry.Service | Session.Service> = Layer.effect(
+export const layer: Layer.Layer<
+  Service | ActorExecution.Service,
+  never,
+  Bus.Service | ActorRegistry.Service | Session.Service
+> = Layer.effect(
   Service,
   Effect.gen(function* () {
+    const executions = yield* ActorExecution.Service
+    const runs = yield* SessionRunState.Service
     const reg = yield* ActorRegistry.Service
     const bus = yield* Bus.Service
     const sessions = yield* Session.Service
+    const context = yield* Effect.context()
+
+    // Execution belongs to this runtime. Persisted pending/running rows survive
+    // process exit and cannot prove that work is still executing here.
+    const status = Effect.fn("ActorWaiter.status")(function* (entry: Actor) {
+      const executionActive =
+        !!(yield* executions.current(entry.sessionID, entry.actorID)) ||
+        (yield* runs
+          .assertNotBusy(entry.sessionID, entry.actorID)
+          .pipe(Effect.match({ onFailure: () => true, onSuccess: () => false })))
+      return {
+        ...entry,
+        status: executionActive ? ("running" as const) : ("idle" as const),
+        executionActive,
+        executionState: executionState(entry, executionActive),
+      }
+    })
 
     // Pull the most recent assistant text + structured object from the actor's
     // slice. Used as result body when the actor reaches idle/success on
     // ephemeral actors. structured (json_schema) takes precedence over text:
     // when present, the text part (often a pre-tool-call preamble) is dropped to
     // avoid duplicating the result downstream (spec §5.2).
-    const lastAssistantResult = (sessionID: SessionID, actorID: string) =>
+    const lastAssistantResult = (sessionID: SessionID, actorID: string, messageID?: MessageID) =>
       Effect.gen(function* () {
         const msgs = yield* sessions.messages({ sessionID, agentID: actorID })
-        const last = msgs.findLast((m) => m.info.role === "assistant")
+        const last = messageID
+          ? msgs.find((message) => message.info.id === messageID && message.info.role === "assistant")
+          : msgs.findLast((m) => m.info.role === "assistant" && (!m.info.error || m.info.actorResult))
         if (!last) return { result: undefined as string | undefined, structured: undefined as unknown }
+        if (last.info.role === "assistant" && last.info.actorResult) {
+          const delivery = last.info.actorResult
+          return { result: delivery.finalText, structured: delivery.structured, delivery }
+        }
+        if (messageID) return { result: undefined as string | undefined, structured: undefined as unknown }
         const structured = last.info.role === "assistant" ? last.info.structured : undefined
         if (structured !== undefined) return { result: undefined as string | undefined, structured }
         const textPart = last.parts.findLast(
@@ -77,12 +121,17 @@ export const layer: Layer.Layer<Service, never, Bus.Service | ActorRegistry.Serv
     const snapshot = (sessionID: SessionID, actorID: string, entry: Actor): Effect.Effect<WaitResult> =>
       Effect.gen(function* () {
         const extracted =
-          entry.status === "idle" && entry.lastOutcome === "success"
-            ? yield* lastAssistantResult(sessionID, actorID)
+          entry.status === "idle" &&
+          (entry.lastOutcome === "success" || (entry.lastOutcome === "failure" && entry.resultMessageID))
+            ? yield* lastAssistantResult(sessionID, actorID, entry.resultMessageID)
             : { result: undefined as string | undefined, structured: undefined as unknown }
-        const reported = parseReturnHeader(extracted.result)
+        const delivery = "delivery" in extracted ? extracted.delivery : undefined
+        const reported = delivery
+          ? { status: delivery.reportedStatus, summary: delivery.reportedSummary }
+          : parseReturnHeader(extracted.result)
         return {
           status: entry.status,
+          executionState: executionState(entry, false),
           actor_id: entry.actorID,
           description: entry.description,
           agent: entry.agent,
@@ -95,6 +144,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service | ActorRegistry.Serv
           ...(extracted.structured !== undefined ? { structured: extracted.structured } : {}),
           ...(reported.status ? { reportedStatus: reported.status } : {}),
           ...(reported.summary ? { reportedSummary: reported.summary } : {}),
+          ...(delivery?.warnings?.length ? { warnings: delivery.warnings } : {}),
           time: entry.time,
         }
       })
@@ -107,6 +157,10 @@ export const layer: Layer.Layer<Service, never, Bus.Service | ActorRegistry.Serv
       // Fast path: registry already in a wait-resolving state.
       const entry = yield* reg.get(input.sessionID, input.actor_id)
       if (!entry) return { status: "unknown" as const, actor_id: input.actor_id }
+      const current = yield* status(entry)
+      if (!current.executionActive && entry.status !== "idle") {
+        return { ...(yield* snapshot(input.sessionID, input.actor_id, current)), executionActive: false }
+      }
       if (isWaitResolving(entry)) return yield* snapshot(input.sessionID, input.actor_id, entry)
 
       const resolved = yield* Deferred.make<WaitResult>()
@@ -126,9 +180,8 @@ export const layer: Layer.Layer<Service, never, Bus.Service | ActorRegistry.Serv
               const snap = yield* snapshot(input.sessionID, input.actor_id, fresh)
               Deferred.doneUnsafe(resolved, Effect.succeed(snap))
             }).pipe(
-              Effect.catchCause((cause) =>
-                Effect.logError(`waiter rehydrate failed: ${cause}`),
-              ),
+              Effect.catchCause((cause) => Effect.logError(`waiter rehydrate failed: ${cause}`)),
+              Effect.provide(context),
             ),
           )
         }),
@@ -145,6 +198,8 @@ export const layer: Layer.Layer<Service, never, Bus.Service | ActorRegistry.Serv
               Effect.catchTag("TimeoutError", () => Effect.succeed(null)),
             )
             if (raced === null) {
+              const final = yield* reg.get(input.sessionID, input.actor_id)
+              if (final && isWaitResolving(final)) return yield* snapshot(input.sessionID, input.actor_id, final)
               return { status: "timeout" as const, actor_id: input.actor_id }
             }
             return raced
@@ -153,9 +208,9 @@ export const layer: Layer.Layer<Service, never, Bus.Service | ActorRegistry.Serv
       )
     })
 
-    return Service.of({ wait })
+    return Service.of({ wait, status })
   }),
-)
+).pipe(Layer.provideMerge(ActorExecution.layer), Layer.provide(SessionRunState.defaultLayer))
 
 export const defaultLayer = layer.pipe(
   Layer.provide(Bus.defaultLayer),

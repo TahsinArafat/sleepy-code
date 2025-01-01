@@ -19,18 +19,22 @@ import { Snapshot } from "@/snapshot"
 import { Command } from "@/command"
 import { Log } from "@/util"
 import { ActorRegistry } from "@/actor/registry"
+import { ActorWaiter } from "@/actor/waiter"
 import { TaskRegistry } from "@/task/registry"
 import { Task } from "@/task/schema"
 import { Permission } from "@/permission"
 import { PermissionID } from "@/permission/schema"
 import { ModelID, ProviderID } from "@/provider/schema"
 import { Provider } from "@/provider"
+import { forkQuery } from "@/tool/session"
+import { spawnRef } from "@/actor/spawn-ref"
 import { errors } from "../../error"
 import { lazy } from "@/util/lazy"
 import { Bus } from "@/bus"
 import { NamedError } from "@sleepy-ai/shared/util/error"
 import { jsonRequest, runRequest } from "./trace"
 import { RateLimitMiddleware } from "../../rate-limit"
+import { NotFoundError } from "@/storage"
 
 const log = Log.create({ service: "server" })
 
@@ -199,11 +203,21 @@ export const SessionRoutes = lazy(() =>
           sessionID: Session.ChildrenInput,
         }),
       ),
+      validator(
+        "query",
+        z.object({
+          visible: z.coerce
+            .boolean()
+            .optional()
+            .meta({ description: "Only return user-visible children (peer sessions); hides internal subagent hosts" }),
+        }),
+      ),
       async (c) => {
         const sessionID = c.req.valid("param").sessionID
+        const visible = c.req.valid("query").visible
         return jsonRequest("SessionRoutes.children", c, function* () {
           const session = yield* Session.Service
-          return yield* session.children(sessionID)
+          return yield* session.children(sessionID, { visible })
         })
       },
     )
@@ -355,6 +369,7 @@ export const SessionRoutes = lazy(() =>
             },
           },
           ...errors(400, 404),
+          409: { description: "Title changed by another writer", content: { "application/json": { schema: resolver(Session.TitleConflict) } } },
         },
       }),
       validator(
@@ -366,14 +381,15 @@ export const SessionRoutes = lazy(() =>
       validator(
         "json",
         z.object({
-          title: z.string().optional(),
+          title: Session.SetTitleInput.shape.title.optional(),
+          expectedRevision: Session.Info.shape.titleRevision.optional(),
           permission: Permission.Ruleset.zod.optional(),
           time: z
             .object({
               archived: z.number().optional(),
             })
             .optional(),
-        }),
+        }).strict().refine((input) => input.title === undefined || input.expectedRevision !== undefined, { message: "expectedRevision is required when renaming", path: ["expectedRevision"] }),
       ),
       async (c) =>
         jsonRequest("SessionRoutes.update", c, function* () {
@@ -383,7 +399,7 @@ export const SessionRoutes = lazy(() =>
           const current = yield* session.get(sessionID)
 
           if (updates.title !== undefined) {
-            yield* session.setTitle({ sessionID, title: updates.title })
+            yield* session.setTitle({ sessionID, title: updates.title, expectedRevision: updates.expectedRevision! })
           }
           if (updates.permission !== undefined) {
             yield* session.setPermission({
@@ -675,6 +691,59 @@ export const SessionRoutes = lazy(() =>
           return true
         }),
     )
+    .post(
+      "/:sessionID/ask",
+      describeRoute({
+        summary: "Ask session a side question",
+        description:
+          "Ask the session a one-shot, read-only side question over a frozen snapshot of its history and return the answer text. Does NOT inject a message into the conversation or disturb the session's turn.",
+        operationId: "session.ask",
+        responses: {
+          200: {
+            description: "Side question answer",
+            content: {
+              "application/json": {
+                schema: resolver(z.object({ answer: z.string() })),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: SessionID.zod,
+        }),
+      ),
+      validator(
+        "json",
+        z.object({
+          question: z.string().min(1),
+          providerID: ProviderID.zod.optional(),
+          modelID: ModelID.zod.optional(),
+        }),
+      ),
+      async (c) =>
+        jsonRequest("SessionRoutes.ask", c, function* () {
+          const sessionID = c.req.valid("param").sessionID
+          const body = c.req.valid("json")
+          const sessions = yield* Session.Service
+          const provider = yield* Provider.Service
+          // Resolve the Actor through the late-bound spawnRef rather than a layer
+          // dependency, mirroring tool/session.ts to avoid an Actor → SessionPrompt
+          // → ToolRegistry → tool/session → Actor layer cycle.
+          const actor = spawnRef.current
+          if (!actor)
+            return yield* Effect.fail(
+              new Error("Actor service unavailable — Actor.appLayer must be running to ask a side question"),
+            )
+          const selectedModel =
+            body.providerID && body.modelID ? { providerID: body.providerID, modelID: body.modelID } : undefined
+          const answer = yield* forkQuery({ sessions, provider, actor }, sessionID, body.question, selectedModel)
+          return { answer }
+        }),
+    )
     .get(
       "/:sessionID/message",
       describeRoute({
@@ -930,6 +999,245 @@ export const SessionRoutes = lazy(() =>
           const svc = yield* Session.Service
           return yield* svc.updatePart(body)
         })
+      },
+    )
+    .get(
+      "/:sessionID/recovery",
+      describeRoute({
+        summary: "List interrupted turn recovery candidates",
+        description: "Return resumable targets: incomplete assistant turns and/or a trailing parent user (D16f).",
+        operationId: "session.recovery",
+        responses: {
+          200: {
+            description: "Recovery candidates",
+            content: {
+              "application/json": {
+                schema: resolver(
+                  z.array(
+                    z.discriminatedUnion("kind", [
+                      z.object({
+                        kind: z.literal("assistant"),
+                        assistantMessageID: MessageID.zod,
+                        parentMessageID: MessageID.zod,
+                        created: z.number(),
+                      }),
+                      z.object({
+                        kind: z.literal("parent-user"),
+                        userMessageID: MessageID.zod,
+                        created: z.number(),
+                      }),
+                    ]),
+                  ),
+                ),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator("param", z.object({ sessionID: SessionID.zod })),
+      validator("query", z.object({ agentID: z.string().optional() })),
+      async (c) =>
+        jsonRequest("SessionRoutes.recovery", c, function* () {
+          const sessionID = c.req.valid("param").sessionID
+          const query = c.req.valid("query")
+          const svc = yield* SessionPrompt.Service
+          return yield* svc.recovery({ sessionID, agentID: query.agentID })
+        }),
+    )
+    .post(
+      "/:sessionID/turn/:assistantMessageID/resume",
+      describeRoute({
+        summary: "Resume an interrupted turn",
+        description: "Resume an incomplete assistant turn without creating another user message.",
+        operationId: "session.resume",
+        responses: {
+          202: { description: "Resume accepted" },
+          ...errors(400, 404, 409),
+        },
+      }),
+      validator("param", z.object({
+        sessionID: SessionID.zod,
+        assistantMessageID: MessageID.zod,
+      })),
+      validator("query", z.object({
+        directory: z.string().optional(),
+        workspace: z.string().optional(),
+        agentID: z.string().optional(),
+        task_id: z.string().optional(),
+        titleLocale: z.string().optional(),
+        modelProviderID: z.string().optional(),
+        modelID: z.string().optional(),
+      })),
+      async (c) => {
+        const params = c.req.valid("param")
+        const query = c.req.valid("query")
+        // modelProviderID / modelID 必须同时提供,否则 400(不允许只覆盖一侧)。
+        if (!!query.modelProviderID !== !!query.modelID) {
+          return c.json({ data: { name: "InvalidRequest", data: { message: "modelProviderID and modelID must be provided together" } } }, 400)
+        }
+        await runRequest(
+          "SessionRoutes.resume.assertNotBusy",
+          c,
+          SessionRunState.Service.use((svc) => svc.assertNotBusy(params.sessionID, query.agentID)),
+        )
+        await runRequest(
+          "SessionRoutes.resume.validate",
+          c,
+          SessionPrompt.Service.use((svc) =>
+            svc.recovery({ sessionID: params.sessionID, agentID: query.agentID }).pipe(
+              Effect.flatMap((candidates) =>
+                candidates.some(
+                  (candidate) => candidate.kind === "assistant" && candidate.assistantMessageID === params.assistantMessageID,
+                )
+                  ? Effect.void
+                  : Effect.fail(
+                      new NotFoundError({
+                        message: "No resumable interrupted turn found for assistant message " + params.assistantMessageID,
+                      }),
+                    ),
+              ),
+            ),
+          ),
+        )
+        void runRequest(
+          "SessionRoutes.resume",
+          c,
+          SessionPrompt.Service.use((svc) =>
+            (query.agentID === undefined || query.agentID === "main")
+              ? svc.resumeMainCascading({
+                  sessionID: params.sessionID,
+                  assistantMessageID: params.assistantMessageID,
+                  agentID: query.agentID,
+                  task_id: query.task_id,
+                  titleLocale: query.titleLocale,
+                  ...(query.modelProviderID && query.modelID ? { model: { providerID: query.modelProviderID, modelID: query.modelID } } : {}),
+                })
+              : svc.resumeBackground({
+                  sessionID: params.sessionID,
+                  assistantMessageID: params.assistantMessageID,
+                  agentID: query.agentID,
+                  task_id: query.task_id,
+                  titleLocale: query.titleLocale,
+                  ...(query.modelProviderID && query.modelID ? { model: { providerID: query.modelProviderID, modelID: query.modelID } } : {}),
+                }),
+          ),
+        ).catch((error) => {
+          log.error("session resume failed", { sessionID: params.sessionID, error })
+          const failure =
+            error instanceof Session.BusyError
+              ? new MessageV2.APIError({ message: error.message, statusCode: 409, isRetryable: true }).toObject()
+              : new NamedError.Unknown({ message: error instanceof Error ? error.message : String(error) }).toObject()
+          void Bus.publish(Session.Event.Error, { sessionID: params.sessionID, error: failure })
+        })
+        return c.body(null, 202)
+      },
+    )
+    .post(
+      "/:sessionID/resume",
+      describeRoute({
+        summary: "Resume from a trailing user",
+        description: "Start the next turn from a trailing user message without creating another user message.",
+        operationId: "session.resumeUser",
+        responses: {
+          202: { description: "Resume accepted" },
+          ...errors(400, 404, 409),
+        },
+      }),
+      validator("param", z.object({
+        sessionID: SessionID.zod,
+      })),
+      validator("query", z.object({
+        directory: z.string().optional(),
+        workspace: z.string().optional(),
+        agentID: z.string().optional(),
+        task_id: z.string().optional(),
+        titleLocale: z.string().optional(),
+        modelProviderID: z.string().optional(),
+        modelID: z.string().optional(),
+      })),
+      // Body is optional: empty/{} = resume latest recovery candidate.
+      // userMessageID still accepted for explicit trailing-user targeting (TUI / cascade).
+      validator("json", z.object({
+        userMessageID: MessageID.zod.optional(),
+      }).optional()),
+      async (c) => {
+        const params = c.req.valid("param")
+        const query = c.req.valid("query")
+        const body = c.req.valid("json")
+        if (!!query.modelProviderID !== !!query.modelID) {
+          return c.json({ data: { name: "InvalidRequest", data: { message: "modelProviderID and modelID must be provided together" } } }, 400)
+        }
+        await runRequest(
+          "SessionRoutes.resumeUser.assertNotBusy",
+          c,
+          SessionRunState.Service.use((svc) => svc.assertNotBusy(params.sessionID, query.agentID)),
+        )
+        // Explicit userMessageID → validate it is still the trailing user.
+        // Omitted → the engine resolves the latest recovery candidate (404 if none).
+        if (body?.userMessageID) {
+          await runRequest(
+            "SessionRoutes.resumeUser.validate",
+            c,
+            SessionPrompt.Service.use((svc) =>
+              svc.recovery({ sessionID: params.sessionID, agentID: query.agentID }).pipe(
+                Effect.flatMap((candidates) =>
+                  candidates.some(
+                    (candidate) => candidate.kind === "parent-user" && candidate.userMessageID === body.userMessageID,
+                  )
+                    ? Effect.void
+                    : Effect.fail(
+                        new NotFoundError({
+                          message: "No resumable trailing user found for message " + body.userMessageID,
+                        }),
+                      ),
+                ),
+              ),
+            ),
+          )
+        }
+        // [TP-SR-R21-10] 202 = admission complete (plan + exclusive start), not fire-and-forget.
+        // Main agent also cascades subagent recovery (same as /turn/:id/resume).
+        const admitted = await runRequest(
+          "SessionRoutes.resumeUser",
+          c,
+          SessionPrompt.Service.use((svc) =>
+            (query.agentID === undefined || query.agentID === "main")
+              ? svc.resumeMainCascading({
+                  sessionID: params.sessionID,
+                  ...(body?.userMessageID ? { userMessageID: body.userMessageID } : {}),
+                  agentID: query.agentID,
+                  task_id: query.task_id,
+                  titleLocale: query.titleLocale,
+                  ...(query.modelProviderID && query.modelID ? { model: { providerID: query.modelProviderID, modelID: query.modelID } } : {}),
+                })
+              : svc.resumeBackground({
+                  sessionID: params.sessionID,
+                  ...(body?.userMessageID ? { userMessageID: body.userMessageID } : {}),
+                  agentID: query.agentID,
+                  task_id: query.task_id,
+                  titleLocale: query.titleLocale,
+                  ...(query.modelProviderID && query.modelID ? { model: { providerID: query.modelProviderID, modelID: query.modelID } } : {}),
+                }),
+          ),
+        ).then(() => ({ ok: true as const }))
+          .catch((error: unknown) => ({ ok: false as const, error }))
+        if (!admitted.ok) {
+          const error = admitted.error
+          log.error("session resume failed", { sessionID: params.sessionID, error })
+          if (error instanceof Session.BusyError) {
+            return c.json({ data: { name: "BusyError", data: { message: error.message } } }, 409)
+          }
+          if (error instanceof NotFoundError) {
+            // NamedError.message is the tag; the human reason lives in data.message.
+            return c.json({ data: { name: "NotFoundError", data: { message: error.data.message } } }, 404)
+          }
+          return c.json(
+            { data: { name: "UnknownError", data: { message: error instanceof Error ? error.message : String(error) } } },
+            400,
+          )
+        }
+        return c.body(null, 202)
       },
     )
     .post(
@@ -1295,7 +1603,7 @@ export const SessionRoutes = lazy(() =>
       "/:sessionID/actors",
       describeRoute({
         summary: "List session actors",
-        description: "List actors registered for a session.",
+        description: "List actors with execution status in this server runtime; persisted outcomes are preserved.",
         operationId: "session.actors",
         responses: {
           200: {
@@ -1317,9 +1625,11 @@ export const SessionRoutes = lazy(() =>
           c,
           Effect.gen(function* () {
             const reg = yield* ActorRegistry.Service
+            const waiter = yield* ActorWaiter.Service
             const session = yield* Session.Service
             yield* session.get(sessionID)
-            return yield* reg.listBySession(sessionID)
+            const actors = yield* reg.listBySession(sessionID)
+            return yield* Effect.forEach(actors, waiter.status)
           }),
         )
         return c.json(actors)

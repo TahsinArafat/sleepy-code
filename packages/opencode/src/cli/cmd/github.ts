@@ -23,6 +23,7 @@ import { Instance } from "@/project/instance"
 import { bootstrap } from "../bootstrap"
 import { SessionShare } from "@/share"
 import { Session } from "../../session"
+import { childProcessEnv } from "@/util/child-process-env"
 import type { SessionID } from "../../session/schema"
 import { MessageID, PartID } from "../../session/schema"
 import { Provider } from "../../provider"
@@ -32,7 +33,7 @@ import { SessionPrompt } from "@/session/prompt"
 import { AppRuntime } from "@/effect/app-runtime"
 import { Git } from "@/git"
 import { setTimeout as sleep } from "node:timers/promises"
-import { Process } from "@/util"
+import { Log, Process } from "@/util"
 import { Effect } from "effect"
 
 type GitHubAuthor = {
@@ -339,7 +340,7 @@ export const GithubInstallCommand = cmd({
                   ? `start "" "${url}"`
                   : `xdg-open "${url}"`
 
-            exec(command, (error) => {
+            exec(command, { env: childProcessEnv() }, (error) => {
               if (error) {
                 prompts.log.warn(`Could not open browser. Please visit: ${url}`)
               }
@@ -424,6 +425,8 @@ jobs:
   },
 })
 
+export const GITHUB_PROMPT_PROVENANCE = { machine: "sleepycode-github" } as const
+
 export const GithubRunCommand = cmd({
   command: "run",
   describe: "run the GitHub agent",
@@ -444,7 +447,7 @@ export const GithubRunCommand = cmd({
       const context = isMock ? (JSON.parse(args.event!) as Context) : github.context
       if (!SUPPORTED_EVENTS.includes(context.eventName as (typeof SUPPORTED_EVENTS)[number])) {
         core.setFailed(`Unsupported event type: ${context.eventName}`)
-        process.exit(1)
+        await Log.exit(1)
       }
 
       // Determine event category for routing
@@ -708,7 +711,7 @@ export const GithubRunCommand = cmd({
           await revokeAppToken()
         }
       }
-      process.exit(exitCode)
+      await Log.exit(exitCode)
 
       function normalizeModel() {
         const value = process.env["MODEL"]
@@ -953,6 +956,10 @@ export const GithubRunCommand = cmd({
                 providerID,
                 modelID,
               },
+              // Internal CLI automation — not a user-facing turn source.
+              // hook + file parts require machine provenance (engine fail-closed gate).
+              source: "hook",
+              provenance: GITHUB_PROMPT_PROVENANCE,
               // agent is omitted - server will use default_agent from config or fall back to "build"
               parts: [
                 {
@@ -985,7 +992,7 @@ export const GithubRunCommand = cmd({
               const err = result.info.error
               console.error("Agent error:", err)
               if (err.name === "ContextOverflowError") throw new Error(formatPromptTooLargeError(files))
-              throw new Error(`${err.name}: ${err.data?.message || ""}`)
+              throw new Error(`${err.name}: ${"message" in err.data ? err.data.message : ""}`)
             }
 
             const text = extractResponseText(result.parts)
@@ -1000,6 +1007,8 @@ export const GithubRunCommand = cmd({
                 providerID,
                 modelID,
               },
+              source: "hook",
+              provenance: GITHUB_PROMPT_PROVENANCE,
               tools: { "*": false },
               parts: [
                 {
@@ -1014,7 +1023,7 @@ export const GithubRunCommand = cmd({
               const err = summary.info.error
               console.error("Summary agent error:", err)
               if (err.name === "ContextOverflowError") throw new Error(formatPromptTooLargeError(files))
-              throw new Error(`${err.name}: ${err.data?.message || ""}`)
+              throw new Error(`${err.name}: ${"message" in err.data ? err.data.message : ""}`)
             }
 
             const summaryText = extractResponseText(summary.parts)

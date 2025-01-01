@@ -1,3 +1,4 @@
+import { ActorExecution } from "../../src/actor/execution"
 import { afterEach, describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import { Agent } from "../../src/agent/agent"
@@ -46,6 +47,7 @@ interface WaitResponse {
   actor_id: string
   result?: string
   error?: string
+  lastOutcome?: string
 }
 
 function parseOutput(output: string): WaitResponse {
@@ -66,6 +68,24 @@ function ctxFor(sessionID: SessionID) {
 }
 
 describe("actor tool — wait action", () => {
+  it.live("[TP-R14-11] status and wait expose the same failure outcome", provideTmpdirInstance(() =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const registry = yield* ActorRegistry.Service
+      const chat = yield* sessions.create({ title: "failed child" })
+      yield* registry.register({ sessionID: chat.id, actorID: "child", mode: "subagent", agent: "general", description: "failed child", contextMode: "none", background: true, lifecycle: "ephemeral" })
+      yield* registry.updateStatus(chat.id, "child", { status: "idle", lastOutcome: "failure", lastError: "execution failed" })
+      const tool = yield* ActorTool
+      const def = yield* tool.init()
+      for (const action of ["status", "wait"] as const) {
+        const response = yield* def.execute({ operation: { action, actor_id: "child" } }, ctxFor(chat.id))
+        const snap = parseOutput(response.output)
+        expect(snap.status).toBe("idle")
+        expect(snap.lastOutcome).toBe("failure")
+        expect(snap.error).toBe("execution failed")
+      }
+    }),
+  ))
   it.live(
     "wait on already-completed task returns immediately",
     provideTmpdirInstance(() =>
@@ -154,6 +174,8 @@ describe("actor tool — wait action", () => {
           lifecycle: "ephemeral",
         })
 
+        const executions = yield* ActorExecution.Service
+        const execution = yield* executions.reserve(chat.id, actorID)
         const tool = yield* ActorTool
         const def = yield* tool.init()
         const start = Date.now()
@@ -162,6 +184,7 @@ describe("actor tool — wait action", () => {
           ctxFor(chat.id),
         )
         const elapsed = Date.now() - start
+        yield* executions.release(execution)
 
         const snap = parseOutput(result.output)
         expect(snap.status).toBe("timeout")

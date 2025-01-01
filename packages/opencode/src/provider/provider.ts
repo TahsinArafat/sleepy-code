@@ -1,3 +1,4 @@
+import { HostModelTransport } from "./host-transport"
 import z from "zod"
 import os from "os"
 import fuzzysort from "fuzzysort"
@@ -26,6 +27,7 @@ import { InstanceState } from "@/effect"
 import { AppFileSystem } from "@sleepy-ai/shared/filesystem"
 import { isRecord } from "@/util/record"
 import { withStatics } from "@/util/schema"
+import { isFreeApiModel, isFreeApiSunset } from "@/util/free-api-sunset"
 
 import * as ProviderTransform from "./transform"
 import { ModelID, ProviderID } from "./schema"
@@ -37,7 +39,10 @@ const DEFAULT_CONTEXT_WINDOW = 1_000_000
 const BUILTIN_TIERS = new Set(["ultra", "standard", "lite"])
 // F41: warn once per (providerID, modelID) when limit.context falls back to default
 const warnedContextDefaults = new Set<string>()
+// defaultModel() runs per cheap task; warn once per stale cfg.model, not every call
+const warnedStaleDefaultModels = new Set<string>()
 
+export const DEFAULT_OPENAI_HEADER_TIMEOUT = 300_000
 export const DEFAULT_CHUNK_TIMEOUT = 480_000 // 8 minutes — bounds single-attempt SSE stall.
 // Tuned for sleepy-v2.5-pro on Sleepy Router whose cold-path TTFT after context
 // rebuild can dip to ~5 minutes silent. Reasoning models with multi-minute
@@ -92,11 +97,138 @@ function wrapSSE(res: Response, ms: number, ctl: AbortController) {
     },
   })
 
-  return new Response(body, {
+  return wrapResponse(res, body)
+}
+
+function wrapResponse(res: Response, body: ReadableStream<Uint8Array>) {
+  const wrapped = new Response(body, {
     headers: new Headers(res.headers),
     status: res.status,
     statusText: res.statusText,
   })
+  Object.defineProperties(wrapped, {
+    redirected: { get: () => res.redirected },
+    type: { get: () => res.type },
+    url: { get: () => res.url },
+  })
+  return wrapped
+}
+
+function timeoutController(ms: number, message = `Response header timed out after ${ms}ms`) {
+  const ctl = new AbortController()
+  const id = setTimeout(() => ctl.abort(Object.assign(new Error(message), { code: "ETIMEDOUT" })), ms)
+  return {
+    signal: ctl.signal,
+    clear: () => clearTimeout(id),
+  }
+}
+
+type AbortSource = "request" | "timeout"
+
+export function trackAbortSource(requestSignal: AbortSignal | null | undefined, timeoutSignals: AbortSignal[]) {
+  const signals = [requestSignal, ...timeoutSignals].filter((signal) => signal !== null && signal !== undefined)
+  let source: AbortSource | undefined = requestSignal?.aborted
+    ? "request"
+    : timeoutSignals.some((signal) => signal.aborted)
+      ? "timeout"
+      : undefined
+  let winner = requestSignal?.aborted ? requestSignal : timeoutSignals.find((signal) => signal.aborted)
+  const listeners = signals.map((signal, index) => {
+    const listener = () => {
+      if (source) return
+      source = index === 0 && requestSignal ? "request" : "timeout"
+      winner = signal
+    }
+    signal.addEventListener("abort", listener, { once: true })
+    if (signal.aborted) listener()
+    return { signal, listener }
+  })
+  return {
+    signal: signals.length === 0 ? undefined : signals.length === 1 ? signals[0] : AbortSignal.any(signals),
+    source: () => source,
+    winner: () => winner,
+    dispose: () => listeners.forEach((item) => item.signal.removeEventListener("abort", item.listener)),
+  }
+}
+
+export function normalizeTimeoutError(error: unknown, source: AbortSource | undefined, signal?: AbortSignal) {
+  if (source !== "timeout") return error
+  const reason = signal?.reason
+  return Object.assign(new Error(reason instanceof Error ? reason.message : "Request timed out"), {
+    code: "ETIMEDOUT",
+    cause: error,
+  })
+}
+
+export function requestSignal(input: RequestInfo | URL, init?: RequestInit) {
+  return init?.signal ?? (input instanceof Request ? input.signal : undefined)
+}
+
+export function wrapRequestTimeout(
+  res: Response,
+  requestSignal: AbortSignal | null | undefined,
+  timeoutSignal: AbortSignal,
+  clear: () => void,
+) {
+  const tracked = trackAbortSource(requestSignal, [timeoutSignal])
+  let finalized = false
+  const finalize = () => {
+    if (finalized) return
+    finalized = true
+    clear()
+    tracked.dispose()
+  }
+  if (!res.body) {
+    finalize()
+    return res
+  }
+
+  const reader = res.body.getReader()
+  return wrapResponse(
+    res,
+    new ReadableStream<Uint8Array>({
+      async pull(ctrl) {
+        const part = await new Promise<Awaited<ReturnType<typeof reader.read>>>((resolve, reject) => {
+          const onAbort = () => {
+            const error = normalizeTimeoutError(
+              tracked.signal?.reason ?? new DOMException("The operation was aborted", "AbortError"),
+              tracked.source(),
+              tracked.winner(),
+            )
+            cleanup()
+            void reader.cancel(error).catch(() => {})
+            reject(error)
+          }
+          const cleanup = () => tracked.signal?.removeEventListener("abort", onAbort)
+          if (tracked.signal?.aborted) return onAbort()
+          tracked.signal?.addEventListener("abort", onAbort, { once: true })
+          reader.read().then(
+            (part) => {
+              cleanup()
+              resolve(part)
+            },
+            (error) => {
+              cleanup()
+              reject(normalizeTimeoutError(error, tracked.source(), tracked.winner()))
+            },
+          )
+        }).catch((error) => {
+          finalize()
+          throw error
+        })
+        if (part.done) {
+          finalize()
+          ctrl.close()
+          return
+        }
+        ctrl.enqueue(part.value)
+      },
+      async cancel(reason) {
+        finalize()
+        await reader.cancel(reason)
+      },
+    }),
+  )
 }
 
 type BundledSDK = {
@@ -193,7 +325,7 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         async getModel(sdk: any, modelID: string, _options?: Record<string, any>) {
           return sdk.responses(modelID)
         },
-        options: {},
+        options: { headerTimeout: DEFAULT_OPENAI_HEADER_TIMEOUT },
       }),
     xai: () =>
       Effect.succeed({
@@ -849,7 +981,7 @@ const ProviderModalities = Schema.Struct({
 const ProviderInterleaved = Schema.Union([
   Schema.Boolean,
   Schema.Struct({
-    field: Schema.Literals(["reasoning_content", "reasoning_details"]),
+    field: Schema.Literals(["reasoning", "reasoning_content", "reasoning_details"]),
   }),
 ])
 
@@ -927,6 +1059,7 @@ export const ListResult = Schema.Struct({
   all: Schema.Array(Info),
   default: DefaultModelIDs,
   connected: Schema.Array(Schema.String),
+  authenticated: Schema.Array(Schema.String),
 }).pipe(withStatics((s) => ({ zod: zod(s) })))
 export type ListResult = Types.DeepMutable<Schema.Schema.Type<typeof ListResult>>
 
@@ -950,6 +1083,7 @@ export interface Interface {
     query: string[],
   ) => Effect.Effect<{ providerID: ProviderID; modelID: string } | undefined>
   readonly getSmallModel: (providerID: ProviderID) => Effect.Effect<Model | undefined>
+  readonly getVisionModel: (providerID?: ProviderID) => Effect.Effect<Model | undefined>
   readonly resolveModelRef: (ref: string, contextProviderID?: ProviderID) => Effect.Effect<Model>
   readonly defaultModel: () => Effect.Effect<{ providerID: ProviderID; modelID: ModelID }>
 }
@@ -963,6 +1097,15 @@ interface State {
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Provider") {}
+
+export function sortVisionModels(models: Model[]): Model[] {
+  const inHouse = (m: Model) => m.providerID === "sleepy" || m.providerID === "xiaomi"
+  return [...models].sort((a, b) => {
+    if (inHouse(a) !== inHouse(b)) return inHouse(a) ? -1 : 1
+    if (a.cost.input !== b.cost.input) return a.cost.input - b.cost.input
+    return `${a.providerID}/${a.id}`.localeCompare(`${b.providerID}/${b.id}`)
+  })
+}
 
 function cost(c: ModelsDev.Model["cost"]): Model["cost"] {
   const result: Model["cost"] = {
@@ -986,6 +1129,19 @@ function cost(c: ModelsDev.Model["cost"]): Model["cost"] {
   return result
 }
 
+const OPENAI_COMPATIBLE_NPM = "@ai-sdk/openai-compatible"
+
+// Sleepy models (and the `sleepy-auto` smart alias) only speak the OpenAI-compatible Chat
+// Completions API. Whatever npm a catalog entry or sleepycode.json declares for such an
+// id, the model is pinned to @ai-sdk/openai-compatible.
+export function isSleepyOrSmartModel(id: string) {
+  return /(^|[/_-])sleepy(?:-|$)/i.test(id) || id === "sleepy-auto"
+}
+
+function resolveModelNpm(npm: string, ...ids: string[]) {
+  return ids.some(isSleepyOrSmartModel) ? OPENAI_COMPATIBLE_NPM : npm
+}
+
 function fromModelsDevModel(provider: ModelsDev.Provider, model: ModelsDev.Model): Model {
   const base: Model = {
     id: ModelID.make(model.id),
@@ -995,7 +1151,7 @@ function fromModelsDevModel(provider: ModelsDev.Provider, model: ModelsDev.Model
     api: {
       id: model.id,
       url: model.provider?.api ?? provider.api ?? "",
-      npm: model.provider?.npm ?? provider.npm ?? "@ai-sdk/openai-compatible",
+      npm: resolveModelNpm(model.provider?.npm ?? provider.npm ?? OPENAI_COMPATIBLE_NPM, model.id),
     },
     status: model.status ?? "active",
     headers: {},
@@ -1155,12 +1311,15 @@ const layer: Layer.Layer<
           for (const [modelID, model] of Object.entries(provider.models ?? {})) {
             const existingModel = parsed.models[model.id ?? modelID]
             const apiID = model.id ?? existingModel?.api.id ?? modelID
-            const apiNpm =
+            const apiNpm = resolveModelNpm(
               model.provider?.npm ??
-              provider.npm ??
-              existingModel?.api.npm ??
-              modelsDev[providerID]?.npm ??
-              "@ai-sdk/openai-compatible"
+                provider.npm ??
+                existingModel?.api.npm ??
+                modelsDev[providerID]?.npm ??
+                OPENAI_COMPATIBLE_NPM,
+              modelID,
+              apiID,
+            )
             const name = iife(() => {
               if (model.name) return model.name
               if (model.id && model.id !== modelID) return modelID
@@ -1201,7 +1360,7 @@ const layer: Layer.Layer<
                 interleaved:
                   model.interleaved ??
                   existingModel?.capabilities.interleaved ??
-                  (!existingModel && apiNpm === "@ai-sdk/openai-compatible" && apiID.includes("deepseek")
+                  (!existingModel && apiNpm === OPENAI_COMPATIBLE_NPM && apiID.includes("deepseek")
                     ? { field: "reasoning_content" }
                     : false),
               },
@@ -1231,13 +1390,27 @@ const layer: Layer.Layer<
                   return DEFAULT_CONTEXT_WINDOW
                 })(),
                 input: model.limit?.input ?? existingModel?.limit?.input,
-                output: model.limit?.output ?? existingModel?.limit?.output ?? 0,
+                output:
+                  model.limit?.output ??
+                  existingModel?.limit?.output ??
+                  (ProviderTransform.usesLargeModelDefaults({
+                    id: modelID,
+                    providerID,
+                    api: { id: apiID },
+                  })
+                    ? ProviderTransform.LARGE_MODEL_OUTPUT_TOKEN_MAX
+                    : 0),
               },
               headers: mergeDeep(existingModel?.headers ?? {}, model.headers ?? {}),
               family: model.family ?? existingModel?.family ?? "",
               release_date: model.release_date ?? existingModel?.release_date ?? "",
               cachePromptTTL: model.cachePromptTTL ?? existingModel?.cachePromptTTL,
               variants: {},
+            }
+            // sleepy-auto is a free-tier routing alias absent from models.dev; it routes to a
+            // vision-capable model, so image input is supported.
+            if (providerID === "sleepy" && modelID === "sleepy-auto") {
+              parsedModel.capabilities.input.image = true
             }
             const merged = mergeDeep(ProviderTransform.variants(parsedModel), model.variants ?? {})
             parsedModel.variants = mapValues(
@@ -1287,10 +1460,16 @@ const layer: Layer.Layer<
           if (!stored) continue
           if (!plugin.auth.loader) continue
 
+          const catalog = database[plugin.auth.provider]
+          if (!catalog) {
+            log.warn("skipping plugin auth loader; provider missing from model catalog", { providerID })
+            continue
+          }
+
           const options = yield* Effect.promise(() =>
             plugin.auth!.loader!(
               () => bridge.promise(auth.get(providerID).pipe(Effect.orDie)) as any,
-              database[plugin.auth!.provider],
+              catalog,
             ),
           )
           const opts = options ?? {}
@@ -1378,6 +1557,13 @@ const layer: Layer.Layer<
           }
 
           const configProvider = cfg.provider?.[providerID]
+          // Opt-in implicit whitelist: only when the provider sets
+          // `only_configured_models: true` does a non-empty `models` map hide the
+          // rest of the catalog. Default (false) preserves the augment-only
+          // behavior — `models` overrides/adds without filtering.
+          const configModelKeys = Object.keys(configProvider?.models ?? {})
+          const implicitWhitelist =
+            configProvider?.only_configured_models && configModelKeys.length > 0 ? configModelKeys : undefined
 
           for (const [modelID, model] of Object.entries(provider.models)) {
             model.api.id = model.api.id ?? model.id ?? modelID
@@ -1390,7 +1576,8 @@ const layer: Layer.Layer<
             if (model.status === "deprecated") delete provider.models[modelID]
             if (
               (configProvider?.blacklist && configProvider.blacklist.includes(modelID)) ||
-              (configProvider?.whitelist && !configProvider.whitelist.includes(modelID))
+              (configProvider?.whitelist && !configProvider.whitelist.includes(modelID)) ||
+              (implicitWhitelist && !implicitWhitelist.includes(modelID))
             )
               delete provider.models[modelID]
 
@@ -1483,49 +1670,55 @@ const layer: Layer.Layer<
 
         const customFetch = options["fetch"]
         const userChunkTimeout = options["chunkTimeout"]
+        const headerTimeout = options["headerTimeout"]
         const chunkTimeout =
           typeof userChunkTimeout === "number"
             ? userChunkTimeout  // user-set value (incl. 0 / negative to disable)
             : DEFAULT_CHUNK_TIMEOUT
         delete options["chunkTimeout"]
+        delete options["headerTimeout"]
 
         options["fetch"] = async (input: any, init?: BunFetchRequestInit) => {
           const fetchFn = customFetch ?? fetch
           const opts = init ?? {}
+          const callerSignal = requestSignal(input, opts)
           const chunkAbortCtl = typeof chunkTimeout === "number" && chunkTimeout > 0 ? new AbortController() : undefined
-          const signals: AbortSignal[] = []
+          const headerTimeoutMs = headerTimeout === false ? undefined : headerTimeout
+          const headerTimeoutCtl = typeof headerTimeoutMs === "number" ? timeoutController(headerTimeoutMs) : undefined
+          const requestTimeoutCtl =
+            typeof options["timeout"] === "number" && options["timeout"] > 0
+              ? timeoutController(options["timeout"], `Request timed out after ${options["timeout"]}ms`)
+              : undefined
+          const tracked = trackAbortSource(
+            callerSignal,
+            [headerTimeoutCtl?.signal, requestTimeoutCtl?.signal].filter((signal) => signal !== undefined),
+          )
+          const signals = [tracked.signal, chunkAbortCtl?.signal].filter((signal) => signal !== undefined)
+          if (signals.length > 0) opts.signal = signals.length === 1 ? signals[0] : AbortSignal.any(signals)
 
-          if (opts.signal) signals.push(opts.signal)
-          if (chunkAbortCtl) signals.push(chunkAbortCtl.signal)
-          if (options["timeout"] !== undefined && options["timeout"] !== null && options["timeout"] !== false)
-            signals.push(AbortSignal.timeout(options["timeout"]))
+          const res = await Promise.resolve()
+            .then(() =>
+              HostModelTransport.request(input, opts, () => fetchFn(input, {
+                ...opts,
+                // @ts-ignore see here: https://github.com/oven-sh/bun/issues/16682
+                timeout: false,
+              })),
+            )
+            .catch((error: unknown) => {
+              requestTimeoutCtl?.clear()
+              tracked.dispose()
+              throw normalizeTimeoutError(error, tracked.source(), tracked.winner())
+            })
+            .finally(() => {
+              headerTimeoutCtl?.clear()
+            })
 
-          const combined = signals.length === 0 ? null : signals.length === 1 ? signals[0] : AbortSignal.any(signals)
-          if (combined) opts.signal = combined
-
-          // Strip openai itemId metadata following what codex does
-          if (model.api.npm === "@ai-sdk/openai" && opts.body && opts.method === "POST") {
-            const body = JSON.parse(opts.body as string)
-            const isAzure = model.providerID.includes("azure")
-            const keepIds = isAzure && body.store === true
-            if (!keepIds && Array.isArray(body.input)) {
-              for (const item of body.input) {
-                if ("id" in item) {
-                  delete item.id
-                }
-              }
-              opts.body = JSON.stringify(body)
-            }
-          }
-
-          const res = await fetchFn(input, {
-            ...opts,
-            // @ts-ignore see here: https://github.com/oven-sh/bun/issues/16682
-            timeout: false,
-          })
-
-          if (!chunkAbortCtl) return res
-          return wrapSSE(res, chunkTimeout, chunkAbortCtl)
+          tracked.dispose()
+          const bounded = requestTimeoutCtl
+            ? wrapRequestTimeout(res, callerSignal, requestTimeoutCtl.signal, requestTimeoutCtl.clear)
+            : res
+          if (!chunkAbortCtl) return bounded
+          return wrapSSE(bounded, chunkTimeout, chunkAbortCtl)
         }
 
         const bundledLoader = BUNDLED_PROVIDERS[model.api.npm]
@@ -1593,6 +1786,9 @@ const layer: Layer.Layer<
     })
 
     const getLanguage = Effect.fn("Provider.getLanguage")(function* (model: Model) {
+      if (isFreeApiSunset() && isFreeApiModel({ providerID: model.providerID, modelID: model.id })) {
+        throw new Error("Sleepy free API service has ended. Sign in or configure a third-party API.")
+      }
       const s = yield* InstanceState.get(state)
       const envs = yield* env.all()
       const key = `${model.providerID}/${model.id}`
@@ -1692,11 +1888,47 @@ const layer: Layer.Layer<
       return yield* resolveModelRef("lite", providerID)
     })
 
+    const getVisionModel = Effect.fn("Provider.getVisionModel")(function* (providerID?: ProviderID) {
+      const cfg = yield* config.get()
+      // Explicit vision_model literal wins. getModel raises ModelNotFoundError as
+      // a defect, so a misconfigured vision_model must not propagate — catch it and
+      // fall back to the smart default.
+      if (cfg.vision_model) {
+        const parsed = parseModel(cfg.vision_model)
+        const explicit = yield* getModel(parsed.providerID, parsed.modelID).pipe(
+          Effect.catchDefect(() => Effect.succeed(undefined)),
+        )
+        if (explicit && (!providerID || explicit.providerID === providerID)) return explicit
+      }
+      // Smart default: in-house preferred, then cheapest vision-capable model.
+      const providers = yield* list()
+      const vision = Object.values(providers)
+        .filter((info) => !providerID || info.id === providerID)
+        .flatMap((info) => Object.values(info.models))
+        .filter((m) => m.capabilities.input.image === true)
+      return sortVisionModels(vision)[0]
+    })
+
+    // Stable default chain. Product-priority substring ranking (`sort`) is for
+    // menus/listings, not for choosing a working default — Desktop's empty
+    // recent + router leftovers made that path pick unavailable models.
+    // Last-resort picks require a usable chat model (toolcall + text input +
+    // non-zero context): live openai id-asc starts at chatgpt-image-latest
+    // (tool_call false, context 0), which titles/agents cannot call.
     const defaultModel = Effect.fn("Provider.defaultModel")(function* () {
       const cfg = yield* config.get()
-      if (cfg.model) return parseModel(cfg.model)
-
       const s = yield* InstanceState.get(state)
+
+      if (cfg.model) {
+        const parsed = parseModel(cfg.model)
+        const provider = s.providers[parsed.providerID]
+        if (provider?.models[parsed.modelID]) return parsed
+        if (!warnedStaleDefaultModels.has(cfg.model)) {
+          warnedStaleDefaultModels.add(cfg.model)
+          log.warn("configured default model missing from registry, falling through", { model: cfg.model })
+        }
+      }
+
       const recent = yield* fs.readJson(path.join(Global.Path.state, "model.json")).pipe(
         Effect.map((x): { providerID: ProviderID; modelID: ModelID }[] => {
           if (!isRecord(x) || !Array.isArray(x.recent)) return []
@@ -1716,22 +1948,21 @@ const layer: Layer.Layer<
         return { providerID: entry.providerID, modelID: entry.modelID }
       }
 
-      const sleepy = s.providers[ProviderID.make("sleepy")]
-      if (sleepy?.models[ModelID.make("sleepy-auto")]) {
-        return { providerID: sleepy.id, modelID: ModelID.make("sleepy-auto") }
+      const allowed = Object.values(s.providers).filter((p) => !cfg.provider || Object.keys(cfg.provider).includes(p.id))
+      if (!allowed.length) throw new Error("no providers found")
+      for (const provider of allowed) {
+        const model = sortBy(
+          Object.values(provider.models).filter(
+            (m) => m.capabilities.toolcall && m.capabilities.input.text && (m.limit?.context ?? 1) > 0,
+          ),
+          [(m) => m.id, "asc"],
+        )[0]
+        if (model) return { providerID: provider.id, modelID: model.id }
       }
-
-      const provider = Object.values(s.providers).find((p) => !cfg.provider || Object.keys(cfg.provider).includes(p.id))
-      if (!provider) throw new Error("no providers found")
-      const [model] = sort(Object.values(provider.models))
-      if (!model) throw new Error("no models found")
-      return {
-        providerID: provider.id,
-        modelID: model.id,
-      }
+      throw new Error("no models found")
     })
 
-    return Service.of({ list, getProvider, getModel, getLanguage, closest, getSmallModel, defaultModel, resolveModelRef })
+    return Service.of({ list, getProvider, getModel, getLanguage, closest, getSmallModel, getVisionModel, defaultModel, resolveModelRef })
   }),
 )
 

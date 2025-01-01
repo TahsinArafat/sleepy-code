@@ -13,6 +13,8 @@
  */
 
 export interface LLMCapture {
+  /** Model identifier sent to the OpenAI-compatible endpoint */
+  model: string
   /** Raw messages array from the OpenAI-compatible request body */
   messages: Array<{ role: string; content: unknown }>
 }
@@ -20,8 +22,11 @@ export interface LLMCapture {
 type ScriptedResponse = {
   /** SSE lines to stream back */
   lines: string[]
+  /** Optional live SSE source for cancellation and generation-barrier tests. */
+  stream?: ReadableStream<Uint8Array>
   /** HTTP status to return (default: 200) */
   status?: number
+  beforeReply?: () => Promise<unknown>
 }
 
 function sseChunk(delta: Record<string, unknown>, finishReason?: string): string {
@@ -70,6 +75,16 @@ export function reasoningStopResponse(reasoning: string): string[] {
   ]
 }
 
+/** Build SSE lines for reasoning-only output that exhausted the output token budget */
+export function reasoningLengthResponse(reasoning: string): string[] {
+  return [
+    sseChunk({ role: "assistant" }),
+    sseChunk({ reasoning_content: reasoning }),
+    sseChunk({}, "length"),
+    "data: [DONE]\n\n",
+  ]
+}
+
 /**
  * Build SSE lines for a step halted by the provider's content safety filter
  * (`finish_reason: "content_filter"`, mapped to unified "content-filter").
@@ -105,26 +120,20 @@ export function textLengthResponse(text: string): string[] {
 }
 
 /** Build SSE lines for a tool-call response (finish_reason: tool_calls) */
-export function toolCallResponse(params: {
-  id: string
-  name: string
-  args: string
-}): string[] {
+export function toolCallResponse(params: { id: string; name: string; args: string }): string[] {
+  return toolCallsResponse([params])
+}
+
+/** Build one assistant step containing multiple tool calls in emission order. */
+export function toolCallsResponse(calls: { id: string; name: string; args: string }[]): string[] {
   return [
     sseChunk({ role: "assistant" }),
-    sseChunk({
-      tool_calls: [
-        {
-          index: 0,
-          id: params.id,
-          type: "function",
-          function: { name: params.name, arguments: "" },
-        },
-      ],
-    }),
-    sseChunk({
-      tool_calls: [{ index: 0, function: { arguments: params.args } }],
-    }),
+    ...calls.flatMap((call, index) => [
+      sseChunk({
+        tool_calls: [{ index, id: call.id, type: "function", function: { name: call.name, arguments: "" } }],
+      }),
+      sseChunk({ tool_calls: [{ index, function: { arguments: call.args } }] }),
+    ]),
     sseChunk({}, "tool_calls"),
     "data: [DONE]\n\n",
   ]
@@ -213,15 +222,16 @@ export function startScriptedLLMServer(responses: ScriptedResponse[]): ScriptedL
         return new Response("not found", { status: 404 })
       }
 
-      const body = (await req.json()) as { messages: Array<{ role: string; content: unknown }> }
-      captures.push({ messages: body.messages })
+      const body = (await req.json()) as { model: string; messages: Array<{ role: string; content: unknown }> }
+      captures.push({ model: body.model, messages: body.messages })
 
       const response = responses[Math.min(callIdx, responses.length - 1)]
       callIdx++
+      await response.beforeReply?.()
 
       const lines = response.lines
       const encoder = new TextEncoder()
-      const stream = new ReadableStream<Uint8Array>({
+      const stream = response.stream ?? new ReadableStream<Uint8Array>({
         start(ctrl) {
           for (const line of lines) ctrl.enqueue(encoder.encode(line))
           ctrl.close()

@@ -12,6 +12,7 @@ import { Database, NotFoundError, eq, and, gte, isNull, desc, like, inArray, lt 
 import { SyncEvent } from "../sync"
 import type { SQL } from "../storage"
 import { PartTable, SessionTable, MessageTable } from "./session.sql"
+import { ActorRegistryTable } from "../actor/actor.sql"
 import { ProjectTable } from "../project/project.sql"
 import { Storage } from "@/storage"
 import { Log } from "../util"
@@ -26,17 +27,23 @@ import { SessionID, MessageID, PartID } from "./schema"
 
 import type { Provider } from "@/provider"
 import { Permission } from "@/permission"
+import { forwardRef } from "@/permission/permission-forward-ref"
 import { Global } from "@/global"
 import { ActorRegistry } from "@/actor/registry"
-import { Effect, Layer, Option, Context } from "effect"
+import { Effect, Layer, Option, Context, Semaphore } from "effect"
 
 const log = Log.create({ service: "session" })
 
 const parentTitlePrefix = "New session - "
 const childTitlePrefix = "Child session - "
+const promptLocks = new Map<SessionID, Semaphore.Semaphore>()
 
-function createDefaultTitle(isChild = false) {
-  return (isChild ? childTitlePrefix : parentTitlePrefix) + new Date().toISOString()
+function promptLock(sessionID: SessionID) {
+  const current = promptLocks.get(sessionID)
+  if (current) return current
+  const next = Semaphore.makeUnsafe(1)
+  promptLocks.set(sessionID, next)
+  return next
 }
 
 export function isDefaultTitle(title: string) {
@@ -69,11 +76,14 @@ export function fromRow(row: SessionRow): Info {
     contextFrom: row.context_from ?? undefined,
     contextWatermark: row.context_watermark ?? undefined,
     title: row.title,
+    titleSource: row.title_source,
+    titleRevision: row.title_revision,
     version: row.version,
     summary,
     share,
     revert,
     permission: row.permission ?? undefined,
+    prompt: row.prompt ? PromptConfig.parse(row.prompt) : undefined,
     time: {
       created: row.time_created,
       updated: row.time_updated,
@@ -93,7 +103,10 @@ export function toRow(info: Info) {
     context_watermark: info.contextWatermark,
     slug: info.slug,
     directory: info.directory,
-    title: info.title,
+    title: info.title || "Untitled",
+    // Legacy imports/events have no provenance: protect their nonempty title.
+    title_source: info.titleSource ?? (info.title ? "user" : "fallback"),
+    title_revision: info.titleRevision ?? 0,
     version: info.version,
     share_url: info.share?.url,
     summary_additions: info.summary?.additions,
@@ -102,6 +115,7 @@ export function toRow(info: Info) {
     summary_diffs: info.summary?.diffs,
     revert: info.revert ?? null,
     permission: info.permission,
+    prompt: info.prompt ?? null,
     time_created: info.time.created,
     time_updated: info.time.updated,
     time_compacting: info.time.compacting,
@@ -118,6 +132,13 @@ function getForkedTitle(title: string): string {
   }
   return `${title} (fork #1)`
 }
+
+export const PromptConfig = z.object({
+  system: z.string().optional(),
+  systemMode: z.enum(["append", "replace-agent"]).default("append"),
+  harness: z.enum(["auto", "codex", "default"]),
+})
+export type PromptConfig = z.output<typeof PromptConfig>
 
 export const Info = z
   .object({
@@ -143,6 +164,8 @@ export const Info = z
       })
       .optional(),
     title: z.string(),
+    titleSource: z.enum(["fallback", "generated", "user"]),
+    titleRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     version: z.string(),
     time: z.object({
       created: z.number(),
@@ -151,6 +174,7 @@ export const Info = z
       archived: z.number().optional(),
     }),
     permission: Permission.Ruleset.zod.optional(),
+    prompt: PromptConfig.optional(),
     revert: z
       .object({
         messageID: MessageID.zod,
@@ -183,23 +207,70 @@ export const GlobalInfo = Info.extend({
 })
 export type GlobalInfo = z.output<typeof GlobalInfo>
 
+export const ManualTitle = z.string().trim().min(1).transform(value => Array.from(value).slice(0, 80).join(""))
+
 export const CreateInput = z
   .object({
     parentID: SessionID.zod.optional(),
     contextFrom: SessionID.zod.optional(),
     contextWatermark: MessageID.zod.optional(),
-    title: z.string().optional(),
+    title: ManualTitle.optional(),
     permission: Info.shape.permission,
     workspaceID: WorkspaceID.zod.optional(),
   })
   .optional()
 export type CreateInput = z.output<typeof CreateInput>
 
-export const ForkInput = z.object({ sessionID: SessionID.zod, messageID: MessageID.zod.optional() })
+export const ForkInput = z.object({ sessionID: SessionID.zod, messageID: MessageID.zod.optional(), title: ManualTitle.optional() })
 export const GetInput = SessionID.zod
 export const ChildrenInput = SessionID.zod
 export const RemoveInput = SessionID.zod
-export const SetTitleInput = z.object({ sessionID: SessionID.zod, title: z.string() })
+export const TitleSnapshot = z.object({
+  sessionID: SessionID.zod,
+  title: z.string(),
+  titleSource: Info.shape.titleSource,
+  titleRevision: Info.shape.titleRevision,
+}).meta({ ref: "TitleSnapshot" })
+export type TitleSnapshot = z.infer<typeof TitleSnapshot>
+export const TitleConflict = z.object({ name: z.literal("TitleConflictError"), data: z.object({ current: TitleSnapshot }) })
+export class TitleRevisionError extends Error { override readonly name = "TitleRevisionError" }
+export class TitleConflictError extends Error {
+  override readonly name = "TitleConflictError"
+  constructor(readonly current: TitleSnapshot) { super("Title changed by another writer") }
+  toObject() { return { name: this.name, data: { current: this.current } } }
+}
+export const SetTitleInput = z.object({ sessionID: SessionID.zod, title: ManualTitle, expectedRevision: Info.shape.titleRevision }).strict()
+export type SetTitleInput = z.infer<typeof SetTitleInput>
+export type AutoTitleInput = SetTitleInput & { source?: "fallback" | "generated" }
+
+export function titleSnapshot(info: Info): TitleSnapshot {
+  return { sessionID: info.id, title: info.title, titleSource: info.titleSource, titleRevision: info.titleRevision }
+}
+
+// The read, arbitration, projection and optional event log share this immediate
+// transaction. No process-local mutex can arbitrate a second SQLite connection.
+export function writeTitle(input: SetTitleInput, source: "user" | "fallback" | "generated", mode: "initial" | "machine" = "initial"): TitleSnapshot | false {
+  const parsed = SetTitleInput.parse(input)
+  return Database.transaction((db) => {
+    const row = db.select().from(SessionTable).where(eq(SessionTable.id, parsed.sessionID)).get()
+    if (!row) throw new NotFoundError({ message: `Session not found: ${parsed.sessionID}` })
+    const current = titleSnapshot(fromRow(row))
+    if (source === "user") {
+      if (parsed.expectedRevision > current.titleRevision) throw new TitleRevisionError("expectedRevision is in the future")
+      if (parsed.expectedRevision < current.titleRevision && current.titleSource === "user") throw new TitleConflictError(current)
+    } else if (current.titleSource === "user" || (mode === "initial" && current.titleSource !== "fallback") || parsed.expectedRevision !== current.titleRevision) return false
+    // Revision zero is uninitialized; the first fallback commit records completion even for identical text.
+    if (((source === "fallback" && current.titleRevision > 0) || mode === "machine") && current.title === parsed.title) return false
+    if (current.titleRevision === Number.MAX_SAFE_INTEGER) throw new RangeError("Title revision exhausted")
+    const next = { ...current, title: parsed.title, titleSource: source, titleRevision: current.titleRevision + 1 }
+    SyncEvent.run(Event.Updated, {
+      sessionID: parsed.sessionID,
+      previousRevision: current.titleRevision,
+      info: { title: next.title, titleSource: next.titleSource, titleRevision: next.titleRevision },
+    })
+    return next
+  }, { behavior: "immediate" })
+}
 export const SetArchivedInput = z.object({ sessionID: SessionID.zod, time: z.number().optional() })
 export const SetPermissionInput = z.object({ sessionID: SessionID.zod, permission: Permission.Ruleset.zod })
 export const SetRevertInput = z.object({
@@ -208,6 +279,13 @@ export const SetRevertInput = z.object({
   summary: Info.shape.summary,
 })
 export const MessagesInput = z.object({ sessionID: SessionID.zod, limit: z.number().optional() })
+
+// v1 is replay-only. Its already accepted but provenance-less titles are
+// conservatively protected. New commands may only emit the revisioned v2 event.
+export const LegacyUpdated = SyncEvent.define({
+  type: "session.updated", version: 1, aggregate: "sessionID",
+  schema: z.object({ sessionID: SessionID.zod, info: updateSchema(Info.omit({ titleSource: true, titleRevision: true })).extend({ share: updateSchema(Info.shape.share.unwrap()).optional(), time: updateSchema(Info.shape.time).optional() }) }),
+})
 
 export const Event = {
   Created: SyncEvent.define({
@@ -221,10 +299,11 @@ export const Event = {
   }),
   Updated: SyncEvent.define({
     type: "session.updated",
-    version: 1,
+    version: 2,
     aggregate: "sessionID",
     schema: z.object({
       sessionID: SessionID.zod,
+      previousRevision: Info.shape.titleRevision.optional(),
       info: updateSchema(Info).extend({
         share: updateSchema(Info.shape.share.unwrap()).optional(),
         time: updateSchema(Info.shape.time).optional(),
@@ -265,9 +344,33 @@ export const Event = {
       sessionID: SessionID.zod,
       messageID: z.string(),
       attempt: z.number().int().min(1),
-      maxAttempts: z.number().int().min(1),
+      phaseAttempt: z.number().int().min(1),
+      // 0 means persistent retry with no fixed attempt cap.
+      maxAttempts: z.number().int().min(0),
+      phase: z.enum(["request", "stream"]),
+      kind: z.enum(["network", "rate_limit", "server", "stream", "unknown", "terminal"]),
+      scope: z.enum(["request", "live-step", "max-candidate", "max-judge"]),
       reason: z.string(),
       nextDelayMs: z.number().int().nonnegative(),
+      hostCode: z.string().optional(),
+    }),
+  ),
+  TryBestDetected: BusEvent.define(
+    "session.try_best.detected",
+    z.object({
+      sessionID: SessionID.zod,
+      agentID: z.string().optional(),
+      providerID: z.string(),
+      modelID: z.string(),
+      reason: z.enum(["edit_repeat", "bash_retry", "action_streak"]),
+      evidence: z.object({
+        tool: z.string(),
+        path: z.string().optional(),
+        command: z.string().optional(),
+        count: z.number().int().positive(),
+        similarity: z.number().min(0).max(1).optional(),
+        action: z.enum(["edit", "verify"]).optional(),
+      }),
     }),
   ),
 }
@@ -362,9 +465,15 @@ export interface Interface {
   readonly fork: (input: { sessionID: SessionID; messageID?: MessageID }) => Effect.Effect<Info>
   readonly touch: (sessionID: SessionID) => Effect.Effect<void>
   readonly get: (id: SessionID) => Effect.Effect<Info>
-  readonly setTitle: (input: { sessionID: SessionID; title: string }) => Effect.Effect<void>
+  readonly setTitle: (input: SetTitleInput) => Effect.Effect<TitleSnapshot>
+  readonly setTitleIfDefault: (input: AutoTitleInput) => Effect.Effect<boolean>
+  readonly setGeneratedTitle: (input: SetTitleInput) => Effect.Effect<TitleSnapshot | false>
   readonly setArchived: (input: { sessionID: SessionID; time?: number }) => Effect.Effect<void>
   readonly setPermission: (input: { sessionID: SessionID; permission: Permission.Ruleset }) => Effect.Effect<void>
+  readonly resolvePrompt: (input: {
+    sessionID: SessionID
+    fallback?: Partial<PromptConfig>
+  }) => Effect.Effect<PromptConfig>
   readonly setRevert: (input: {
     sessionID: SessionID
     revert: Info["revert"]
@@ -388,7 +497,7 @@ export interface Interface {
      */
     agentID?: string
   }) => Effect.Effect<MessageV2.WithParts[]>
-  readonly children: (parentID: SessionID) => Effect.Effect<Info[]>
+  readonly children: (parentID: SessionID, options?: { visible?: boolean }) => Effect.Effect<Info[]>
   readonly remove: (sessionID: SessionID) => Effect.Effect<void>
   readonly updateMessage: <T extends MessageV2.Info>(msg: T) => Effect.Effect<T>
   readonly removeMessage: (input: { sessionID: SessionID; messageID: MessageID }) => Effect.Effect<MessageID>
@@ -420,7 +529,7 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Session") {}
 
-type Patch = z.infer<typeof Event.Updated.schema>["info"]
+type Patch = Omit<z.infer<typeof Event.Updated.schema>["info"], "title" | "titleSource" | "titleRevision">
 
 const db = <T>(fn: (d: Parameters<typeof Database.use>[0] extends (trx: infer D) => any ? D : never) => T) =>
   Effect.sync(() => Database.use(fn))
@@ -441,6 +550,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       workspaceID?: WorkspaceID
       directory: string
       permission?: Permission.Ruleset
+      prompt?: PromptConfig
     }) {
       const ctx = yield* InstanceState.context
       const result: Info = {
@@ -453,8 +563,11 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
         parentID: input.parentID,
         contextFrom: input.contextFrom,
         contextWatermark: input.contextWatermark,
-        title: input.title ?? createDefaultTitle(!!input.parentID),
+        title: input.title === undefined ? "Untitled" : ManualTitle.parse(input.title),
+        titleSource: input.title !== undefined ? "user" : "fallback",
+        titleRevision: 0,
         permission: input.permission,
+        prompt: input.prompt,
         time: {
           created: Date.now(),
           updated: Date.now(),
@@ -496,7 +609,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       return fromRow(row)
     })
 
-    const children = Effect.fn("Session.children")(function* (parentID: SessionID) {
+    const children = Effect.fn("Session.children")(function* (parentID: SessionID, options?: { visible?: boolean }) {
       const rows = yield* db((d) =>
         d
           .select()
@@ -504,10 +617,37 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
           .where(and(eq(SessionTable.parent_id, parentID)))
           .all(),
       )
-      return rows.map(fromRow)
+      if (!options?.visible) return rows.map(fromRow)
+      if (!rows.length) return []
+      // visible: only children a user should see in session lists. Peer actors
+      // register under the child session with actor_id === session id. Exactly
+      // three code paths create a child session, so the two dropped here are
+      // the checkpoint-writer host (session/checkpoint.ts:851, mode "subagent")
+      // and the HTTP `/ask` fork-query host (tool/session.ts forkQuery, title
+      // `ask: …`, mode "subagent"); a pre-registry child with no actor row at
+      // all is dropped too.
+      //
+      // ⚠️This list used to also name "workflow subagent sessions". There is no
+      // such session: a workflow's agent() calls actor.spawn with
+      // sessionID = its OWN session (workflow/runtime.ts:814-816, :945-948), so
+      // it registers an actor, not a child session.
+      //
+      // ⚠️This filter is NOT the render prohibition. Being absent here means
+      // "not offered in a list"; what may never be RENDERED is narrower and
+      // lives in session/visibility.ts (runtime-spawned agent hosts only, so the
+      // ask fork above is listed nowhere but is still renderable).
+      const peerRows = yield* db((d) =>
+        d
+          .select({ session_id: ActorRegistryTable.session_id })
+          .from(ActorRegistryTable)
+          .where(and(inArray(ActorRegistryTable.session_id, rows.map((r) => r.id)), eq(ActorRegistryTable.mode, "peer")))
+          .all(),
+      )
+      const peers = new Set(peerRows.map((r) => r.session_id))
+      return rows.filter((r) => peers.has(r.id)).map(fromRow)
     })
 
-    const remove: Interface["remove"] = Effect.fnUntraced(function* (sessionID: SessionID) {
+    const removeUnlocked: Interface["remove"] = Effect.fnUntraced(function* (sessionID: SessionID) {
       try {
         const session = yield* get(sessionID)
         const kids = yield* children(sessionID)
@@ -527,10 +667,28 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
         yield* Effect.sync(() => {
           SyncEvent.run(Event.Deleted, { sessionID, info: session }, { publish: hasInstance })
           SyncEvent.remove(sessionID)
+          // Drop this session's published parent-grant snapshot. ask() populates
+          // it process-wide on every call (before the needsAsk short-circuit), so
+          // without this the map grows one entry per session for the life of the
+          // process. Cleared here — the removal point — since a deleted session
+          // can no longer have background children that need to inherit from it.
+          forwardRef.clearParentGrants(sessionID)
+          promptLocks.delete(sessionID)
         })
+        // uncommitted-hint episode state is process-local; drop it when the session dies.
+        yield* Effect.promise(async () => {
+          try {
+            const mod = await import("./prompt/uncommitted-hint")
+            mod.clearAllHintStateForSession(sessionID)
+          } catch { /* best-effort */ }
+        }).pipe(Effect.ignore)
       } catch (e) {
         log.error(e)
       }
+    })
+
+    const remove: Interface["remove"] = Effect.fnUntraced(function* (sessionID: SessionID) {
+      yield* promptLock(sessionID).withPermits(1)(removeUnlocked(sessionID))
     })
 
     const updateMessage = <T extends MessageV2.Info>(msg: T): Effect.Effect<T> =>
@@ -579,10 +737,15 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       contextFrom?: SessionID
       contextWatermark?: MessageID
       title?: string
+      // In-process only (deliberately NOT on the public CreateInput / HTTP body,
+      // where it would collide with the route's `directory` query selector). Set
+      // once at creation by an in-process caller — e.g. spawnPeer placing a child
+      // session in its own worktree dir. Defaults to the current instance dir.
+      directory?: string
       permission?: Permission.Ruleset
       workspaceID?: WorkspaceID
     }) {
-      const directory = yield* InstanceState.directory
+      const directory = input?.directory ?? (yield* InstanceState.directory)
       const workspace = yield* InstanceState.workspaceID
       return yield* createNext({
         parentID: input?.parentID,
@@ -591,18 +754,20 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
         directory,
         title: input?.title,
         permission: input?.permission,
+        prompt: input?.parentID ? (yield* get(input.parentID)).prompt : undefined,
         workspaceID: workspace,
       })
     })
 
-    const fork = Effect.fn("Session.fork")(function* (input: { sessionID: SessionID; messageID?: MessageID }) {
+    const fork = Effect.fn("Session.fork")(function* (input: z.output<typeof ForkInput>) {
       const directory = yield* InstanceState.directory
       const original = yield* get(input.sessionID)
-      const title = getForkedTitle(original.title)
+      const title = input.title === undefined ? getForkedTitle(original.title) : ManualTitle.parse(input.title)
       const session = yield* createNext({
         directory,
         workspaceID: original.workspaceID,
         title,
+        prompt: original.prompt,
       })
       const msgs = yield* messages({ sessionID: input.sessionID, agentID: "*" })
       const idMap = new Map<string, MessageID>()
@@ -639,8 +804,13 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       yield* patch(sessionID, { time: { updated: Date.now() } })
     })
 
-    const setTitle = Effect.fn("Session.setTitle")(function* (input: { sessionID: SessionID; title: string }) {
-      yield* patch(input.sessionID, { title: input.title })
+    const setTitle = (input: SetTitleInput) => Effect.sync(() => writeTitle(input, "user") as TitleSnapshot)
+
+    const setGeneratedTitle = (input: SetTitleInput) => Effect.sync(() => writeTitle(input, "generated", "machine"))
+
+    const setTitleIfDefault = (input: AutoTitleInput) => Effect.sync(() => {
+      const { source = "generated", ...command } = input
+      return writeTitle(command, source) !== false
     })
 
     const setArchived = Effect.fn("Session.setArchived")(function* (input: { sessionID: SessionID; time?: number }) {
@@ -652,6 +822,45 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       permission: Permission.Ruleset
     }) {
       yield* patch(input.sessionID, { permission: input.permission, time: { updated: Date.now() } })
+    })
+
+    const resolvePrompt = Effect.fn("Session.resolvePrompt")(function (input: {
+      sessionID: SessionID
+      fallback?: Partial<PromptConfig>
+    }) {
+      return promptLock(input.sessionID).withPermits(1)(
+        Effect.gen(function* () {
+          const session = yield* get(input.sessionID)
+          if (session.prompt) return session.prompt
+          const firstUser = (yield* messages({ sessionID: input.sessionID })).find(
+            (message) =>
+              message.info.role === "user" &&
+              message.parts.some((part) => !("synthetic" in part) || !part.synthetic),
+          )
+          if (firstUser?.info.role === "user") {
+            const prompt: PromptConfig = {
+              system: firstUser.info.system,
+              systemMode: firstUser.info.systemMode ?? "append",
+              harness: firstUser.info.harness ?? "auto",
+            }
+            if (input.fallback) yield* patch(input.sessionID, { prompt })
+            return prompt
+          }
+          if (input.fallback) {
+            const prompt: PromptConfig = {
+              system: input.fallback.system,
+              systemMode: input.fallback.systemMode ?? "append",
+              harness: input.fallback.harness ?? "auto",
+            }
+            yield* patch(input.sessionID, { prompt })
+            return prompt
+          }
+          return {
+            systemMode: "append",
+            harness: "auto",
+          } satisfies PromptConfig
+        }),
+      )
     })
 
     const setRevert = Effect.fn("Session.setRevert")(function* (input: {
@@ -766,8 +975,11 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       touch,
       get,
       setTitle,
+      setTitleIfDefault,
+      setGeneratedTitle,
       setArchived,
       setPermission,
+      resolvePrompt,
       setRevert,
       clearRevert,
       setSummary,

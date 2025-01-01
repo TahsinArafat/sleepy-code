@@ -2,7 +2,7 @@ import z from "zod"
 import * as nodeFs from "fs/promises"
 import * as nodeOs from "os"
 import * as nodePath from "path"
-import { and, Database, eq } from "../storage"
+import { and, Database, eq, sql } from "../storage"
 import { ProjectTable } from "./project.sql"
 import { SessionTable } from "../session/session.sql"
 import { Log } from "../util"
@@ -43,11 +43,15 @@ async function setupProjectIdEnvironment(workingDir: string): Promise<void> {
   }
 
   // Belt-and-suspenders: ensure .git/info/exclude lists .sleepycode-project-id
-  const excludeFile = nodePath.join(mainGit, "info", "exclude")
-  await nodeFs.mkdir(nodePath.dirname(excludeFile), { recursive: true })
-  const existing = await nodeFs.readFile(excludeFile, "utf-8").catch(() => "")
-  if (!existing.includes(".sleepycode-project-id")) {
-    await nodeFs.appendFile(excludeFile, "\n.sleepycode-project-id\n")
+  try {
+    const excludeFile = nodePath.join(mainGit, "info", "exclude")
+    await nodeFs.mkdir(nodePath.dirname(excludeFile), { recursive: true })
+    const existing = await nodeFs.readFile(excludeFile, "utf-8").catch(() => "")
+    if (!existing.includes(".sleepycode-project-id")) {
+      await nodeFs.appendFile(excludeFile, "\n.sleepycode-project-id\n")
+    }
+  } catch {
+    // Advisory hygiene write only; never fail instance setup over it.
   }
 }
 
@@ -348,10 +352,15 @@ export const layer: Layer.Layer<
       )
 
       if (data.id !== ProjectID.global) {
+        // Keep time_updated intact: the schema's $onUpdate hook injects
+        // time_updated=Date.now() into every UPDATE, and this lazy re-parent is
+        // bookkeeping, not user activity — without the explicit passthrough it
+        // flattens the recency of every migrated session to one timestamp,
+        // scrambling recency-ordered session lists.
         yield* db((d) =>
           d
             .update(SessionTable)
-            .set({ project_id: data.id })
+            .set({ project_id: data.id, time_updated: sql`time_updated` })
             .where(and(eq(SessionTable.project_id, ProjectID.global), eq(SessionTable.directory, data.worktree)))
             .run(),
         )

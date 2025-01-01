@@ -185,6 +185,8 @@ describe("session.llm system prompt — memory-instructions guard", () => {
         const capture = await request
         const messages = capture.body.messages as Array<{ role: string; content: string }>
         const sysMsgs = messages.filter((m) => m.role === "system")
+        // buildSystemArray now collapses everything into a single system message.
+        expect(sysMsgs.length).toBe(1)
         const allSys = sysMsgs.map((m) => m.content).join("\n")
         expect(allSys).toContain("# Memory system")
       },
@@ -328,7 +330,7 @@ describe("session.llm system prompt — memory-instructions guard", () => {
         const sysMsgs = messages.filter((m) => m.role === "system")
         const allSys = sysMsgs.map((m) => m.content).join("\n")
         expect(allSys).toContain("Active recall protocol")
-        expect(allSys).toContain("use Grep with a keyword pattern")
+        expect(allSys).toContain("use the Grep tool with a keyword pattern")
       },
     })
   })
@@ -394,9 +396,9 @@ describe("session.llm system prompt — memory-instructions guard", () => {
         expect(allSys).toContain("Active recall protocol")
         expect(allSys).toContain("already in your context")
 
-        // (3) Subagent return format hint mentioned
-        expect(allSys).toContain("Subagent return format")
-        expect(allSys).toContain("**Status**:")
+        // (3) Subagent return format lives on spawn task injection, not the main memory block
+        expect(allSys).not.toContain("Subagent return format")
+        expect(allSys).not.toContain("**Status**:")
 
         // (4) Agent's mid-task writing duties removed (v8.0 sections):
         expect(allSys).not.toContain("Maintaining task progress")
@@ -413,7 +415,7 @@ describe("session.llm system prompt — memory-instructions guard", () => {
     })
   })
 
-  test("main agent memory instructions use absolute memory paths", async () => {
+  test("main agent memory instructions keep session paths stable across sessions", async () => {
     const server = queueState.server!
     const providerID = "alibaba"
     const modelID = "qwen-plus"
@@ -467,13 +469,101 @@ describe("session.llm system prompt — memory-instructions guard", () => {
           .map((m) => m.content)
           .join("\n")
         expect(allSys).toContain(path.join(Global.Path.data, "memory", "projects", Instance.current.project.id, "MEMORY.md"))
-        expect(allSys).toContain(path.join(Global.Path.data, "memory", "sessions", sessionID, "checkpoint.md"))
+        const sessionTemplate = path.join(Global.Path.data, "memory", "sessions", "current_session_id")
+        expect(allSys).toContain(path.join(sessionTemplate, "checkpoint.md"))
+        expect(allSys).toContain(path.join(sessionTemplate, "notes.md"))
+        expect(allSys).toContain(path.join(sessionTemplate, "tasks", "<id>", "progress.md"))
+        expect(allSys).not.toContain(path.join(Global.Path.data, "memory", "sessions", sessionID))
         // Global memory is taught (read-side) and points at the canonical path.
-        expect(allSys).toContain("## Global memory")
+        expect(allSys).toContain("# Global memory")
         expect(allSys).toContain(path.join(Global.Path.data, "memory", "global", "MEMORY.md"))
         expect(allSys).not.toContain("<data>/memory/projects")
         expect(allSys).not.toContain("<data>/memory/sessions")
       },
     })
+  })
+
+  test("SLEEPYCODE_DISABLE_CHECKPOINT=true — core memory instructions still appended; ckpt extras omitted", async () => {
+    const previous = process.env.SLEEPYCODE_DISABLE_CHECKPOINT
+    process.env.SLEEPYCODE_DISABLE_CHECKPOINT = "true"
+    const server = queueState.server!
+    const providerID = "alibaba"
+    const modelID = "qwen-plus"
+    const fixture = await loadFixture(providerID, modelID)
+    const request = waitRequest(
+      "/chat/completions",
+      new Response(createChatStream("Hi"), { status: 200, headers: { "Content-Type": "text/event-stream" } }),
+    )
+
+    try {
+      await using tmp = await tmpdir({
+        init: async (dir) => {
+          await Bun.write(path.join(dir, "sleepycode.json"), tmpConfig(providerID, `${server.url.origin}/v1`))
+        },
+      })
+
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const resolved = await getModel(ProviderID.make(providerID), ModelID.make(fixture.model.id))
+          const sessionRt = ManagedRuntime.make(SessionNs.defaultLayer)
+          let sessionID: SessionID
+          try {
+            const info = await sessionRt.runPromise(SessionNs.Service.use((svc) => svc.create({})))
+            sessionID = info.id
+          } finally {
+            await sessionRt.dispose()
+          }
+          const rt = ManagedRuntime.make(Layer.mergeAll(LLM.defaultLayer))
+          try {
+            await rt.runPromise(
+              LLM.Service.use((svc) =>
+                svc
+                  .stream({
+                    user: makeBaseUser(sessionID, providerID, resolved.id),
+                    sessionID,
+                    model: resolved,
+                    agent: makeAgent(),
+                    system: ["You are a helpful assistant."],
+                    messages: [{ role: "user", content: "Hello" }],
+                    tools: {},
+                  })
+                  .pipe(Stream.runDrain),
+              ),
+            )
+          } finally {
+            await rt.dispose()
+          }
+          const capture = await request
+          const allSys = (capture.body.messages as Array<{ role: string; content: string }>)
+            .filter((m) => m.role === "system")
+            .map((m) => m.content)
+            .join("\n")
+
+          // Memory write/read contract is NOT gated on checkpoint.
+          expect(allSys).toContain("# Memory system")
+          expect(allSys).toContain("Notes scratchpad")
+          expect(allSys).not.toContain("Subagent return format")
+          expect(allSys).toContain(
+            path.join(Global.Path.data, "memory", "projects", Instance.current.project.id, "MEMORY.md"),
+          )
+          expect(allSys).toContain(path.join(Global.Path.data, "memory", "global", "MEMORY.md"))
+          expect(allSys).toContain("Two file types")
+          expect(allSys).toContain("When to edit MEMORY.md directly")
+          expect(allSys).toContain("search first via the Grep and Read tools")
+
+          // Checkpoint-write ownership extras stay off when the flag is on.
+          // (Base agent.prompt may mention the checkpoint-writer agent name;
+          // assert on memory-system-specific copy instead.)
+          expect(allSys).not.toContain("Active recall protocol")
+          expect(allSys).not.toContain("sole curator")
+          expect(allSys).not.toContain("Session checkpoint")
+          expect(allSys).not.toContain(path.join(Global.Path.data, "memory", "sessions", "current_session_id", "checkpoint.md"))
+        },
+      })
+    } finally {
+      if (previous === undefined) delete process.env.SLEEPYCODE_DISABLE_CHECKPOINT
+      else process.env.SLEEPYCODE_DISABLE_CHECKPOINT = previous
+    }
   })
 })
