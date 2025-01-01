@@ -4,7 +4,7 @@ import { parseAPICallError } from "../../src/provider/error"
 import { ProviderID } from "../../src/provider/schema"
 
 const xiaomi = ProviderID.make("xiaomi")
-const mimo = ProviderID.make("mimo")
+const sleepy = ProviderID.make("sleepy")
 const openai = ProviderID.make("openai")
 
 function apiError(opts: { message: string; statusCode?: number; responseBody?: string }) {
@@ -20,7 +20,7 @@ function apiError(opts: { message: string; statusCode?: number; responseBody?: s
 }
 
 describe("provider error message", () => {
-  test("maps MiMo 421 moderation block (HTTP 400) to a friendly message with param detail", () => {
+  test("maps Sleepy 421 moderation block (HTTP 400) to a friendly message with param detail", () => {
     const parsed = parseAPICallError({
       providerID: xiaomi,
       error: apiError({
@@ -36,7 +36,7 @@ describe("provider error message", () => {
     expect(parsed.message).toBe("Request blocked by content moderation: 敏感内容")
   })
 
-  test("maps MiMo 441 risk control to a friendly message", () => {
+  test("maps Sleepy 441 risk control to a friendly message", () => {
     const parsed = parseAPICallError({
       providerID: xiaomi,
       error: apiError({
@@ -48,9 +48,9 @@ describe("provider error message", () => {
     expect(parsed.message).toBe("Request blocked by risk control")
   })
 
-  test("applies friendly gateway mapping for the free mimo provider too", () => {
+  test("applies friendly gateway mapping for the free sleepy provider too", () => {
     const parsed = parseAPICallError({
-      providerID: mimo,
+      providerID: sleepy,
       error: apiError({
         message: "Moderation Block",
         statusCode: 400,
@@ -95,7 +95,7 @@ describe("provider error message", () => {
         responseBody: JSON.stringify({ error: { code: "421", message: "Moderation Block", param: "x" } }),
       }),
     })
-    // gateway-specific code mapping and param enrichment are scoped to MiMo
+    // gateway-specific code mapping and param enrichment are scoped to Sleepy
     expect(parsed.message).toBe("Moderation Block")
   })
 

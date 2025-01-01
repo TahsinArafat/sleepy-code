@@ -138,7 +138,7 @@ skills/
 
 ## Skill Location
 
-Personal skills: `.mimocode/skills/<name>/SKILL.md`
+Personal skills: `.sleepycode/skills/<name>/SKILL.md`
 
 ## Token Efficiency
 

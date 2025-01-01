@@ -2,10 +2,10 @@ import fs from "fs/promises"
 import path from "path"
 import os from "os"
 import { Filesystem } from "../util"
-import { Flock } from "@mimo-ai/shared/util/flock"
-import { resolveMimocodeHome } from "@mimo-ai/shared/global"
+import { Flock } from "@sleepy-ai/shared/util/flock"
+import { resolveSleepyHome } from "@sleepy-ai/shared/global"
 
-const { data, cache, config, state } = resolveMimocodeHome()
+const { data, cache, config, state } = resolveSleepyHome()
 
 export const Path = {
   // HOME/USERPROFILE read directly because Bun caches os.homedir() at startup.

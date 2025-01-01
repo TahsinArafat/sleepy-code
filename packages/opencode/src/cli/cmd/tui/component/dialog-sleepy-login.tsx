@@ -14,7 +14,7 @@ import { useRenderer } from "@opentui/solid"
 import os from "os"
 import path from "path"
 
-export function DialogMimoLogin() {
+export function DialogSleepyLogin() {
   const dialog = useDialog()
   const sdk = useSDK()
   const sync = useSync()
@@ -41,7 +41,7 @@ export function DialogMimoLogin() {
             return
           }
           dialog.replace(() => (
-            <MimoOAuthFlow url={result.data!.url} instructions={result.data!.instructions} />
+            <SleepyOAuthFlow url={result.data!.url} instructions={result.data!.instructions} />
           ))
         },
       },
@@ -143,7 +143,7 @@ export function DialogMimoLogin() {
   )
 }
 
-function MimoOAuthFlow(props: { url: string; instructions: string }) {
+function SleepyOAuthFlow(props: { url: string; instructions: string }) {
   const dialog = useDialog()
   const sdk = useSDK()
   const sync = useSync()
@@ -168,7 +168,7 @@ function MimoOAuthFlow(props: { url: string; instructions: string }) {
     await sdk.client.instance.dispose()
     await sync.bootstrap()
     const xiaomi = sync.data.provider.find((p) => p.id === "xiaomi")
-    const defaultModel = xiaomi && "mimo-v2.5-pro" in xiaomi.models ? "mimo-v2.5-pro" : xiaomi ? Object.keys(xiaomi.models)[0] : undefined
+    const defaultModel = xiaomi && "sleepy-v2.5-pro" in xiaomi.models ? "sleepy-v2.5-pro" : xiaomi ? Object.keys(xiaomi.models)[0] : undefined
     if (defaultModel) {
       local.model.set({ providerID: "xiaomi", modelID: defaultModel }, { recent: true })
     }

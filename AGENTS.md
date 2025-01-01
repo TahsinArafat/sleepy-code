@@ -1,4 +1,4 @@
-- Use MiMoCode Compose skills when available, otherwise use superpowers skill if installed.
+- Use SleepyCode Compose skills when available, otherwise use superpowers skill if installed.
 - To regenerate the JavaScript SDK, run `./packages/sdk/js/script/build.ts`.
 - ALWAYS USE PARALLEL TOOLS WHEN APPLICABLE.
 - The default branch in this repo is `main`.

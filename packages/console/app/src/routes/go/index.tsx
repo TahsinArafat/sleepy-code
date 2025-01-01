@@ -12,7 +12,7 @@ import { Footer } from "~/component/footer"
 import { Header } from "~/component/header"
 import { config } from "~/config"
 import { getLastSeenWorkspaceID } from "../workspace/common"
-import { IconMiniMax, IconMiMo, IconZai, IconAlibaba } from "~/component/icon"
+import { IconMiniMax, IconSleepy, IconZai, IconAlibaba } from "~/component/icon"
 import { useI18n } from "~/context/i18n"
 import { useLanguage } from "~/context/language"
 import { LocaleLinks } from "~/component/locale-links"
@@ -27,8 +27,8 @@ const models = [
   { name: "GLM-5", provider: "DeepInfra, Z.ai" },
   { name: "Kimi K2.5", provider: "Moonshot AI" },
   { name: "Kimi K2.6", provider: "Moonshot AI" },
-  { name: "MiMo-V2-Pro", provider: "Xiaomi MiMo" },
-  { name: "MiMo-V2-Omni", provider: "Xiaomi MiMo" },
+  { name: "MiMo-V2-Pro", provider: "Xiaomi Sleepy" },
+  { name: "MiMo-V2-Omni", provider: "Xiaomi Sleepy" },
   { name: "Qwen3.5 Plus", provider: "Alibaba Cloud Model Studio" },
   { name: "Qwen3.6 Plus", provider: "Alibaba Cloud Model Studio" },
   { name: "MiniMax M2.7", provider: "MiniMax" },
@@ -335,7 +335,7 @@ export default function Home() {
                   <IconAlibaba width="24" height="24" />
                 </div>
                 <div>
-                  <IconMiMo width="24" height="24" />
+                  <IconSleepy width="24" height="24" />
                 </div>
                 {/*
                 <div>

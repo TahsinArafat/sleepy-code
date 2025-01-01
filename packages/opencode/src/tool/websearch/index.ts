@@ -3,7 +3,7 @@ import { Effect } from "effect"
 import { HttpClient } from "effect/unstable/http"
 import * as Tool from "../tool"
 import * as McpExa from "../mcp-exa"
-import * as MimoWebsearch from "./mimo"
+import * as SleepyWebsearch from "./sleepy"
 import { Auth } from "@/auth"
 import { Provider } from "@/provider"
 import DESCRIPTION from "./websearch.txt"
@@ -68,12 +68,12 @@ export const WebSearchTool = Tool.define(
                   Effect.gen(function* () {
                     const info = yield* auth.get("xiaomi")
                     if (!info || info.type !== "api") return undefined
-                    return yield* MimoWebsearch.call(
+                    return yield* SleepyWebsearch.call(
                       http,
                       model.api.url,
                       info.key,
                       params.query,
-                      "mimo-v2.5",
+                      "sleepy-v2.5",
                       timeout ?? "30 seconds",
                     )
                   }),

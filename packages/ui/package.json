@@ -1,5 +1,5 @@
 {
-  "name": "@mimo-ai/ui",
+  "name": "@sleepy-ai/ui",
   "version": "0.1.4",
   "type": "module",
   "license": "MIT",
@@ -43,8 +43,8 @@
   },
   "dependencies": {
     "@kobalte/core": "catalog:",
-    "@mimo-ai/sdk": "workspace:*",
-    "@mimo-ai/shared": "workspace:*",
+    "@sleepy-ai/sdk": "workspace:*",
+    "@sleepy-ai/shared": "workspace:*",
     "@pierre/diffs": "catalog:",
     "@shikijs/transformers": "3.9.2",
     "@solid-primitives/bounds": "0.1.3",

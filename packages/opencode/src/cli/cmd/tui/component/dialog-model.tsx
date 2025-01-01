@@ -5,7 +5,7 @@ import { map, pipe, flatMap, entries, filter, sortBy, take } from "remeda"
 import { DialogSelect } from "@tui/ui/dialog-select"
 import { useDialog, type DialogContext } from "@tui/ui/dialog"
 import { createDialogProviderOptions } from "./dialog-provider"
-import { DialogMimoLogin } from "./dialog-mimo-login"
+import { DialogSleepyLogin } from "./dialog-sleepy-login"
 import { DialogVariant } from "./dialog-variant"
 import { useKeybind } from "../context/keybind"
 import { useSDK } from "../context/sdk"
@@ -38,7 +38,7 @@ export function DialogModel(props: { providerID?: string }) {
   const providers = createDialogProviderOptions()
   const t = useLanguage().t
   const modelName = (providerID: string, modelID: string) =>
-    modelID === "mimo-auto" ? t("tui.model.mimo_auto.name") : Model.name(sync.data.provider, providerID, modelID)
+    modelID === "sleepy-auto" ? t("tui.model.sleepy_auto.name") : Model.name(sync.data.provider, providerID, modelID)
 
   const showExtra = createMemo(() => connected() && !props.providerID)
 
@@ -65,8 +65,8 @@ export function DialogModel(props: { providerID?: string }) {
             key: item,
             value: { providerID: provider.id, modelID: model.id },
             title: modelName(provider.id, model.id),
-            // Hide provider name for mimo-auto to avoid redundancy
-            description: item.modelID === "mimo-auto" ? undefined : provider.name,
+            // Hide provider name for sleepy-auto to avoid redundancy
+            description: item.modelID === "sleepy-auto" ? undefined : provider.name,
             category,
             disabled: provider.id === "opencode" && model.id.includes("-nano"),
             footer: model.cost?.input === 0 && provider.id === "opencode" ? "Free" : undefined,
@@ -86,27 +86,27 @@ export function DialogModel(props: { providerID?: string }) {
       "Recent",
     )
 
-    // mimo-free and xiaomi provider pinned at top (after favorites/recents)
-    const mimoProvider = sync.data.provider.find((p) => p.id === "mimo")
+    // sleepy-free and xiaomi provider pinned at top (after favorites/recents)
+    const sleepyProvider = sync.data.provider.find((p) => p.id === "sleepy")
     const xiaomiProvider = sync.data.provider.find((p) => p.id === "xiaomi")
-    const pinnedCategory = xiaomiProvider?.name ?? "MiMo"
+    const pinnedCategory = xiaomiProvider?.name ?? "Sleepy"
     // Show pinned section when not scoped to a specific provider
     const showPinned = connected() && !props.providerID
 
     const pinnedOptions = showPinned
       ? [
-          // mimo-free model
-          ...(mimoProvider && "mimo-auto" in mimoProvider.models && mimoProvider.models["mimo-auto"].status !== "deprecated" && (!showSections || !inShortcuts("mimo", "mimo-auto"))
+          // sleepy-free model
+          ...(sleepyProvider && "sleepy-auto" in sleepyProvider.models && sleepyProvider.models["sleepy-auto"].status !== "deprecated" && (!showSections || !inShortcuts("sleepy", "sleepy-auto"))
             ? [
                 {
-                  value: { providerID: "mimo", modelID: "mimo-auto" },
-                  title: modelName("mimo", "mimo-auto"),
+                  value: { providerID: "sleepy", modelID: "sleepy-auto" },
+                  title: modelName("sleepy", "sleepy-auto"),
                   description: undefined as string | undefined,
                   category: pinnedCategory,
                   disabled: false,
                   footer: undefined as "Free" | undefined,
                   onSelect() {
-                    onSelect("mimo", "mimo-auto")
+                    onSelect("sleepy", "sleepy-auto")
                   },
                 },
               ]
@@ -154,8 +154,8 @@ export function DialogModel(props: { providerID?: string }) {
 
     const providerOptions = pipe(
       sync.data.provider,
-      // Exclude xiaomi/mimo from regular list only when pinned section is shown
-      filter((provider) => !showPinned || (provider.id !== "xiaomi" && provider.id !== "mimo")),
+      // Exclude xiaomi/sleepy from regular list only when pinned section is shown
+      filter((provider) => !showPinned || (provider.id !== "xiaomi" && provider.id !== "sleepy")),
       sortBy(
         (provider) => provider.id !== "opencode",
         (provider) => PROVIDER_PRIORITY[provider.id] ?? 99,
@@ -168,7 +168,7 @@ export function DialogModel(props: { providerID?: string }) {
           filter(([_, info]) => info.status !== "deprecated"),
           // Scoped views ("you just connected provider X, pick a model from X")
           // intentionally show only that provider's own models. The free
-          // mimo-auto belongs to the `mimo` provider, so it is NOT surfaced
+          // sleepy-auto belongs to the `sleepy` provider, so it is NOT surfaced
           // here — it stays pinned in the unscoped picker. Don't re-add it.
           filter(([_, info]) => (props.providerID ? info.providerID === props.providerID : true)),
           map(([model, info]) => ({
@@ -266,7 +266,7 @@ export function DialogModel(props: { providerID?: string }) {
           keybind: keybind.all.model_provider_list?.[0],
           title: "Connect provider",
           onTrigger() {
-            dialog.replace(() => <DialogMimoLogin />)
+            dialog.replace(() => <DialogSleepyLogin />)
           },
         },
         {

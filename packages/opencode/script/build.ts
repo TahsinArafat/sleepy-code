@@ -14,10 +14,10 @@ process.chdir(dir)
 
 await import("./generate.ts")
 
-import { Script } from "@mimo-ai/script"
+import { Script } from "@sleepy-ai/script"
 import pkg from "../package.json"
 
-const BINARY_PREFIX = "mimocode"
+const BINARY_PREFIX = "sleepycode"
 
 // Load migrations from migration directories
 const migrationDirs = (
@@ -171,7 +171,7 @@ await $`rm -rf dist`
 const extDir = path.join(dir, "src", "ext")
 let stagedExt = false
 if (!fs.existsSync(extDir)) {
-  const overlaySrc = path.resolve(dir, "../../mimoapi/packages/opencode/src/ext")
+  const overlaySrc = path.resolve(dir, "../../sleepyapi/packages/opencode/src/ext")
   if (fs.existsSync(overlaySrc)) {
     console.log(`Staging overlay entrypoints from ${overlaySrc}`)
     fs.cpSync(overlaySrc, extDir, { recursive: true })
@@ -244,25 +244,25 @@ for (const item of targets) {
       autoloadTsconfig: true,
       autoloadPackageJson: true,
       target: name.replace(BINARY_PREFIX, "bun") as any,
-      outfile: `dist/${name}/bin/mimo`,
-      execArgv: [`--user-agent=mimocode/${Script.version}`, "--use-system-ca", "--"],
+      outfile: `dist/${name}/bin/sleepy`,
+      execArgv: [`--user-agent=sleepycode/${Script.version}`, "--use-system-ca", "--"],
       windows: {},
     },
     files: embeddedFileMap ? { "opencode-web-ui.gen.ts": embeddedFileMap } : {},
     entrypoints: ["./src/index.ts", parserWorker, workerPath, ...(embeddedFileMap ? ["opencode-web-ui.gen.ts"] : [])],
     define: {
-      MIMOCODE_VERSION: `'${Script.version}'`,
+      SLEEPYCODE_VERSION: `'${Script.version}'`,
       OPENCODE_MIGRATIONS: JSON.stringify(migrations),
       OTUI_TREE_SITTER_WORKER_PATH: bunfsRoot + workerRelativePath,
       OPENCODE_WORKER_PATH: workerPath,
-      MIMOCODE_CHANNEL: `'${Script.channel}'`,
+      SLEEPYCODE_CHANNEL: `'${Script.channel}'`,
       OPENCODE_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "",
     },
   })
 
   // Smoke test: only run if binary is for current platform
   if (item.os === process.platform && item.arch === process.arch && !item.abi) {
-    const binaryPath = `dist/${name}/bin/mimo`
+    const binaryPath = `dist/${name}/bin/sleepy`
     console.log(`Running smoke test: ${binaryPath} --version`)
     try {
       const versionOutput = await $`${binaryPath} --version`.text()
@@ -275,22 +275,22 @@ for (const item of targets) {
 
   await $`rm -rf ./dist/${name}/bin/tui`
   await Bun.file(`dist/${name}/README.md`).write(
-    `This is the ${item.os}-${item.arch} binary for [@mimo-ai/cli](https://www.npmjs.com/package/@mimo-ai/cli). Install that package directly.\n`,
+    `This is the ${item.os}-${item.arch} binary for [@sleepy-ai/cli](https://www.npmjs.com/package/@sleepy-ai/cli). Install that package directly.\n`,
   )
   await Bun.file(`dist/${name}/package.json`).write(
     JSON.stringify(
       {
-        name: `@mimo-ai/${name}`,
+        name: `@sleepy-ai/${name}`,
         version: Script.version,
-        description: "Platform-specific binary for @mimo-ai/cli.",
+        description: "Platform-specific binary for @sleepy-ai/cli.",
         license: "MIT",
-        author: "Xiaomi MiMo Team",
+        author: "Xiaomi Sleepy Team",
         homepage: "https://mimo.xiaomi.com/coder",
         repository: {
           type: "git",
           url: "git+https://github.com/XiaomiMiMo/MiMo-Code.git",
         },
-        keywords: ["ai", "coding", "agent", "cli", "mimo"],
+        keywords: ["ai", "coding", "agent", "cli", "sleepy"],
         os: [item.os],
         cpu: [item.arch],
       },
@@ -314,7 +314,7 @@ if (Script.release) {
   // Also publish to Xiaomi FDS (fast download in mainland China; the install
   // script reads from there). Skipped when credentials are absent so local
   // release builds still work.
-  if (process.env.MIMO_FDS_AK && process.env.MIMO_FDS_SK) {
+  if (process.env.SLEEPY_FDS_AK && process.env.SLEEPY_FDS_SK) {
     const { uploadFile } = await import("./fds-upload.ts")
     const archives = fs.readdirSync("dist").filter((f) => f.endsWith(".zip") || f.endsWith(".tar.gz"))
     for (const file of archives) {
@@ -326,7 +326,7 @@ if (Script.release) {
     await uploadFile(tmpLatest, "releases/latest", "text/plain")
     console.log(`Uploaded to FDS: releases/latest -> ${Script.version}`)
   } else {
-    console.log("Skipping FDS upload (MIMO_FDS_AK / MIMO_FDS_SK not set)")
+    console.log("Skipping FDS upload (SLEEPY_FDS_AK / SLEEPY_FDS_SK not set)")
   }
 }
 

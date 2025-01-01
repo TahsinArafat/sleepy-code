@@ -1,24 +1,24 @@
-<h1 align="center">MiMoCode</h1>
+<h1 align="center">SleepyCode</h1>
 
 <p align="center">
-  <img src="assets/readme/mimocode-banner.png" alt="MiMoCode" width="700">
+  <img src="assets/readme/sleepycode-banner.png" alt="SleepyCode" width="700">
 </p>
 
-<p align="center"><strong>MiMo Code: Where Models and Agents Co-Evolve</strong></p>
+<p align="center"><strong>Sleepy Code: Where Models and Agents Co-Evolve</strong></p>
 
 <p align="center">
   <a href="README.zh.md">中文</a> | English
 </p>
 
 <p align="center">
-  <a href="https://mimo.xiaomi.com/coder">Website</a> | <a href="https://mimo.xiaomi.com/en/blog/mimo-code-long-horizon">Blog</a>
+  <a href="https://mimo.xiaomi.com/coder">Website</a> | <a href="https://mimo.xiaomi.com/en/blog/sleepy-code-long-horizon">Blog</a>
 </p>
 
 ---
 
-MiMoCode is a terminal-native AI coding assistant. It can read and write code, run commands, manage Git, and use a persistent memory system to keep a deep understanding of your project across sessions while continuously improving itself.
+SleepyCode is a terminal-native AI coding assistant. It can read and write code, run commands, manage Git, and use a persistent memory system to keep a deep understanding of your project across sessions while continuously improving itself.
 
-MiMo Auto is built in as a free-for-limited-time channel, so you can start with zero configuration. MiMoCode also supports connecting to any mainstream LLM provider API.
+Sleepy Auto is built in as a free-for-limited-time channel, so you can start with zero configuration. SleepyCode also supports connecting to any mainstream LLM provider API.
 
 ---
 
@@ -29,15 +29,15 @@ MiMo Auto is built in as a free-for-limited-time channel, so you can start with 
 curl -fsSL https://mimo.xiaomi.com/install | bash
 
 # Or install via npm
-npm install -g @mimo-ai/cli
+npm install -g @sleepy-ai/cli
 
 # Run
-mimo
+sleepy
 ```
 
 The first launch guides you through configuration automatically. Supported options:
-- **MiMo Auto (free for a limited time)** — anonymous channel, zero configuration
-- **Xiaomi MiMo Platform** — OAuth login
+- **Sleepy Auto (free for a limited time)** — anonymous channel, zero configuration
+- **Xiaomi Sleepy Platform** — OAuth login
 - **Import from Claude Code** — migrate existing authentication in one step
 - **Custom Provider** — add any OpenAI-compatible API in the TUI
 
@@ -54,7 +54,7 @@ sudo apt install xsel
 <summary><strong>Windows: garbled CJK (Chinese/Japanese/Korean) output in the shell</strong></summary>
 
 On Windows with a non-UTF-8 system locale (e.g. zh-CN, whose active code page is 936/GBK),
-command output containing CJK characters may appear garbled (mojibake). MiMoCode forces
+command output containing CJK characters may appear garbled (mojibake). SleepyCode forces
 UTF-8 output for spawned PowerShell/cmd subprocesses. If you still encounter garbled output
 in cases this does not yet cover, enable Windows' system-wide UTF-8 support:
 
@@ -69,11 +69,11 @@ some older non-Unicode programs to display incorrectly, so treat it as a workaro
 
 ---
 
-## MiMo Ecosystem
+## Sleepy Ecosystem
 
-Beyond MiMoCode, Xiaomi MiMo models also work in other agents and coding tools like Cursor, Cline, and Zed.
+Beyond SleepyCode, Xiaomi Sleepy models also work in other agents and coding tools like Cursor, Cline, and Zed.
 
-**[awesome-mimo-agent](https://github.com/XiaomiMiMo/awesome-mimo-agent)** collects setup guides for using MiMo in those tools — worth a look if you want to try MiMo elsewhere. Contributions welcome: open a PR to add your own setup.
+**[awesome-sleepy-agent](https://github.com/XiaomiMiMo/awesome-sleepy-agent)** collects setup guides for using Sleepy in those tools — worth a look if you want to try Sleepy elsewhere. Contributions welcome: open a PR to add your own setup.
 
 ---
 
@@ -124,7 +124,7 @@ Compose mode provides a structured workflow for specs-driven development. It inc
 
 ### Voice Input
 
-Real-time streaming voice input powered by TenVAD and MiMo ASR. Activate with `/voice`, then speak — audio is segmented by pauses and transcribed incrementally into the input. Available for MiMo logged-in users. Requires `sox` (`brew install sox` on macOS, other platforms similar).
+Real-time streaming voice input powered by TenVAD and Sleepy ASR. Activate with `/voice`, then speak — audio is segmented by pauses and transcribed incrementally into the input. Available for Sleepy logged-in users. Requires `sox` (`brew install sox` on macOS, other platforms similar).
 
 <details>
 <summary><strong>WSLg audio setup</strong></summary>
@@ -152,9 +152,9 @@ export PULSE_SERVER=tcp:127.0.0.1:4713
 </details>
 
 <details>
-<summary><strong>Non-MiMo voice providers (OpenRouter, internal API, etc.)</strong></summary>
+<summary><strong>Non-Sleepy voice providers (OpenRouter, internal API, etc.)</strong></summary>
 
-Voice input can route through other OpenAI-compatible providers via the `voice` config field. The ASR model (`mimo-v2.5-asr`) is only available on MiMo's platform; voice control mode (`mimo-v2.5`) is available on OpenRouter and compatible relay platforms.
+Voice input can route through other OpenAI-compatible providers via the `voice` config field. The ASR model (`sleepy-v2.5-asr`) is only available on Sleepy's platform; voice control mode (`sleepy-v2.5`) is available on OpenRouter and compatible relay platforms.
 
 **OpenRouter (voice control only):**
 
@@ -177,8 +177,8 @@ Use `/connect` to sign in to OpenRouter, then add to your config:
         "apiKey": "sk-..."
       },
       "models": {
-        "xiaomi/mimo-v2.5-asr": { "name": "MiMo-V2.5-ASR" },
-        "xiaomi/mimo-v2.5": { "name": "MiMo-V2.5" }
+        "xiaomi/mimo-v2.5-asr": { "name": "Sleepy-V2.5-ASR" },
+        "xiaomi/mimo-v2.5": { "name": "Sleepy-V2.5" }
       }
     }
   },
@@ -191,7 +191,7 @@ Use `/connect` to sign in to OpenRouter, then add to your config:
 
 Custom providers must register at least one model in their `models` field to be recognized. The model names in `voice.*_model` are sent directly to the API — they don't need to match the registered model keys exactly.
 
-> **Note:** Models registered under a custom provider will appear in the model selection list. Don't use ASR-only models (e.g. `mimo-v2.5-asr`) as your primary coding model.
+> **Note:** Models registered under a custom provider will appear in the model selection list. Don't use ASR-only models (e.g. `sleepy-v2.5-asr`) as your primary coding model.
 
 </details>
 
@@ -204,7 +204,7 @@ Custom providers must register at least one model in their `models` field to be 
 
 ## Configuration
 
-MiMoCode is configured via `.mimocode/mimocode.json` in the project directory (or `~/.config/mimocode/mimocode.json` globally). Key options include:
+SleepyCode is configured via `.sleepycode/sleepycode.json` in the project directory (or `~/.config/sleepycode/sleepycode.json` globally). Key options include:
 
 - Provider and model selection
 - Agent permissions and custom agents
@@ -219,14 +219,14 @@ Max Mode (parallel best-of-N reasoning with judge selection) can be enabled via 
 
 By default, reading or writing files outside the project working directory triggers an
 `external_directory` permission prompt — including the system temp directory. This is
-intentional: MiMoCode does not silently widen permissions, so you stay in control of what
+intentional: SleepyCode does not silently widen permissions, so you stay in control of what
 the model can touch outside your project.
 
 The temp directory comes up often because most models reach for it as scratch space (e.g.
 a quick script, a throwaway data file). If you trust your environment and would rather not
 be prompted each time, you can opt in by allowing it in your config:
 
-```json title=".mimocode/mimocode.json"
+```json title=".sleepycode/sleepycode.json"
 {
   "$schema": "https://opencode.ai/config.json",
   "permission": {
@@ -260,7 +260,7 @@ bun turbo typecheck      # Type check
 
 ## Relationship to OpenCode
 
-MiMoCode is built as a fork of [OpenCode](https://github.com/anomalyco/opencode). It keeps all core OpenCode capabilities (multiple providers, TUI, LSP, MCP, plugins) and adds persistent memory, intelligent context management, subagent orchestration, goal-driven autonomous loops, compose workflows, and self-improvement via dream/distill.
+SleepyCode is built as a fork of [OpenCode](https://github.com/anomalyco/opencode). It keeps all core OpenCode capabilities (multiple providers, TUI, LSP, MCP, plugins) and adds persistent memory, intelligent context management, subagent orchestration, goal-driven autonomous loops, compose workflows, and self-improvement via dream/distill.
 
 ---
 
@@ -280,6 +280,6 @@ Scan the QR code to join the community group chat:
 
 Source code is licensed under the [MIT License](./LICENSE).
 
-Use of MiMoCode is also subject to the [Use Restrictions](./USE_RESTRICTIONS.md).
-Use of Xiaomi MiMo-hosted services is subject to the [MiMo Terms of Service](https://platform.xiaomimimo.com/docs/terms/user-agreement).
-Use of the MiMo name, logo, and trademarks is subject to the MiMo Trademark Policy.
+Use of SleepyCode is also subject to the [Use Restrictions](./USE_RESTRICTIONS.md).
+Use of Xiaomi Sleepy-hosted services is subject to the [Sleepy Terms of Service](https://platform.xiaomimimo.com/docs/terms/user-agreement).
+Use of the Sleepy name, logo, and trademarks is subject to the Sleepy Trademark Policy.

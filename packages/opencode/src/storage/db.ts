@@ -6,7 +6,7 @@ import { LocalContext } from "../util"
 import { lazy } from "../util/lazy"
 import { Global } from "../global"
 import { Log } from "../util"
-import { NamedError } from "@mimo-ai/shared/util/error"
+import { NamedError } from "@sleepy-ai/shared/util/error"
 import z from "zod"
 import path from "path"
 import { readFileSync, readdirSync, existsSync } from "fs"
@@ -28,16 +28,16 @@ export const NotFoundError = NamedError.create(
 const log = Log.create({ service: "db" })
 
 export function getChannelPath() {
-  if (["latest", "beta", "prod"].includes(InstallationChannel) || Flag.MIMOCODE_DISABLE_CHANNEL_DB)
-    return path.join(Global.Path.data, "mimocode.db")
+  if (["latest", "beta", "prod"].includes(InstallationChannel) || Flag.SLEEPYCODE_DISABLE_CHANNEL_DB)
+    return path.join(Global.Path.data, "sleepycode.db")
   const safe = InstallationChannel.replace(/[^a-zA-Z0-9._-]/g, "-")
-  return path.join(Global.Path.data, `mimocode-${safe}.db`)
+  return path.join(Global.Path.data, `sleepycode-${safe}.db`)
 }
 
 export const Path = iife(() => {
-  if (Flag.MIMOCODE_DB) {
-    if (Flag.MIMOCODE_DB === ":memory:" || path.isAbsolute(Flag.MIMOCODE_DB)) return Flag.MIMOCODE_DB
-    return path.join(Global.Path.data, Flag.MIMOCODE_DB)
+  if (Flag.SLEEPYCODE_DB) {
+    if (Flag.SLEEPYCODE_DB === ":memory:" || path.isAbsolute(Flag.SLEEPYCODE_DB)) return Flag.SLEEPYCODE_DB
+    return path.join(Global.Path.data, Flag.SLEEPYCODE_DB)
   }
   return getChannelPath()
 })
@@ -103,7 +103,7 @@ export const Client = lazy(() => {
       count: entries.length,
       mode: typeof OPENCODE_MIGRATIONS !== "undefined" ? "bundled" : "dev",
     })
-    if (Flag.MIMOCODE_SKIP_MIGRATIONS) {
+    if (Flag.SLEEPYCODE_SKIP_MIGRATIONS) {
       for (const item of entries) {
         item.sql = "select 1;"
       }

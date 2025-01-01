@@ -31,8 +31,8 @@ jobs:
 
       - name: Configure git identity
         run: |
-          git config --global user.email "ci@mimo.ai"
-          git config --global user.name "mimo-ci"
+          git config --global user.email "ci@sleepy.ai"
+          git config --global user.name "sleepy-ci"
 
       - name: Run unit tests (shard ${{ matrix.shard }})
         timeout-minutes: 8

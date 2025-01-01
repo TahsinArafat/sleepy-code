@@ -635,7 +635,7 @@ export type QuestionInfo = {
    */
   key?: string
   /**
-   * Template parameters for i18n interpolation (e.g. { plan: '.mimocode/plans/...' })
+   * Template parameters for i18n interpolation (e.g. { plan: '.sleepycode/plans/...' })
    */
   params?: {
     [key: string]: string
@@ -1596,7 +1596,7 @@ export type GlobalEvent = {
 export type LogLevel = "DEBUG" | "INFO" | "WARN" | "ERROR"
 
 /**
- * Server configuration for mimo serve and web commands
+ * Server configuration for sleepy serve and web commands
  */
 export type ServerConfig = {
   /**
@@ -2221,7 +2221,7 @@ export type Config = {
   }
   memory?: {
     /**
-     * Index Claude Code memory (~/.claude/projects/<slug>/memory) and expose under scope='cc'. Default: false. Note: when enabled, every mimocode agent (build/explore/subagents) can search these memories via the builtin `memory` tool — including CC's `type: user` (your role/preferences) and `type: feedback` (your guidance) categories. CC originally writes them for future CC sessions; flipping this on widens the consumer set to mimocode agents on the same machine. Leave disabled (default) if you don't want personal context recallable from a prompt-injection-vulnerable agent.
+     * Index Claude Code memory (~/.claude/projects/<slug>/memory) and expose under scope='cc'. Default: false. Note: when enabled, every sleepycode agent (build/explore/subagents) can search these memories via the builtin `memory` tool — including CC's `type: user` (your role/preferences) and `type: feedback` (your guidance) categories. CC originally writes them for future CC sessions; flipping this on widens the consumer set to sleepycode agents on the same machine. Leave disabled (default) if you don't want personal context recallable from a prompt-injection-vulnerable agent.
      */
     cc_index?: boolean
   }

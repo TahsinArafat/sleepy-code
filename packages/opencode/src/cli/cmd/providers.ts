@@ -14,7 +14,7 @@ import { Global } from "../../global"
 import { Plugin } from "../../plugin"
 import { t } from "../i18n"
 import { Instance } from "../../project/instance"
-import type { Hooks } from "@mimo-ai/plugin"
+import type { Hooks } from "@sleepy-ai/plugin"
 import { Process } from "../../util"
 import { PROVIDER_PRIORITY } from "../../util/provider-priority"
 import { text } from "node:stream/consumers"
@@ -259,20 +259,20 @@ async function loadLoginExtension(): Promise<LoginExtension | undefined> {
   return undefined
 }
 
-async function mimoLogin() {
+async function sleepyLogin() {
   const hooks = await AppRuntime.runPromise(
     Effect.gen(function* () {
       const plugin = yield* Plugin.Service
       return yield* plugin.list()
     }),
   )
-  const mimoHook = hooks.findLast((h) => h.auth?.provider === "xiaomi")
-  if (!mimoHook?.auth) {
-    prompts.log.error("MiMo auth plugin not found")
+  const sleepyHook = hooks.findLast((h) => h.auth?.provider === "xiaomi")
+  if (!sleepyHook?.auth) {
+    prompts.log.error("Sleepy auth plugin not found")
     return
   }
 
-  const method = mimoHook.auth.methods[0]
+  const method = sleepyHook.auth.methods[0]
   if (method.type !== "oauth") return
 
   const authorize = await method.authorize()
@@ -316,9 +316,9 @@ async function mimoLogin() {
 
     const remaining = MAX_RETRIES - attempt - 1
     if (remaining > 0) {
-      prompts.log.error(t("cli.providers.mimo_login.decrypt_retry", { remaining }))
+      prompts.log.error(t("cli.providers.sleepy_login.decrypt_retry", { remaining }))
     } else {
-      prompts.log.error(t("cli.providers.mimo_login.decrypt_exhausted"))
+      prompts.log.error(t("cli.providers.sleepy_login.decrypt_exhausted"))
     }
   }
 }
@@ -425,7 +425,7 @@ export const ProvidersLoginCommand = cmd({
   builder: (yargs) =>
     yargs
       .positional("url", {
-        describe: "mimocode auth provider",
+        describe: "sleepycode auth provider",
         type: "string",
       })
       .option("provider", {
@@ -531,7 +531,7 @@ export const ProvidersLoginCommand = cmd({
         const loginExtIds = loginExt ? [loginExt.id, ...(loginExt.aliases ?? [])] : []
         let provider: string
         if (args.provider === "xiaomi") {
-          await mimoLogin()
+          await sleepyLogin()
           return
         } else if (loginExt && args.provider && loginExtIds.includes(args.provider)) {
           await loginExt.run()
@@ -550,7 +550,7 @@ export const ProvidersLoginCommand = cmd({
           const choice = await prompts.select({
             message: t("cli.providers.select"),
             options: [
-              { label: "MiMo", value: "xiaomi", hint: t("cli.providers.mimo.recommended_hint") },
+              { label: "Sleepy", value: "xiaomi", hint: t("cli.providers.sleepy.recommended_hint") },
               ...(loginExt?.menu
                 ? [{ label: loginExt.menu.label, value: loginExt.id, hint: loginExt.menu.hint }]
                 : []),
@@ -560,7 +560,7 @@ export const ProvidersLoginCommand = cmd({
           if (prompts.isCancel(choice)) throw new UI.CancelledError()
 
           if (choice === "xiaomi") {
-            await mimoLogin()
+            await sleepyLogin()
             return
           }
 
@@ -605,7 +605,7 @@ export const ProvidersLoginCommand = cmd({
           }
 
           prompts.log.warn(
-            `This only stores a credential for ${provider} - you will need configure it in mimocode.json, check the docs for examples.`,
+            `This only stores a credential for ${provider} - you will need configure it in sleepycode.json, check the docs for examples.`,
           )
         }
 
@@ -614,7 +614,7 @@ export const ProvidersLoginCommand = cmd({
             "Amazon Bedrock authentication priority:\n" +
               "  1. Bearer token (AWS_BEARER_TOKEN_BEDROCK or /connect)\n" +
               "  2. AWS credential chain (profile, access keys, IAM roles, EKS IRSA)\n\n" +
-              "Configure via mimocode.json options (profile, region, endpoint) or\n" +
+              "Configure via sleepycode.json options (profile, region, endpoint) or\n" +
               "AWS environment variables (AWS_PROFILE, AWS_REGION, AWS_ACCESS_KEY_ID, AWS_WEB_IDENTITY_TOKEN_FILE).",
           )
         }
@@ -698,14 +698,14 @@ export const ProvidersWhoamiCommand = cmd({
       }),
     )
     if (!info) {
-      prompts.log.error("Not logged in. Run `mimo auth login` to log in.")
+      prompts.log.error("Not logged in. Run `sleepy auth login` to log in.")
       return
     }
     if (info.type === "api" && info.metadata) {
-      prompts.log.info(`Provider: MiMo`)
+      prompts.log.info(`Provider: Sleepy`)
       prompts.log.info(`User ID: ${info.metadata.uid ?? "unknown"}`)
     } else {
-      prompts.log.info(`Provider: MiMo`)
+      prompts.log.info(`Provider: Sleepy`)
       prompts.log.info(`Type: ${info.type}`)
     }
     prompts.outro("")

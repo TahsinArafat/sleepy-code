@@ -1,8 +1,8 @@
-import { withAlpha } from "@mimo-ai/ui/theme/color"
-import { useTheme } from "@mimo-ai/ui/theme/context"
-import { resolveThemeVariant } from "@mimo-ai/ui/theme/resolve"
-import type { HexColor } from "@mimo-ai/ui/theme/types"
-import { showToast } from "@mimo-ai/ui/toast"
+import { withAlpha } from "@sleepy-ai/ui/theme/color"
+import { useTheme } from "@sleepy-ai/ui/theme/context"
+import { resolveThemeVariant } from "@sleepy-ai/ui/theme/resolve"
+import type { HexColor } from "@sleepy-ai/ui/theme/types"
+import { showToast } from "@sleepy-ai/ui/toast"
 import type { FitAddon, Ghostty, Terminal as Term } from "ghostty-web"
 import { type ComponentProps, createEffect, createMemo, onCleanup, onMount, splitProps } from "solid-js"
 import { SerializeAddon } from "@/addons/serialize"
@@ -519,7 +519,7 @@ export const Terminal = (props: TerminalProps) => {
           try {
             const tokenUrl = new URL(url + `/pty/${id}/connect-token`)
             const headers: Record<string, string> = {
-              "x-mimocode-ticket": "1",
+              "x-sleepycode-ticket": "1",
               Authorization: `Basic ${btoa(`${username}:${password}`)}`,
             }
             const res = await fetch(tokenUrl, { method: "POST", headers })

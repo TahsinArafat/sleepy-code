@@ -1,12 +1,12 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "@mimo-ai/plugin",
+  "name": "@sleepy-ai/plugin",
   "version": "0.1.4",
-  "description": "Plugin SDK for extending MiMoCode",
-  "keywords": ["mimo", "mimocode", "ai", "plugin", "coding-assistant"],
+  "description": "Plugin SDK for extending SleepyCode",
+  "keywords": ["sleepy", "sleepycode", "ai", "plugin", "coding-assistant"],
   "type": "module",
   "license": "MIT",
-  "author": "Xiaomi MiMo Team",
+  "author": "Xiaomi Sleepy Team",
   "homepage": "https://mimo.xiaomi.com/coder",
   "repository": {
     "type": "git",
@@ -32,7 +32,7 @@
     "dist"
   ],
   "dependencies": {
-    "@mimo-ai/sdk": "workspace:*",
+    "@sleepy-ai/sdk": "workspace:*",
     "effect": "catalog:",
     "zod": "catalog:"
   },

@@ -3,7 +3,7 @@ import os from "os"
 import { getEnvInfo } from "../../src/util/env-info"
 
 describe("util.env-info", () => {
-  test("returns host, user, runtime, and mimocode metadata", async () => {
+  test("returns host, user, runtime, and sleepycode metadata", async () => {
     const info = await getEnvInfo()
 
     expect(info.os.platform).toBe(os.platform())
@@ -17,9 +17,9 @@ describe("util.env-info", () => {
     expect(info.runtime.node_version).toBe(process.versions.node)
     expect(info.runtime.pid).toBe(process.pid)
     expect(info.paths.cwd).toBe(process.cwd())
-    expect(info.mimocode.version).toBeTruthy()
-    expect(info.mimocode.channel).toBeTruthy()
-    expect(info.mimocode.installation_id).toMatch(
+    expect(info.sleepycode.version).toBeTruthy()
+    expect(info.sleepycode.channel).toBeTruthy()
+    expect(info.sleepycode.installation_id).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
     )
   })

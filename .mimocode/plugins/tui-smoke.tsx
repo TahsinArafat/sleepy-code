@@ -8,7 +8,7 @@ import type {
   TuiPluginMeta,
   TuiPluginModule,
   TuiSlotPlugin,
-} from "@mimo-ai/plugin/tui"
+} from "@sleepy-ai/plugin/tui"
 
 const tabs = ["overview", "counter", "help"]
 const bind = {

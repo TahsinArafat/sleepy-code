@@ -8,20 +8,20 @@ import type {
   ActorPostStopInput,
   ActorStopOutput,
   ActorMatcher,
-} from "@mimo-ai/plugin"
+} from "@sleepy-ai/plugin"
 import { z } from "zod"
 import { matchesActor } from "./matcher"
 import { Config } from "../config"
 import { Bus } from "../bus"
 import { BusEvent } from "../bus/bus-event"
 import { Log } from "../util"
-import { createOpencodeClient } from "@mimo-ai/sdk"
+import { createOpencodeClient } from "@sleepy-ai/sdk"
 import { Flag } from "../flag/flag"
 import { CodexAuthPlugin } from "./codex"
-import { MimoAuthPlugin, AnthropicProxyPlugin } from "./mimo"
+import { SleepyAuthPlugin, AnthropicProxyPlugin } from "./sleepy"
 import { Session } from "../session"
 import type { SessionID } from "../session/schema"
-import { NamedError } from "@mimo-ai/shared/util/error"
+import { NamedError } from "@sleepy-ai/shared/util/error"
 import { CopilotAuthPlugin } from "./github-copilot/copilot"
 import { gitlabAuthPlugin as GitlabAuthPlugin } from "opencode-gitlab-auth"
 import { PoeAuthPlugin } from "opencode-poe-auth"
@@ -36,7 +36,7 @@ import { PluginLoader } from "./loader"
 import { parsePluginSpecifier, readPluginId, readV1Plugin, resolvePluginId } from "./shared"
 import { registerAdaptor } from "@/control-plane/adaptors"
 import type { WorkspaceAdaptor } from "@/control-plane/types"
-import { Glob } from "@mimo-ai/shared/util/glob"
+import { Glob } from "@sleepy-ai/shared/util/glob"
 import fs from "fs"
 import path from "path"
 import { pathToFileURL, fileURLToPath } from "url"
@@ -126,7 +126,7 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Pl
 
 // Built-in plugins that are directly imported (not installed from npm)
 const INTERNAL_PLUGINS: PluginInstance[] = [
-  MimoAuthPlugin,
+  SleepyAuthPlugin,
   AnthropicProxyPlugin,
   CodexAuthPlugin,
   CopilotAuthPlugin,
@@ -223,9 +223,9 @@ export const layer = Layer.effect(
         const client = createOpencodeClient({
           baseUrl: "http://localhost:4096",
           directory: ctx.directory,
-          headers: Flag.MIMOCODE_SERVER_PASSWORD
+          headers: Flag.SLEEPYCODE_SERVER_PASSWORD
             ? {
-                Authorization: `Basic ${Buffer.from(`${Flag.MIMOCODE_SERVER_USERNAME ?? "mimocode"}:${Flag.MIMOCODE_SERVER_PASSWORD}`).toString("base64")}`,
+                Authorization: `Basic ${Buffer.from(`${Flag.SLEEPYCODE_SERVER_USERNAME ?? "sleepycode"}:${Flag.SLEEPYCODE_SERVER_PASSWORD}`).toString("base64")}`,
               }
             : undefined,
           fetch: async (...args) => (await Server.Default()).app.fetch(...args),
@@ -314,8 +314,8 @@ export const layer = Layer.effect(
           }
         }
 
-        const plugins = Flag.MIMOCODE_PURE ? [] : (cfg.plugin_origins ?? [])
-        if (Flag.MIMOCODE_PURE && cfg.plugin_origins?.length) {
+        const plugins = Flag.SLEEPYCODE_PURE ? [] : (cfg.plugin_origins ?? [])
+        if (Flag.SLEEPYCODE_PURE && cfg.plugin_origins?.length) {
           log.info("skipping external plugins in pure mode", { count: cfg.plugin_origins.length })
         }
         if (plugins.length) yield* config.waitForDependencies()

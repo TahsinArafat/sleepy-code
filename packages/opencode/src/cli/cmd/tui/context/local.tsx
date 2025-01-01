@@ -188,12 +188,12 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           }
         }
 
-        // No args/config/recent match: prefer the free mimo-auto channel so a
+        // No args/config/recent match: prefer the free sleepy-auto channel so a
         // clean install defaults to a usable free model rather than whatever
         // provider happens to sit first (e.g. paid xiaomi/ultraspeed).
-        const mimo = sync.data.provider.find((p) => p.id === "mimo")
-        if (mimo && "mimo-auto" in mimo.models) {
-          return { providerID: "mimo", modelID: "mimo-auto" }
+        const sleepy = sync.data.provider.find((p) => p.id === "sleepy")
+        if (sleepy && "sleepy-auto" in sleepy.models) {
+          return { providerID: "sleepy", modelID: "sleepy-auto" }
         }
 
         const provider = sync.data.provider[0]
@@ -244,8 +244,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           return {
             provider: provider?.name || value.providerID,
             model:
-              value.modelID === "mimo-auto"
-                ? t("tui.model.mimo_auto.name")
+              value.modelID === "sleepy-auto"
+                ? t("tui.model.sleepy_auto.name")
                 : Model.name(sync.data.provider, value.providerID, value.modelID),
             reasoning: info?.capabilities?.reasoning ?? false,
           }

@@ -8,7 +8,7 @@ import { DialogPrompt } from "../ui/dialog-prompt"
 import { Link } from "../ui/link"
 import { useTheme } from "../context/theme"
 import { TextAttributes } from "@opentui/core"
-import type { ProviderAuthAuthorization, ProviderAuthMethod } from "@mimo-ai/sdk/v2"
+import type { ProviderAuthAuthorization, ProviderAuthMethod } from "@sleepy-ai/sdk/v2"
 import { DialogModel } from "./dialog-model"
 import { useKeyboard } from "@opentui/solid"
 import * as Clipboard from "@tui/util/clipboard"
@@ -169,12 +169,12 @@ export async function runCustomProviderWizard(opts: {
     return DialogPrompt.show(dialog, `${title} (${n}/${total})`, { placeholder, value })
   }
 
-  const providerIDRaw = await step(1, 6, "Provider id", "e.g. mimorouter")
+  const providerIDRaw = await step(1, 6, "Provider id", "e.g. sleepyrouter")
   if (providerIDRaw === null) return
   const providerID = providerIDRaw.trim()
   if (!providerID) return
 
-  const nameRaw = await step(2, 6, "Display name", "e.g. MiMo Router", providerID)
+  const nameRaw = await step(2, 6, "Display name", "e.g. Sleepy Router", providerID)
   if (nameRaw === null) return
   const name = nameRaw.trim() || providerID
 
