@@ -43,6 +43,7 @@ import { drizzle } from "drizzle-orm/bun-sqlite"
 import { ensureProcessMetadata } from "./util/mimo-process"
 import { LoginCommand } from "./cli/cmd/login"
 import { InitCommand } from "./cli/cmd/init"
+import { DoctorCommand } from "./cli/cmd/doctor"
 
 const processMetadata = ensureProcessMetadata("main")
 
@@ -196,6 +197,7 @@ const cli = yargs(args)
   .command(DbCommand)
   .command(LoginCommand)
   .command(InitCommand)
+  .command(DoctorCommand)
   .fail((msg, err) => {
     if (
       msg?.startsWith("Unknown argument") ||
