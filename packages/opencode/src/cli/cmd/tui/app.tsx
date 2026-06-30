@@ -20,6 +20,7 @@ import semver from "semver"
 import { DialogProvider, useDialog } from "@tui/ui/dialog"
 import { DialogMimoLogin } from "@tui/component/dialog-mimo-login"
 import { ErrorComponent } from "@tui/component/error-component"
+import { CostHud } from "@tui/component/cost-hud"
 import { PluginRouteMissing } from "@tui/component/plugin-route-missing"
 import { ProjectProvider } from "@tui/context/project"
 import { useEvent } from "@tui/context/event"
@@ -1094,6 +1095,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     <box
       width={dimensions().width}
       height={dimensions().height}
+      flexDirection="column"
       backgroundColor={plainTerminal ? undefined : theme.background}
       onMouseDown={(evt) => {
         if (evt.button !== MouseButton.RIGHT) return
@@ -1122,19 +1124,22 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       <Show when={Flag.MIMOCODE_SHOW_TTFD}>
         <TimeToFirstDraw />
       </Show>
-      <Show when={ready()}>
-        <Switch>
-          <Match when={route.data.type === "home"}>
-            <Home />
-          </Match>
-          <Match when={route.data.type === "session"}>
-            <Session />
-          </Match>
-        </Switch>
-      </Show>
-      {plugin()}
-      <TuiPluginRuntime.Slot name="app" />
-      <StartupLoading ready={ready} />
+      <CostHud />
+      <box flexGrow={1}>
+        <Show when={ready()}>
+          <Switch>
+            <Match when={route.data.type === "home"}>
+              <Home />
+            </Match>
+            <Match when={route.data.type === "session"}>
+              <Session />
+            </Match>
+          </Switch>
+        </Show>
+        {plugin()}
+        <TuiPluginRuntime.Slot name="app" />
+        <StartupLoading ready={ready} />
+      </box>
     </box>
   )
 }
