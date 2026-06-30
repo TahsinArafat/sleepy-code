@@ -100,13 +100,25 @@ function wrapSSE(res: Response, ms: number, ctl: AbortController) {
   })
 }
 
-async function fetchModels(endpoint: string, token: string) {
+interface GatewayModel {
+  modelId: string
+  name: string
+  omniRouteModelId: string
+  contextWindow?: number
+  maxOutputLimit?: number
+  inputPrice?: number
+  outputPrice?: number
+  cacheReadPrice?: number
+  cacheWritePrice?: number
+}
+
+async function fetchModels(endpoint: string, token: string): Promise<GatewayModel[]> {
   try {
     const res = await fetch(`${endpoint}/api/models`, {
       headers: { Authorization: `Bearer ${token}` },
     })
     if (!res.ok) return []
-    return (await res.json()) as Array<{ modelId: string; name: string; omniRouteModelId: string }>
+    return (await res.json()) as GatewayModel[]
   } catch {
     return []
   }
@@ -1140,8 +1152,18 @@ const layer: Layer.Layer<
                     status: "active",
                     headers: { Authorization: authHeader },
                     options: {},
-                    cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
-                    limit: { context: 128000, output: 4096 },
+                    cost: {
+                      input: m.inputPrice ?? 0.0015,
+                      output: m.outputPrice ?? 0.005,
+                      cache: {
+                        read: m.cacheReadPrice ?? 0.00075,
+                        write: m.cacheWritePrice ?? 0.0015,
+                      },
+                    },
+                    limit: {
+                      context: m.contextWindow ?? 128000,
+                      output: m.maxOutputLimit ?? 4096,
+                    },
                     capabilities: {
                       temperature: true,
                       reasoning: true,
