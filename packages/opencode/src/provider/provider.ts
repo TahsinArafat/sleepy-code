@@ -410,8 +410,8 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         autoload: false,
         options: {
           headers: {
-            "HTTP-Referer": "https://mimo.xiaomi.com/coder/",
-            "X-Title": "mimocode",
+            "HTTP-Referer": "https://sleepy.ai/",
+            "X-Title": "sleepy-code",
             "X-Source": "mimocode",
           },
         },
@@ -421,8 +421,8 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         autoload: false,
         options: {
           headers: {
-            "HTTP-Referer": "https://mimo.xiaomi.com/coder/",
-            "X-Title": "mimocode",
+            "HTTP-Referer": "https://sleepy.ai/",
+            "X-Title": "sleepy-code",
             "X-OpenRouter-Categories": "programming,programming-app,cli-agent",
           },
         },
@@ -432,8 +432,8 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         autoload: false,
         options: {
           headers: {
-            "HTTP-Referer": "https://mimo.xiaomi.com/coder/",
-            "X-Title": "mimocode",
+            "HTTP-Referer": "https://sleepy.ai/",
+            "X-Title": "sleepy-code",
           },
         },
       }),
@@ -442,8 +442,8 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         autoload: false,
         options: {
           headers: {
-            "http-referer": "https://mimo.xiaomi.com/coder/",
-            "x-title": "mimocode",
+            "http-referer": "https://sleepy.ai/",
+            "x-title": "sleepy-code",
           },
         },
       }),
@@ -540,8 +540,8 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         autoload: false,
         options: {
           headers: {
-            "HTTP-Referer": "https://mimo.xiaomi.com/coder/",
-            "X-Title": "mimocode",
+            "HTTP-Referer": "https://sleepy.ai/",
+            "X-Title": "sleepy-code",
           },
         },
       }),
@@ -825,8 +825,8 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         autoload: false,
         options: {
           headers: {
-            "HTTP-Referer": "https://mimo.xiaomi.com/coder/",
-            "X-Title": "mimocode",
+            "HTTP-Referer": "https://sleepy.ai/",
+            "X-Title": "sleepy-code",
           },
         },
       }),
@@ -1864,11 +1864,6 @@ const layer: Layer.Layer<
       const sleepy = s.providers[ProviderID.make("sleepy")]
       if (sleepy?.models[ModelID.make("smart")]) {
         return { providerID: sleepy.id, modelID: ModelID.make("smart") }
-      }
-
-      const mimo = s.providers[ProviderID.make("mimo")]
-      if (mimo?.models[ModelID.make("mimo-auto")]) {
-        return { providerID: mimo.id, modelID: ModelID.make("mimo-auto") }
       }
 
       const provider = Object.values(s.providers).find((p) => !cfg.provider || Object.keys(cfg.provider).includes(p.id))

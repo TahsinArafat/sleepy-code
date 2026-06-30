@@ -22,6 +22,13 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
     msg().findLast((item): item is AssistantMessage => item.role === "assistant"),
   )
 
+  const latency = createMemo(() => {
+    const last = lastAssistant()
+    if (!last || last.time.completed === undefined) return undefined
+    const duration = last.time.completed - last.time.created
+    return duration > 0 ? `${Math.round(duration)}ms` : undefined
+  })
+
   const isStreaming = createMemo(() => {
     const m = lastAssistant()
     return m !== undefined && !m.time.completed
@@ -91,6 +98,13 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
       <text fg={theme().textMuted}>{state().percent ?? 0}% used</text>
       <Show when={tpsLabel()}>{(label) => <text fg={theme().textMuted}>{label()}</text>}</Show>
       <text fg={theme().textMuted}>{money.format(cost())} spent</text>
+      <Show when={latency()}>
+        {(l) => (
+          <text fg={theme().textMuted}>
+            Gateway: <span style={{ fg: theme().success }}>{l()}</span>
+          </text>
+        )}
+      </Show>
     </box>
   )
 }

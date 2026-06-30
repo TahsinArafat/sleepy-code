@@ -20,7 +20,7 @@ import semver from "semver"
 import { DialogProvider, useDialog } from "@tui/ui/dialog"
 import { DialogMimoLogin } from "@tui/component/dialog-mimo-login"
 import { ErrorComponent } from "@tui/component/error-component"
-import { CostHud } from "@tui/component/cost-hud"
+
 import { PluginRouteMissing } from "@tui/component/plugin-route-missing"
 import { ProjectProvider } from "@tui/context/project"
 import { useEvent } from "@tui/context/event"
@@ -331,19 +331,19 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     if (!terminalTitleEnabled() || Flag.MIMOCODE_DISABLE_TERMINAL_TITLE) return
 
     if (route.data.type === "home") {
-      renderer.setTerminalTitle("MiMoCode")
+      renderer.setTerminalTitle("Sleepy Code")
       return
     }
 
     if (route.data.type === "session") {
       const session = sync.session.get(route.data.sessionID)
       if (!session || SessionApi.isDefaultTitle(session.title)) {
-        renderer.setTerminalTitle("MiMoCode")
+        renderer.setTerminalTitle("Sleepy Code")
         return
       }
 
       const title = session.title.length > 40 ? session.title.slice(0, 37) + "..." : session.title
-      renderer.setTerminalTitle(`MC | ${title}`)
+      renderer.setTerminalTitle(`SC | ${title}`)
       return
     }
 
@@ -424,6 +424,13 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     if (seededNeverAsk || !args.neverAsk || !connected()) return
     seededNeverAsk = true
     local.neverAsk.set(true)
+  })
+
+  let loginPrompted = false
+  createEffect(() => {
+    if (loginPrompted || !ready() || sync.status !== "complete" || connected()) return
+    loginPrompted = true
+    dialog.replace(() => <DialogMimoLogin />)
   })
 
   command.register(() => [
@@ -1095,7 +1102,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     <box
       width={dimensions().width}
       height={dimensions().height}
-      flexDirection="column"
       backgroundColor={plainTerminal ? undefined : theme.background}
       onMouseDown={(evt) => {
         if (evt.button !== MouseButton.RIGHT) return
@@ -1124,7 +1130,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       <Show when={Flag.MIMOCODE_SHOW_TTFD}>
         <TimeToFirstDraw />
       </Show>
-      <CostHud />
       <Show when={ready()}>
         <Switch>
           <Match when={route.data.type === "home"}>

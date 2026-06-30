@@ -21,7 +21,7 @@ function mimeToModality(mime: string): Modality | undefined {
 // generic capability check would strip images before they reach the model.
 // mimo-auto and mimo-v2.5 accept images; mimo-v2.5-pro is text-only.
 function supportsImageInput(model: Provider.Model): boolean {
-  if (model.providerID === "mimo" || model.providerID === "xiaomi") {
+  if (model.providerID === "mimo" || model.providerID === "xiaomi" || model.providerID === "sleepy") {
     const id = model.id.toLowerCase()
     if (id.includes("v2.5-pro")) return false
     if (id === "mimo-auto" || id.includes("v2.5")) return true
@@ -1165,7 +1165,7 @@ export function providerOptions(model: Provider.Model, options: { [x: string]: a
 }
 
 export function maxOutputTokens(model: Provider.Model): number {
-  if (model.providerID === "mimo" || model.providerID === "xiaomi" || model.id.toLowerCase().includes("mimo")) {
+  if (model.providerID === "mimo" || model.providerID === "xiaomi" || model.providerID === "sleepy" || model.id.toLowerCase().includes("mimo")) {
     return MIMO_OUTPUT_TOKEN_MAX
   }
   return Math.min(model.limit.output, OUTPUT_TOKEN_MAX) || OUTPUT_TOKEN_MAX
