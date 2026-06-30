@@ -1117,6 +1117,8 @@ const layer: Layer.Layer<
         const modelsDev = yield* Effect.promise(() => ModelsDev.get())
         const database = mapValues(modelsDev, fromModelsDevProvider)
 
+        let sleepyCredentials: { token: string; dashboardUrl: string } | null = null
+
         // Inject Sleepy Gateway provider from ~/.sleepy/gateway.json if credentials exist
         try {
           const sleepyConfigPath = path.join(Global.Path.config, "gateway.json")
@@ -1129,6 +1131,7 @@ const layer: Layer.Layer<
             const token = sleepyConfig.access_token || sleepyConfig.token
             const dashboardUrl = sleepyConfig.dashboard_url || "http://localhost:3000"
             if (endpoint && token) {
+              sleepyCredentials = { token, dashboardUrl }
               const sleepyProviderID = ProviderID.make("sleepy")
               const baseUrl = `${dashboardUrl}/api/v1`
               const authHeader = `Bearer ${token}`
@@ -1607,6 +1610,79 @@ const layer: Layer.Layer<
           }
 
           log.info("found", { providerID })
+        }
+
+        if (sleepyCredentials) {
+          const { token, dashboardUrl } = sleepyCredentials
+          setInterval(async () => {
+            const freshModels = await fetchModels(dashboardUrl, token)
+            if (freshModels.length === 0) return
+
+            const sleepy = providers[ProviderID.make("sleepy")]
+            if (!sleepy) return
+
+            const sleepyProviderID = ProviderID.make("sleepy")
+            const baseUrl = `${dashboardUrl}/api/v1`
+            const authHeader = `Bearer ${token}`
+
+            for (const m of freshModels) {
+              const existing = sleepy.models[m.modelId]
+              if (existing) {
+                existing.name = m.name
+                existing.api.id = m.omniRouteModelId
+                existing.cost = {
+                  input: m.inputPrice ?? 0.0015,
+                  output: m.outputPrice ?? 0.005,
+                  cache: {
+                    read: m.cacheReadPrice ?? 0.00075,
+                    write: m.cacheWritePrice ?? 0.0015,
+                  },
+                }
+                existing.limit = {
+                  context: m.contextWindow ?? 128000,
+                  output: m.maxOutputLimit ?? 4096,
+                }
+              } else {
+                sleepy.models[m.modelId] = {
+                  id: ModelID.make(m.modelId),
+                  providerID: sleepyProviderID,
+                  name: m.name,
+                  family: "sleepy",
+                  api: {
+                    id: m.omniRouteModelId,
+                    url: baseUrl,
+                    npm: "@ai-sdk/openai-compatible",
+                  },
+                  status: "active",
+                  headers: { Authorization: authHeader },
+                  options: {},
+                  cost: {
+                    input: m.inputPrice ?? 0.0015,
+                    output: m.outputPrice ?? 0.005,
+                    cache: {
+                      read: m.cacheReadPrice ?? 0.00075,
+                      write: m.cacheWritePrice ?? 0.0015,
+                    },
+                  },
+                  limit: {
+                    context: m.contextWindow ?? 128000,
+                    output: m.maxOutputLimit ?? 4096,
+                  },
+                  capabilities: {
+                    temperature: true,
+                    reasoning: true,
+                    attachment: true,
+                    toolcall: true,
+                    input: { text: true, audio: false, image: true, video: false, pdf: true },
+                    output: { text: true, audio: false, image: false, video: false, pdf: false },
+                    interleaved: false,
+                  },
+                  release_date: "",
+                  variants: {},
+                }
+              }
+            }
+          }, 30 * 1000).unref()
         }
 
         return {
