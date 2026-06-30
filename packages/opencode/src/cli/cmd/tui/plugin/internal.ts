@@ -10,6 +10,7 @@ import SidebarTask from "../feature-plugins/sidebar/task"
 import SidebarTodo from "../feature-plugins/sidebar/todo"
 import SidebarFiles from "../feature-plugins/sidebar/files"
 import SidebarFooter from "../feature-plugins/sidebar/footer"
+import SidebarSessionStats from "../feature-plugins/sidebar/session-stats"
 import PluginManager from "../feature-plugins/system/plugins"
 import type { TuiPlugin, TuiPluginModule } from "@mimo-ai/plugin/tui"
 
@@ -22,6 +23,7 @@ export const INTERNAL_TUI_PLUGINS: InternalTuiPlugin[] = [
   HomeFooter,
   HomeTips,
   SidebarContext,
+  SidebarSessionStats,
   SidebarCwd,
   SidebarInstructions,
   SidebarMcp,
