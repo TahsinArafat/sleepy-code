@@ -41,6 +41,7 @@ import { PluginCommand } from "./cli/cmd/plug"
 import { Heap } from "./cli/heap"
 import { drizzle } from "drizzle-orm/bun-sqlite"
 import { ensureProcessMetadata } from "./util/mimo-process"
+import { LoginCommand } from "./cli/cmd/login"
 
 const processMetadata = ensureProcessMetadata("main")
 
@@ -192,6 +193,7 @@ const cli = yargs(args)
   .command(SessionCommand)
   .command(PluginCommand)
   .command(DbCommand)
+  .command(LoginCommand)
   .fail((msg, err) => {
     if (
       msg?.startsWith("Unknown argument") ||
