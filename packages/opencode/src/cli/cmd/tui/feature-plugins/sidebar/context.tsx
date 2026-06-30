@@ -1,7 +1,10 @@
 import type { AssistantMessage } from "@mimo-ai/sdk/v2"
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from "@mimo-ai/plugin/tui"
-import { Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js"
+import { Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { completedTPS, formatTPS, streamingTPS } from "./tps"
+import fs from "fs"
+import path from "path"
+import { Global } from "@/global"
 
 const id = "internal:sidebar-context"
 const REFRESH_MS = 1000
@@ -17,6 +20,51 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
   const cost = createMemo(() => msg().reduce((sum, item) => sum + (item.role === "assistant" ? item.cost : 0), 0))
 
   const [tick, setTick] = createSignal(Date.now())
+  const [tier, setTier] = createSignal("free")
+  const [totalCost, setTotalCost] = createSignal(0)
+  const [creditUSD, setCreditUSD] = createSignal(5.0)
+
+  onMount(() => {
+    let active = true;
+    const poll = async () => {
+      try {
+        const configPath = path.join(Global.Path.config, "gateway.json")
+        if (!fs.existsSync(configPath)) return
+        const sleepyConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"))
+        const token = sleepyConfig.access_token || sleepyConfig.token
+        const dashboardUrl = sleepyConfig.dashboard_url || "http://localhost:3000"
+
+        if (!token) return
+
+        const res = await fetch(`${dashboardUrl}/api/usage?days=30`, {
+          headers: { Authorization: `Bearer ${token}` }
+        })
+        if (!res.ok || !active) return
+        const data = await res.json()
+        setTier(data.tier ?? "free")
+        setTotalCost(data.totalCost ?? 0)
+        setCreditUSD(data.limits?.creditUSD ?? 5.0)
+      } catch {
+      }
+    };
+
+    void poll();
+    const handle = setInterval(poll, 15000)
+    onCleanup(() => {
+      active = false
+      clearInterval(handle)
+    })
+  })
+
+  const progressBar = createMemo(() => {
+    const costUSD = totalCost() / 100
+    const max = creditUSD()
+    const percent = Math.min(100, Math.max(0, (costUSD / max) * 100))
+    const filledLength = Math.round(percent / 10)
+    const emptyLength = 10 - filledLength
+    const bar = "█".repeat(filledLength) + "░".repeat(emptyLength)
+    return `[${bar}] ${percent.toFixed(0)}%`
+  })
 
   const lastAssistant = createMemo(() =>
     msg().findLast((item): item is AssistantMessage => item.role === "assistant"),
@@ -90,21 +138,32 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
   })
 
   return (
-    <box>
-      <text fg={theme().text}>
-        <b>Context</b>
-      </text>
-      <text fg={theme().textMuted}>{state().tokens.toLocaleString()} tokens</text>
-      <text fg={theme().textMuted}>{state().percent ?? 0}% used</text>
-      <Show when={tpsLabel()}>{(label) => <text fg={theme().textMuted}>{label()}</text>}</Show>
-      <text fg={theme().textMuted}>{money.format(cost())} spent</text>
-      <Show when={latency()}>
-        {(l) => (
-          <text fg={theme().textMuted}>
-            Gateway: <span style={{ fg: theme().success }}>{l()}</span>
-          </text>
-        )}
-      </Show>
+    <box gap={1}>
+      <box>
+        <text fg={theme().text}>
+          <b>Context</b>
+        </text>
+        <text fg={theme().textMuted}>{state().tokens.toLocaleString()} tokens</text>
+        <text fg={theme().textMuted}>{state().percent ?? 0}% used</text>
+        <Show when={tpsLabel()}>{(label) => <text fg={theme().textMuted}>{label()}</text>}</Show>
+        <text fg={theme().textMuted}>{money.format(cost())} spent</text>
+        <Show when={latency()}>
+          {(l) => (
+            <text fg={theme().textMuted}>
+              Gateway: <span style={{ fg: theme().success }}>{l()}</span>
+            </text>
+          )}
+        </Show>
+      </box>
+      <box>
+        <text fg={theme().text}>
+          <b>Plan & Limits</b>
+        </text>
+        <text fg={theme().textMuted}>Tier: {tier().charAt(0).toUpperCase() + tier().slice(1)}</text>
+        <text fg={theme().textMuted}>Credit: ${creditUSD().toFixed(2)}</text>
+        <text fg={theme().textMuted}>Spent: ${(totalCost() / 100).toFixed(4)}</text>
+        <text fg={theme().accent}>{progressBar()}</text>
+      </box>
     </box>
   )
 }
