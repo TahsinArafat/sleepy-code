@@ -283,7 +283,7 @@
       "name": "@mimo-ai/cli",
       "version": "0.1.4",
       "bin": {
-        "mimo": "./bin/mimo",
+        "sleepy": "./bin/mimo",
       },
       "dependencies": {
         "@actions/core": "1.11.1",
