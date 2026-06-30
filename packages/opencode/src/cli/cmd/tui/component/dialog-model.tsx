@@ -38,7 +38,7 @@ export function DialogModel(props: { providerID?: string }) {
   const providers = createDialogProviderOptions()
   const t = useLanguage().t
   const modelName = (providerID: string, modelID: string) =>
-    modelID === "mimo-auto" ? t("tui.model.mimo_auto.name") : Model.name(sync.data.provider, providerID, modelID)
+    Model.name(sync.data.provider, providerID, modelID)
 
   const showExtra = createMemo(() => connected() && !props.providerID)
 
@@ -65,8 +65,7 @@ export function DialogModel(props: { providerID?: string }) {
             key: item,
             value: { providerID: provider.id, modelID: model.id },
             title: modelName(provider.id, model.id),
-            // Hide provider name for mimo-auto to avoid redundancy
-            description: item.modelID === "mimo-auto" ? undefined : provider.name,
+            description: undefined as string | undefined,
             category,
             disabled: provider.id === "opencode" && model.id.includes("-nano"),
             footer: model.cost?.input === 0 && provider.id === "opencode" ? "Free" : undefined,
@@ -86,67 +85,34 @@ export function DialogModel(props: { providerID?: string }) {
       "Recent",
     )
 
-    // mimo-free and xiaomi provider pinned at top (after favorites/recents)
-    const mimoProvider = sync.data.provider.find((p) => p.id === "mimo")
-    const xiaomiProvider = sync.data.provider.find((p) => p.id === "xiaomi")
-    const pinnedCategory = xiaomiProvider?.name ?? "MiMo"
+    // sleepy provider pinned at top (after favorites/recents)
+    const sleepyProvider = sync.data.provider.find((p) => p.id === "sleepy")
+    const pinnedCategory = sleepyProvider?.name ?? "Sleepy"
     // Show pinned section when not scoped to a specific provider
     const showPinned = connected() && !props.providerID
 
     const pinnedOptions = showPinned
       ? [
-          // mimo-free model
-          ...(mimoProvider && "mimo-auto" in mimoProvider.models && mimoProvider.models["mimo-auto"].status !== "deprecated" && (!showSections || !inShortcuts("mimo", "mimo-auto"))
-            ? [
-                {
-                  value: { providerID: "mimo", modelID: "mimo-auto" },
-                  title: modelName("mimo", "mimo-auto"),
-                  description: undefined as string | undefined,
-                  category: pinnedCategory,
-                  disabled: false,
-                  footer: undefined as "Free" | undefined,
-                  onSelect() {
-                    onSelect("mimo", "mimo-auto")
-                  },
-                },
-              ]
-            : []),
-          // xiaomi provider models
-          ...(xiaomiProvider
+          // sleepy provider models: smart, cheap, fast, high
+          ...(sleepyProvider
             ? [
                 ...pipe(
-                  xiaomiProvider.models,
+                  sleepyProvider.models,
                   entries(),
                   filter(([_, info]) => info.status !== "deprecated"),
                   map(([model, info]) => ({
-                    value: { providerID: xiaomiProvider.id, modelID: model },
+                    value: { providerID: sleepyProvider.id, modelID: model },
                     title: info.name ?? model,
                     description: undefined as string | undefined,
                     category: pinnedCategory,
                     disabled: false,
                     footer: undefined as "Free" | undefined,
                     onSelect() {
-                      onSelect(xiaomiProvider.id, model)
+                      onSelect(sleepyProvider.id, model)
                     },
                   })),
                   filter((x) => !showSections || !inShortcuts(x.value.providerID, x.value.modelID)),
                 ),
-                // "+ Add model" for config-sourced providers
-                ...(xiaomiProvider.source === "config"
-                  ? [
-                      {
-                        value: { providerID: xiaomiProvider.id, modelID: ADD_MODEL_SENTINEL },
-                        title: "+ Add model",
-                        description: undefined,
-                        category: pinnedCategory,
-                        disabled: false,
-                        footer: undefined as "Free" | undefined,
-                        onSelect() {
-                          void runAddModelWizard({ dialog, sdk, sync, toast, providerID: xiaomiProvider.id })
-                        },
-                      },
-                    ]
-                  : []),
               ]
             : []),
         ]
@@ -154,8 +120,8 @@ export function DialogModel(props: { providerID?: string }) {
 
     const providerOptions = pipe(
       sync.data.provider,
-      // Exclude xiaomi/mimo from regular list only when pinned section is shown
-      filter((provider) => !showPinned || (provider.id !== "xiaomi" && provider.id !== "mimo")),
+      // Exclude sleepy/xiaomi/mimo from regular list only when pinned section is shown
+      filter((provider) => !showPinned || (provider.id !== "sleepy" && provider.id !== "xiaomi" && provider.id !== "mimo")),
       sortBy(
         (provider) => provider.id !== "opencode",
         (provider) => PROVIDER_PRIORITY[provider.id] ?? 99,

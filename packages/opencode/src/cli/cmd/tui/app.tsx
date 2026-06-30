@@ -1,7 +1,7 @@
 import { render, TimeToFirstDraw, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import * as Clipboard from "@tui/util/clipboard"
 import * as Selection from "@tui/util/selection"
-import { createCliRenderer, MouseButton, type CliRendererConfig } from "@opentui/core"
+import { createCliRenderer, MouseButton, TextAttributes, type CliRendererConfig } from "@opentui/core"
 import { RouteProvider, useRoute } from "@tui/context/route"
 import {
   Switch,
@@ -1132,6 +1132,24 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       </Show>
       <Show when={ready()}>
         <Switch>
+          <Match when={!connected()}>
+            <box flexGrow={1} alignItems="center" justifyContent="center" gap={1}>
+              <text fg={theme.primary} attributes={TextAttributes.BOLD}>
+                Please Log In to Sleepy CLI to Continue
+              </text>
+              <box
+                marginTop={2}
+                paddingLeft={2}
+                paddingRight={2}
+                paddingTop={1}
+                paddingBottom={1}
+                backgroundColor={theme.accent}
+                onMouseUp={() => dialog.replace(() => <DialogMimoLogin />)}
+              >
+                <text fg={theme.background} attributes={TextAttributes.BOLD}>Log In via Browser</text>
+              </box>
+            </box>
+          </Match>
           <Match when={route.data.type === "home"}>
             <Home />
           </Match>

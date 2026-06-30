@@ -1,4 +1,4 @@
-import { createMemo, createSignal, onMount, Show } from "solid-js"
+import { createMemo, createSignal, onMount, onCleanup, Show } from "solid-js"
 import { useSDK } from "../context/sdk"
 import { useSync } from "@tui/context/sync"
 import { useLocal } from "@tui/context/local"
@@ -13,6 +13,16 @@ import * as Clipboard from "@tui/util/clipboard"
 import { useRenderer } from "@opentui/solid"
 import os from "os"
 import path from "path"
+import {
+  buildAuthorizeUrl,
+  startLoginServer,
+  waitForCode,
+  exchangeCodeForToken,
+  writeConfig,
+  getDashboardUrl,
+} from "../../login"
+import { Global } from "@/global"
+import open from "open"
 
 export function DialogMimoLogin() {
   const dialog = useDialog()
@@ -26,22 +36,21 @@ export function DialogMimoLogin() {
   const options = createMemo(() => {
     const recommended = [
       {
-        title: t("tui.dialog.login.xiaomi"),
-        value: "xiaomi",
-        description: t("tui.dialog.login.xiaomi.desc"),
+        title: "Sleepy Login",
+        value: "sleepy",
+        description: "Authenticate via Sleepy Dashboard Browser OAuth",
         category: "Recommended",
         onSelect: async () => {
-          const result = await sdk.client.provider.oauth.authorize({
-            providerID: "xiaomi",
-            method: 0,
-          })
-          if (result.error) {
-            toast.show({ message: t("tui.dialog.login.start_failed"), variant: "error" })
-            dialog.clear()
-            return
+          const dashboardUrl = getDashboardUrl()
+          const authorizeUrl = buildAuthorizeUrl(dashboardUrl)
+          const server = await startLoginServer()
+          try {
+            await open(authorizeUrl)
+          } catch {
+            // Browser may not open; user can copy URL
           }
           dialog.replace(() => (
-            <MimoOAuthFlow url={result.data!.url} instructions={result.data!.instructions} />
+            <SleepyOAuthFlow url={authorizeUrl} server={server} dashboardUrl={dashboardUrl} />
           ))
         },
       },
@@ -131,7 +140,7 @@ export function DialogMimoLogin() {
 
     return [
       ...recommended,
-      ...providerOptions().filter((option) => option.value !== "xiaomi"),
+      ...providerOptions().filter((option) => option.value !== "sleepy" && option.value !== "xiaomi"),
     ]
   })
 
@@ -143,17 +152,16 @@ export function DialogMimoLogin() {
   )
 }
 
-function MimoOAuthFlow(props: { url: string; instructions: string }) {
+function SleepyOAuthFlow(props: { url: string; server: import("http").Server; dashboardUrl: string }) {
   const dialog = useDialog()
   const sdk = useSDK()
   const sync = useSync()
   const local = useLocal()
   const { theme } = useTheme()
-  const { t } = useLanguage()
   const toast = useToast()
   const renderer = useRenderer()
-  const [busy, setBusy] = createSignal(false)
   const [copied, setCopied] = createSignal(false)
+  const [busy, setBusy] = createSignal(false)
 
   function copyUrl() {
     Clipboard.copy(props.url)
@@ -164,38 +172,42 @@ function MimoOAuthFlow(props: { url: string; instructions: string }) {
       .catch(toast.error)
   }
 
-  async function onLoginSuccess() {
-    await sdk.client.instance.dispose()
-    await sync.bootstrap()
-    const xiaomi = sync.data.provider.find((p) => p.id === "xiaomi")
-    const defaultModel = xiaomi && "mimo-v2.5-pro" in xiaomi.models ? "mimo-v2.5-pro" : xiaomi ? Object.keys(xiaomi.models)[0] : undefined
-    if (defaultModel) {
-      local.model.set({ providerID: "xiaomi", modelID: defaultModel }, { recent: true })
-    }
-    dialog.clear()
-  }
+  onCleanup(() => {
+    try { props.server.close() } catch {}
+  })
 
   onMount(async () => {
-    const callbackResult = await sdk.client.provider.oauth.callback({
-      providerID: "xiaomi",
-      method: 0,
-    })
-    if (callbackResult.error) return
-    await onLoginSuccess()
+    try {
+      const code = await waitForCode()
+      setBusy(true)
+      const tokenData = await exchangeCodeForToken(code, props.dashboardUrl)
+      const configPath = path.join(Global.Path.config, "gateway.json")
+      await writeConfig(configPath, tokenData)
+      await sdk.client.instance.dispose()
+      await sync.bootstrap()
+      local.model.set({ providerID: "sleepy", modelID: "smart" }, { recent: true })
+      toast.show({ message: "Login successful!", variant: "success" })
+      dialog.clear()
+    } catch (err: any) {
+      toast.show({ message: err?.message ?? "Login failed", variant: "error" })
+      dialog.clear()
+    } finally {
+      try { props.server.close() } catch {}
+    }
   })
 
   return (
     <DialogPrompt
-      title={t("tui.dialog.login.flow.title")}
-      placeholder={t("tui.dialog.login.flow.placeholder")}
+      title="Sleepy OAuth Login"
+      placeholder=""
       busy={busy()}
-      busyText={t("tui.dialog.login.flow.busy")}
+      busyText="Authenticating..."
       description={
         <box gap={1}>
           <Show when={props.url}>
             <text fg={theme.textMuted}>
-              {t("tui.dialog.login.flow.manual_hint")}
-              <Show when={copied()}>{" "}<span style={{ fg: theme.primary }}>({t("tui.dialog.login.flow.copied")})</span></Show>
+              Open the URL below in your browser to authenticate.
+              <Show when={copied()}>{" "}<span style={{ fg: theme.primary }}>(Copied!)</span></Show>
             </text>
             <text
               fg={theme.primary}
@@ -207,27 +219,9 @@ function MimoOAuthFlow(props: { url: string; instructions: string }) {
               {props.url}
             </text>
           </Show>
-          <Show when={props.instructions}>
-            <text fg={theme.textMuted}>{props.instructions}</text>
-          </Show>
-          <text fg={theme.textMuted}>{t("tui.dialog.login.flow.waiting")}</text>
+          <text fg={theme.textMuted}>Waiting for authorization...</text>
         </box>
       }
-      onConfirm={async (value) => {
-        if (!value) return
-        setBusy(true)
-        const { error: err } = await sdk.client.provider.oauth.callback({
-          providerID: "xiaomi",
-          method: 0,
-          code: value.trim(),
-        })
-        if (err) {
-          setBusy(false)
-          toast.show({ message: t("tui.dialog.login.flow.invalid_code"), variant: "error" })
-          return
-        }
-        await onLoginSuccess()
-      }}
     />
   )
 }
