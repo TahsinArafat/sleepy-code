@@ -84,7 +84,7 @@ delete process.env["CEREBRAS_API_KEY"]
 delete process.env["SAMBANOVA_API_KEY"]
 delete process.env["MIMOCODE_SERVER_PASSWORD"]
 delete process.env["MIMOCODE_SERVER_USERNAME"]
-delete process.env["MIMOCODE_HOME"]
+delete process.env["SLEEPY_HOME"]
 
 // Use in-memory sqlite
 process.env["MIMOCODE_DB"] = ":memory:"

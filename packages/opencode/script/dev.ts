@@ -26,7 +26,7 @@ process.on("exit", cleanup)
 const proc = Bun.spawn(["bun", "run", "--conditions=browser", "src/index.ts", ...process.argv.slice(2)], {
   cwd: pkgDir,
   stdio: ["inherit", "inherit", "inherit"],
-  env: { ...process.env, MIMOCODE_HOME: process.env.MIMOCODE_HOME ?? path.resolve(pkgDir, "../../.dev-home") },
+  env: { ...process.env, SLEEPY_HOME: process.env.SLEEPY_HOME ?? path.resolve(pkgDir, "../../.dev-home") },
 })
 
 const onSignal = () => proc.kill()

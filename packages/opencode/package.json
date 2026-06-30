@@ -22,7 +22,7 @@
     "db": "bun drizzle-kit"
   },
   "bin": {
-    "mimo": "./bin/mimo"
+    "sleepy": "./bin/mimo"
   },
   "exports": {
     "./*": "./src/*.ts"

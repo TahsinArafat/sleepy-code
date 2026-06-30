@@ -175,8 +175,8 @@ export const Flag = {
   get MIMOCODE_CONFIG_DIR() {
     return process.env["MIMOCODE_CONFIG_DIR"]
   },
-  get MIMOCODE_HOME() {
-    return process.env["MIMOCODE_HOME"]
+  get SLEEPY_HOME() {
+    return process.env["SLEEPY_HOME"]
   },
   get MIMOCODE_PURE() {
     return truthy("MIMOCODE_PURE")
