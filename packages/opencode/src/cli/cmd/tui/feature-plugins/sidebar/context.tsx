@@ -23,6 +23,7 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
   const [tier, setTier] = createSignal("free")
   const [totalCost, setTotalCost] = createSignal(0)
   const [creditUSD, setCreditUSD] = createSignal(5.0)
+  const [balanceUSD, setBalanceUSD] = createSignal(0.0)
 
   onMount(() => {
     let active = true;
@@ -44,6 +45,7 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
         setTier(data.tier ?? "free")
         setTotalCost(data.totalCost ?? 0)
         setCreditUSD(data.limits?.creditUSD ?? 5.0)
+        setBalanceUSD(data.balanceUSD ?? 0.0)
       } catch {
       }
     };
@@ -57,7 +59,7 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
   })
 
   const progressBar = createMemo(() => {
-    const costUSD = totalCost() / 100
+    const costUSD = creditUSD() - balanceUSD()
     const max = creditUSD()
     const percent = Math.min(100, Math.max(0, (costUSD / max) * 100))
     const filledLength = Math.round(percent / 10)
@@ -160,7 +162,7 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
           <b>Plan & Limits</b>
         </text>
         <text fg={theme().textMuted}>Tier: {tier().charAt(0).toUpperCase() + tier().slice(1)}</text>
-        <text fg={theme().textMuted}>Credit: ${creditUSD().toFixed(2)}</text>
+        <text fg={theme().textMuted}>Balance: ${balanceUSD().toFixed(2)}</text>
         <text fg={theme().textMuted}>Spent: ${(totalCost() / 100).toFixed(4)}</text>
         <text fg={theme().accent}>{progressBar()}</text>
       </box>
