@@ -27,12 +27,24 @@ export const directories = Effect.fn("ConfigPaths.directories")(function* (direc
   return unique([
     Global.Path.config,
     ...(!Flag.MIMOCODE_DISABLE_PROJECT_CONFIG
-      ? yield* afs.up({
-          targets: [".sleepy"],
-          start: directory,
-          stop: worktree,
-        })
+      ? [
+          ...(yield* afs.up({
+            targets: [".mimocode"],
+            start: directory,
+            stop: worktree,
+          })),
+          ...(yield* afs.up({
+            targets: [".sleepy"],
+            start: directory,
+            stop: worktree,
+          })),
+        ]
       : []),
+    ...(yield* afs.up({
+      targets: [".mimocode"],
+      start: Global.Path.home,
+      stop: Global.Path.home,
+    })),
     ...(yield* afs.up({
       targets: [".sleepy"],
       start: Global.Path.home,
