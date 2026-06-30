@@ -20,9 +20,7 @@ const ADD_MODEL_SENTINEL = "__add_model__"
 
 export function useConnected() {
   const sync = useSync()
-  return createMemo(() =>
-    sync.data.provider.some((x) => x.id !== "opencode" || Object.values(x.models).some((y) => y.cost?.input !== 0)),
-  )
+  return createMemo(() => sync.data.provider.some((x) => x.id === "sleepy"))
 }
 
 export function DialogModel(props: { providerID?: string }) {
