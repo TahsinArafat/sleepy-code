@@ -40,12 +40,17 @@ export function resolveSleepyHome(env: NodeJS.ProcessEnv = process.env): Resolve
       state: path.join(home, "state"),
     }
   }
+  const dataHome = env.XDG_DATA_HOME || (os.homedir() ? path.join(os.homedir(), ".local", "share") : os.tmpdir())
+  const cacheHome = env.XDG_CACHE_HOME || (os.homedir() ? path.join(os.homedir(), ".cache") : os.tmpdir())
+  const configHome = env.XDG_CONFIG_HOME || (os.homedir() ? path.join(os.homedir(), ".config") : os.tmpdir())
+  const stateHome = env.XDG_STATE_HOME || (os.homedir() ? path.join(os.homedir(), ".local", "state") : os.tmpdir())
+
   return {
     mode: "xdg",
-    data: path.join(xdgData!, APP),
-    cache: path.join(xdgCache!, APP),
-    config: path.join(xdgConfig!, APP),
-    state: path.join(xdgState!, APP),
+    data: path.join(dataHome, APP),
+    cache: path.join(cacheHome, APP),
+    config: path.join(configHome, APP),
+    state: path.join(stateHome, APP),
   }
 }
 
