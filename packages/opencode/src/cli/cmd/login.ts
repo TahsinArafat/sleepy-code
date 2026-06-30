@@ -40,7 +40,7 @@ export const exchangeCodeForToken = async (code: string, dashboardUrl: string) =
 
 export const writeConfig = async (
   configPath: string,
-  data: { access_token: string; endpoint: string; tier: string; email: string }
+  data: { access_token: string; endpoint: string; tier: string; email: string; dashboard_url?: string }
 ) => {
   await fs.mkdir(path.dirname(configPath), { recursive: true })
   await fs.writeFile(configPath, JSON.stringify(data, null, 2), "utf-8")
@@ -216,7 +216,10 @@ export const LoginCommand = cmd({
     const tokenData = await exchangeCodeForToken(code, dashboardUrl)
 
     const configPath = path.join(Global.Path.config, "gateway.json")
-    await writeConfig(configPath, tokenData)
+    await writeConfig(configPath, {
+      ...tokenData,
+      dashboard_url: dashboardUrl,
+    })
 
     UI.println("")
     UI.println(UI.Style.TEXT_SUCCESS_BOLD + "✓ Login successful!" + UI.Style.TEXT_NORMAL)

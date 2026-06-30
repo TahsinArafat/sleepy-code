@@ -182,7 +182,10 @@ function SleepyOAuthFlow(props: { url: string; server: import("http").Server; da
       setBusy(true)
       const tokenData = await exchangeCodeForToken(code, props.dashboardUrl)
       const configPath = path.join(Global.Path.config, "gateway.json")
-      await writeConfig(configPath, tokenData)
+      await writeConfig(configPath, {
+        ...tokenData,
+        dashboard_url: props.dashboardUrl,
+      })
       await sdk.client.instance.dispose()
       await sync.bootstrap()
       local.model.set({ providerID: "sleepy", modelID: "smart" }, { recent: true })

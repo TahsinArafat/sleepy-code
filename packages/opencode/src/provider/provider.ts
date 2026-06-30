@@ -1115,12 +1115,13 @@ const layer: Layer.Layer<
             const sleepyConfig = JSON.parse(sleepyConfigRaw)
             const endpoint = sleepyConfig.endpoint
             const token = sleepyConfig.access_token || sleepyConfig.token
+            const dashboardUrl = sleepyConfig.dashboard_url || "http://localhost:3000"
             if (endpoint && token) {
               const sleepyProviderID = ProviderID.make("sleepy")
-              const baseUrl = `${endpoint}/v1`
+              const baseUrl = `${dashboardUrl}/api/v1`
               const authHeader = `Bearer ${token}`
 
-              const fetchedModels = yield* Effect.promise(() => fetchModels(endpoint, token))
+              const fetchedModels = yield* Effect.promise(() => fetchModels(dashboardUrl, token))
 
               let sleepyModels: Record<string, Model> = {}
 
@@ -1245,13 +1246,14 @@ const layer: Layer.Layer<
                 name: "Sleepy Gateway",
                 env: [],
                 options: {
+                  baseURL: baseUrl,
                   headers: {
                     Authorization: authHeader,
                   },
                 },
                 models: sleepyModels,
               }
-              log.info("sleepy provider injected from config", { endpoint })
+              log.info("sleepy provider injected from config", { endpoint, dashboardUrl })
             }
           }
         } catch {
