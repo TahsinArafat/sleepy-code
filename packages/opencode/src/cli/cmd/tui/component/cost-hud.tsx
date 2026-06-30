@@ -51,8 +51,9 @@ export function CostHud() {
       flexDirection="row"
       alignItems="center"
       gap={2}
-      borderStyle="single"
-      borderColor={theme.accent}
+      border={["bottom"]}
+      borderColor={theme.border}
+      backgroundColor={theme.backgroundPanel}
       paddingLeft={1}
       paddingRight={1}
       height={3}

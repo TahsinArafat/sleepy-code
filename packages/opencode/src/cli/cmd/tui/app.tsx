@@ -1125,21 +1125,19 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         <TimeToFirstDraw />
       </Show>
       <CostHud />
-      <box flexGrow={1}>
-        <Show when={ready()}>
-          <Switch>
-            <Match when={route.data.type === "home"}>
-              <Home />
-            </Match>
-            <Match when={route.data.type === "session"}>
-              <Session />
-            </Match>
-          </Switch>
-        </Show>
-        {plugin()}
-        <TuiPluginRuntime.Slot name="app" />
-        <StartupLoading ready={ready} />
-      </box>
+      <Show when={ready()}>
+        <Switch>
+          <Match when={route.data.type === "home"}>
+            <Home />
+          </Match>
+          <Match when={route.data.type === "session"}>
+            <Session />
+          </Match>
+        </Switch>
+      </Show>
+      {plugin()}
+      <TuiPluginRuntime.Slot name="app" />
+      <StartupLoading ready={ready} />
     </box>
   )
 }
