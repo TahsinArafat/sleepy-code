@@ -215,7 +215,7 @@ export const LoginCommand = cmd({
 
     const tokenData = await exchangeCodeForToken(code, dashboardUrl)
 
-    const configPath = path.join(Global.Path.config, "config.json")
+    const configPath = path.join(Global.Path.config, "gateway.json")
     await writeConfig(configPath, tokenData)
 
     UI.println("")

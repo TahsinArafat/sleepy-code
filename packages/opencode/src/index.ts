@@ -42,6 +42,7 @@ import { Heap } from "./cli/heap"
 import { drizzle } from "drizzle-orm/bun-sqlite"
 import { ensureProcessMetadata } from "./util/mimo-process"
 import { LoginCommand } from "./cli/cmd/login"
+import { InitCommand } from "./cli/cmd/init"
 
 const processMetadata = ensureProcessMetadata("main")
 
@@ -71,7 +72,7 @@ function show(out: string) {
 
 const cli = yargs(args)
   .parserConfiguration({ "populate--": true })
-  .scriptName("mimo")
+  .scriptName("sleepy")
   .wrap(100)
   .help("help", "show help")
   .alias("help", "h")
@@ -194,6 +195,7 @@ const cli = yargs(args)
   .command(PluginCommand)
   .command(DbCommand)
   .command(LoginCommand)
+  .command(InitCommand)
   .fail((msg, err) => {
     if (
       msg?.startsWith("Unknown argument") ||
