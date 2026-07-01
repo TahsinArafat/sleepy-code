@@ -27,10 +27,10 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
   return (
     <box>
       <text fg={theme().text}>
-        <b>Session Stats</b>
+        <b>Session Stats:</b>{" "}
       </text>
       <text fg={theme().textMuted}>
-        In: {formatTokens(stats().input)} / Out: {formatTokens(stats().output)} / Total:{" "}
+        In {formatTokens(stats().input)} / Out {formatTokens(stats().output)} / Total{" "}
         {formatTokens(stats().total)}
       </text>
     </box>

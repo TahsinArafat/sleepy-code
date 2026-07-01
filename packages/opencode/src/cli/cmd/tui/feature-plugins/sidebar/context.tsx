@@ -12,7 +12,21 @@ const REFRESH_MS = 1000
 function View(props: { api: TuiPluginApi; session_id: string }) {
   const theme = () => props.api.theme.current
   const msg = createMemo(() => props.api.state.session.messages(props.session_id))
-  const cost = createMemo(() => msg().reduce((sum, item) => sum + (item.role === "assistant" ? item.cost : 0), 0))
+  const cost = createMemo(() => {
+    const msgs = msg()
+    let total = 0
+    for (const item of msgs) {
+      if (item.role !== "assistant") continue
+      const t = item.tokens
+      const model = props.api.state.provider.find((p) => p.id === item.providerID)?.models[item.modelID]
+      if (!model) continue
+      total += (t.input * model.cost.input) / 1_000_000
+      total += ((t.output + t.reasoning) * model.cost.output) / 1_000_000
+      total += (t.cache.read * model.cost.cache.read) / 1_000_000
+      total += (t.cache.write * model.cost.cache.write) / 1_000_000
+    }
+    return total
+  })
 
   const state = createMemo(() => {
     const last = msg().findLast((item): item is AssistantMessage => item.role === "assistant" && item.tokens.output > 0)
@@ -41,6 +55,11 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
   const [totalCost, setTotalCost] = createSignal(0)
   const [creditUSD, setCreditUSD] = createSignal(5.0)
   const [balanceUSD, setBalanceUSD] = createSignal(0.0)
+  const [limit5h, setLimit5h] = createSignal(0.5)
+  const [limit24h, setLimit24h] = createSignal(1.5)
+  const [limitWeekly, setLimitWeekly] = createSignal(3.5)
+  const [limitMonthly, setLimitMonthly] = createSignal(5.0)
+  const [rpmLimit, setRpmLimit] = createSignal(15)
 
   onMount(() => {
     let active = true;
@@ -61,8 +80,15 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
         const data = await res.json()
         setTier(data.tier ?? "free")
         setTotalCost(data.totalCost ?? 0)
-        setCreditUSD(data.limits?.creditUSD ?? 5.0)
         setBalanceUSD(data.balanceUSD ?? 0.0)
+        if (data.limits) {
+          setCreditUSD(data.limits.creditUSD ?? 5.0)
+          setLimit5h(data.limits.limit5h ?? 0.5)
+          setLimit24h(data.limits.limit24h ?? 1.5)
+          setLimitWeekly(data.limits.limitWeekly ?? 3.5)
+          setLimitMonthly(data.limits.limitMonthly ?? 5.0)
+          setRpmLimit(data.limits.rpmLimit ?? 15)
+        }
       } catch {
       }
     };
@@ -174,8 +200,10 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
         </text>
         <Show when={expanded()}>
           <text fg={theme().textMuted}>Tier: {tier().charAt(0).toUpperCase() + tier().slice(1)}</text>
-          <text fg={theme().textMuted}>Balance: ${balanceUSD().toFixed(2)}</text>
+          <text fg={theme().textMuted}>Balance: ${balanceUSD().toFixed(2)} / Credit: ${creditUSD().toFixed(2)}</text>
           <text fg={theme().textMuted}>Spent: ${(totalCost() / 100).toFixed(4)}</text>
+          <text fg={theme().textMuted}>5h: ${limit5h().toFixed(2)} | 24h: ${limit24h().toFixed(2)}</text>
+          <text fg={theme().textMuted}>Weekly: ${limitWeekly().toFixed(2)} | Monthly: ${limitMonthly().toFixed(2)}</text>
           <text fg={theme().accent}>{progressBar()}</text>
         </Show>
       </box>

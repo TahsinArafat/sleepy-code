@@ -651,11 +651,12 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         if (fs.existsSync(configPath)) {
           fs.unlinkSync(configPath)
         }
-        await sdk.client.auth.remove({ providerID: "xiaomi" })
+        await sdk.client.auth.remove({ providerID: "sleepy" })
         await sdk.client.instance.dispose()
         await sync.bootstrap()
+        route.navigate({ type: "home" })
+        dialog.replace(() => <DialogMimoLogin />)
         toast.show({ message: t("tui.command.logout.toast"), variant: "info" })
-        dialog.clear()
       },
       category: "provider",
     },
