@@ -14,6 +14,27 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
   const msg = createMemo(() => props.api.state.session.messages(props.session_id))
   const cost = createMemo(() => msg().reduce((sum, item) => sum + (item.role === "assistant" ? item.cost : 0), 0))
 
+  const state = createMemo(() => {
+    const last = msg().findLast((item): item is AssistantMessage => item.role === "assistant" && item.tokens.output > 0)
+    if (!last) {
+      return {
+        tokens: 0,
+        limit: 128000,
+        percent: null,
+      }
+    }
+
+    const tokens =
+      last.tokens.input + last.tokens.output + last.tokens.reasoning + last.tokens.cache.read + last.tokens.cache.write
+    const model = props.api.state.provider.find((item) => item.id === last.providerID)?.models[last.modelID]
+    const limit = model?.limit.context ?? 128000
+    return {
+      tokens,
+      limit,
+      percent: model?.limit.context ? Math.round((tokens / model.limit.context) * 100) : null,
+    }
+  })
+
   const [tick, setTick] = createSignal(Date.now())
   const [expanded, setExpanded] = createSignal(true)
   const [tier, setTier] = createSignal("free")
@@ -126,27 +147,6 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
   })
 
   const tpsLabel = createMemo(() => formatTPS(tps()))
-
-  const state = createMemo(() => {
-    const last = msg().findLast((item): item is AssistantMessage => item.role === "assistant" && item.tokens.output > 0)
-    if (!last) {
-      return {
-        tokens: 0,
-        limit: 128000,
-        percent: null,
-      }
-    }
-
-    const tokens =
-      last.tokens.input + last.tokens.output + last.tokens.reasoning + last.tokens.cache.read + last.tokens.cache.write
-    const model = props.api.state.provider.find((item) => item.id === last.providerID)?.models[last.modelID]
-    const limit = model?.limit.context ?? 128000
-    return {
-      tokens,
-      limit,
-      percent: model?.limit.context ? Math.round((tokens / model.limit.context) * 100) : null,
-    }
-  })
 
   return (
     <box gap={1}>
