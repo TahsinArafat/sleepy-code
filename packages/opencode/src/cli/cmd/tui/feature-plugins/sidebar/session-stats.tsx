@@ -4,32 +4,35 @@ import { createMemo } from "solid-js"
 
 const id = "internal:sidebar-session-stats"
 
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
+  return `${n}`
+}
+
 function View(props: { api: TuiPluginApi; session_id: string }) {
   const theme = () => props.api.theme.current
   const messages = createMemo(() => props.api.state.session.messages(props.session_id))
 
-  const inputTokens = createMemo(() =>
-    messages()
+  const stats = createMemo(() => {
+    const input = messages()
       .filter((m): m is AssistantMessage => m.role === "assistant")
-      .reduce((sum, m) => sum + m.tokens.input, 0),
-  )
-
-  const outputTokens = createMemo(() =>
-    messages()
+      .reduce((sum, m) => sum + m.tokens.input, 0)
+    const output = messages()
       .filter((m): m is AssistantMessage => m.role === "assistant")
-      .reduce((sum, m) => sum + m.tokens.output + m.tokens.reasoning, 0),
-  )
-
-  const totalTokens = createMemo(() => inputTokens() + outputTokens())
+      .reduce((sum, m) => sum + m.tokens.output + m.tokens.reasoning, 0)
+    return { input, output, total: input + output }
+  })
 
   return (
-    <box gap={1}>
+    <box>
       <text fg={theme().text}>
         <b>Session Stats</b>
       </text>
-      <text fg={theme().textMuted}>Input: {inputTokens().toLocaleString()} tokens</text>
-      <text fg={theme().textMuted}>Output: {outputTokens().toLocaleString()} tokens</text>
-      <text fg={theme().textMuted}>Total: {totalTokens().toLocaleString()} tokens</text>
+      <text fg={theme().textMuted}>
+        In: {formatTokens(stats().input)} / Out: {formatTokens(stats().output)} / Total:{" "}
+        {formatTokens(stats().total)}
+      </text>
     </box>
   )
 }
