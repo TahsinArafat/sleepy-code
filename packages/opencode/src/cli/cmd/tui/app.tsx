@@ -1,6 +1,9 @@
 import { render, TimeToFirstDraw, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import * as Clipboard from "@tui/util/clipboard"
 import * as Selection from "@tui/util/selection"
+import { Global } from "@/global"
+import fs from "fs"
+import path from "path"
 import { createCliRenderer, MouseButton, TextAttributes, type CliRendererConfig } from "@opentui/core"
 import { RouteProvider, useRoute } from "@tui/context/route"
 import {
@@ -644,6 +647,10 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         name: "logout",
       },
       onSelect: async () => {
+        const configPath = path.join(Global.Path.config, "gateway.json")
+        if (fs.existsSync(configPath)) {
+          fs.unlinkSync(configPath)
+        }
         await sdk.client.auth.remove({ providerID: "xiaomi" })
         await sdk.client.instance.dispose()
         await sync.bootstrap()
