@@ -22,8 +22,8 @@ body:
   - type: input
     id: mimocode-version
     attributes:
-      label: MiMoCode version
-      description: What version of MiMoCode are you using?
+      label: SleepyCode version
+      description: What version of SleepyCode are you using?
     validations:
       required: false
 

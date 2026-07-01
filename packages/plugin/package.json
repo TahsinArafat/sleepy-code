@@ -2,8 +2,14 @@
   "$schema": "https://json.schemastore.org/package.json",
   "name": "@mimo-ai/plugin",
   "version": "0.1.4",
-  "description": "Plugin SDK for extending MiMoCode",
-  "keywords": ["mimo", "mimocode", "ai", "plugin", "coding-assistant"],
+  "description": "Plugin SDK for extending SleepyCode",
+  "keywords": [
+    "mimo",
+    "mimocode",
+    "ai",
+    "plugin",
+    "coding-assistant"
+  ],
   "type": "module",
   "license": "MIT",
   "author": "Xiaomi MiMo Team",

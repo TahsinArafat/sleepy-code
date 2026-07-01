@@ -1,7 +1,7 @@
-<h1 align="center">MiMoCode</h1>
+<h1 align="center">SleepyCode</h1>
 
 <p align="center">
-  <img src="assets/readme/mimocode-banner.png" alt="MiMoCode" width="700">
+  <img src="assets/readme/mimocode-banner.png" alt="SleepyCode" width="700">
 </p>
 
 <p align="center"><strong>MiMo Code: Where Models and Agents Co-Evolve</strong></p>
@@ -16,9 +16,9 @@
 
 ---
 
-MiMoCode is a terminal-native AI coding assistant. It can read and write code, run commands, manage Git, and use a persistent memory system to keep a deep understanding of your project across sessions while continuously improving itself.
+SleepyCode is a terminal-native AI coding assistant. It can read and write code, run commands, manage Git, and use a persistent memory system to keep a deep understanding of your project across sessions while continuously improving itself.
 
-MiMo Auto is built in as a free-for-limited-time channel, so you can start with zero configuration. MiMoCode also supports connecting to any mainstream LLM provider API.
+MiMo Auto is built in as a free-for-limited-time channel, so you can start with zero configuration. SleepyCode also supports connecting to any mainstream LLM provider API.
 
 ---
 
@@ -54,7 +54,7 @@ sudo apt install xsel
 <summary><strong>Windows: garbled CJK (Chinese/Japanese/Korean) output in the shell</strong></summary>
 
 On Windows with a non-UTF-8 system locale (e.g. zh-CN, whose active code page is 936/GBK),
-command output containing CJK characters may appear garbled (mojibake). MiMoCode forces
+command output containing CJK characters may appear garbled (mojibake). SleepyCode forces
 UTF-8 output for spawned PowerShell/cmd subprocesses. If you still encounter garbled output
 in cases this does not yet cover, enable Windows' system-wide UTF-8 support:
 
@@ -71,7 +71,7 @@ some older non-Unicode programs to display incorrectly, so treat it as a workaro
 
 ## MiMo Ecosystem
 
-Beyond MiMoCode, Xiaomi MiMo models also work in other agents and coding tools like Cursor, Cline, and Zed.
+Beyond SleepyCode, Xiaomi MiMo models also work in other agents and coding tools like Cursor, Cline, and Zed.
 
 **[awesome-mimo-agent](https://github.com/XiaomiMiMo/awesome-mimo-agent)** collects setup guides for using MiMo in those tools — worth a look if you want to try MiMo elsewhere. Contributions welcome: open a PR to add your own setup.
 
@@ -204,7 +204,7 @@ Custom providers must register at least one model in their `models` field to be 
 
 ## Configuration
 
-MiMoCode is configured via `.mimocode/mimocode.json` in the project directory (or `~/.config/mimocode/mimocode.json` globally). Key options include:
+SleepyCode is configured via `.mimocode/mimocode.json` in the project directory (or `~/.config/mimocode/mimocode.json` globally). Key options include:
 
 - Provider and model selection
 - Agent permissions and custom agents
@@ -219,7 +219,7 @@ Max Mode (parallel best-of-N reasoning with judge selection) can be enabled via 
 
 By default, reading or writing files outside the project working directory triggers an
 `external_directory` permission prompt — including the system temp directory. This is
-intentional: MiMoCode does not silently widen permissions, so you stay in control of what
+intentional: SleepyCode does not silently widen permissions, so you stay in control of what
 the model can touch outside your project.
 
 The temp directory comes up often because most models reach for it as scratch space (e.g.
@@ -260,7 +260,7 @@ bun turbo typecheck      # Type check
 
 ## Relationship to OpenCode
 
-MiMoCode is built as a fork of [OpenCode](https://github.com/anomalyco/opencode). It keeps all core OpenCode capabilities (multiple providers, TUI, LSP, MCP, plugins) and adds persistent memory, intelligent context management, subagent orchestration, goal-driven autonomous loops, compose workflows, and self-improvement via dream/distill.
+SleepyCode is built as a fork of [OpenCode](https://github.com/anomalyco/opencode). It keeps all core OpenCode capabilities (multiple providers, TUI, LSP, MCP, plugins) and adds persistent memory, intelligent context management, subagent orchestration, goal-driven autonomous loops, compose workflows, and self-improvement via dream/distill.
 
 ---
 
@@ -280,6 +280,6 @@ Scan the QR code to join the community group chat:
 
 Source code is licensed under the [MIT License](./LICENSE).
 
-Use of MiMoCode is also subject to the [Use Restrictions](./USE_RESTRICTIONS.md).
+Use of SleepyCode is also subject to the [Use Restrictions](./USE_RESTRICTIONS.md).
 Use of Xiaomi MiMo-hosted services is subject to the [MiMo Terms of Service](https://platform.xiaomimimo.com/docs/terms/user-agreement).
 Use of the MiMo name, logo, and trademarks is subject to the MiMo Trademark Policy.

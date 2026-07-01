@@ -9,7 +9,7 @@ NC='\033[0m' # No Color
 
 usage() {
     cat <<EOF
-MiMoCode Installer
+SleepyCode Installer
 
 Usage: install.sh [options]
 
