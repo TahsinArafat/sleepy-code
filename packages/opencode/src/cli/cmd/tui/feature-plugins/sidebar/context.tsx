@@ -60,6 +60,10 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
   const [limitWeekly, setLimitWeekly] = createSignal(3.5)
   const [limitMonthly, setLimitMonthly] = createSignal(5.0)
   const [rpmLimit, setRpmLimit] = createSignal(15)
+  const [cost5h, setCost5h] = createSignal(0)
+  const [cost24h, setCost24h] = createSignal(0)
+  const [costWeekly, setCostWeekly] = createSignal(0)
+  const [costMonthly, setCostMonthly] = createSignal(0)
 
   onMount(() => {
     let active = true;
@@ -89,6 +93,12 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
           setLimitMonthly(data.limits.limitMonthly ?? 5.0)
           setRpmLimit(data.limits.rpmLimit ?? 15)
         }
+        if (data.usageByWindow) {
+          setCost5h(data.usageByWindow.cost5h ?? 0)
+          setCost24h(data.usageByWindow.cost24h ?? 0)
+          setCostWeekly(data.usageByWindow.costWeekly ?? 0)
+          setCostMonthly(data.usageByWindow.costMonthly ?? 0)
+        }
       } catch {
       }
     };
@@ -101,15 +111,12 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
     })
   })
 
-  const progressBar = createMemo(() => {
-    const costUSD = creditUSD() - balanceUSD()
-    const max = creditUSD()
-    const percent = Math.min(100, Math.max(0, (costUSD / max) * 100))
-    const filledLength = Math.round(percent / 10)
-    const emptyLength = 10 - filledLength
-    const bar = "█".repeat(filledLength) + "░".repeat(emptyLength)
-    return `[${bar}] ${percent.toFixed(0)}%`
-  })
+  const bar = (used: number, max: number) => {
+    const pct = Math.min(100, Math.max(0, max > 0 ? (used / max) * 100 : 0))
+    const filled = Math.round(pct / 10)
+    const empty = 10 - filled
+    return `[${"█".repeat(filled)}${"░".repeat(empty)}] ${pct.toFixed(0)}%`
+  }
 
   const contextBar = createMemo(() => {
     const used = state().tokens
@@ -201,10 +208,16 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
         <Show when={expanded()}>
           <text fg={theme().textMuted}>Tier: {tier().charAt(0).toUpperCase() + tier().slice(1)}</text>
           <text fg={theme().textMuted}>Balance: ${balanceUSD().toFixed(2)} / Credit: ${creditUSD().toFixed(2)}</text>
-          <text fg={theme().textMuted}>Spent: ${(totalCost() / 100).toFixed(4)}</text>
-          <text fg={theme().textMuted}>5h: ${limit5h().toFixed(2)} | 24h: ${limit24h().toFixed(2)}</text>
-          <text fg={theme().textMuted}>Weekly: ${limitWeekly().toFixed(2)} | Monthly: ${limitMonthly().toFixed(2)}</text>
-          <text fg={theme().accent}>{progressBar()}</text>
+          <text fg={theme().textMuted}>5h limit ({cost5h().toFixed(4)}/${limit5h().toFixed(2)})</text>
+          <text fg={theme().warning}>{bar(cost5h(), limit5h())}</text>
+          <text fg={theme().textMuted}>24h limit ({cost24h().toFixed(4)}/${limit24h().toFixed(2)})</text>
+          <text fg={theme().warning}>{bar(cost24h(), limit24h())}</text>
+          <text fg={theme().textMuted}>Weekly limit ({costWeekly().toFixed(4)}/${limitWeekly().toFixed(2)})</text>
+          <text fg={theme().warning}>{bar(costWeekly(), limitWeekly())}</text>
+          <text fg={theme().textMuted}>Monthly limit ({costMonthly().toFixed(4)}/${limitMonthly().toFixed(2)})</text>
+          <text fg={theme().warning}>{bar(costMonthly(), limitMonthly())}</text>
+          <text fg={theme().textMuted}>Credit used (${(creditUSD() - balanceUSD()).toFixed(4)}/${creditUSD().toFixed(2)})</text>
+          <text fg={theme().accent}>{bar(creditUSD() - balanceUSD(), creditUSD())}</text>
         </Show>
       </box>
     </box>
