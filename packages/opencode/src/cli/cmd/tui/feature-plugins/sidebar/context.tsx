@@ -9,17 +9,13 @@ import { Global } from "@/global"
 const id = "internal:sidebar-context"
 const REFRESH_MS = 1000
 
-const money = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-})
-
 function View(props: { api: TuiPluginApi; session_id: string }) {
   const theme = () => props.api.theme.current
   const msg = createMemo(() => props.api.state.session.messages(props.session_id))
   const cost = createMemo(() => msg().reduce((sum, item) => sum + (item.role === "assistant" ? item.cost : 0), 0))
 
   const [tick, setTick] = createSignal(Date.now())
+  const [expanded, setExpanded] = createSignal(true)
   const [tier, setTier] = createSignal("free")
   const [totalCost, setTotalCost] = createSignal(0)
   const [creditUSD, setCreditUSD] = createSignal(5.0)
@@ -62,6 +58,16 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
     const costUSD = creditUSD() - balanceUSD()
     const max = creditUSD()
     const percent = Math.min(100, Math.max(0, (costUSD / max) * 100))
+    const filledLength = Math.round(percent / 10)
+    const emptyLength = 10 - filledLength
+    const bar = "█".repeat(filledLength) + "░".repeat(emptyLength)
+    return `[${bar}] ${percent.toFixed(0)}%`
+  })
+
+  const contextBar = createMemo(() => {
+    const used = state().tokens
+    const max = state().limit ?? 128000
+    const percent = Math.min(100, Math.max(0, (used / max) * 100))
     const filledLength = Math.round(percent / 10)
     const emptyLength = 10 - filledLength
     const bar = "█".repeat(filledLength) + "░".repeat(emptyLength)
@@ -126,6 +132,7 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
     if (!last) {
       return {
         tokens: 0,
+        limit: 128000,
         percent: null,
       }
     }
@@ -133,8 +140,10 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
     const tokens =
       last.tokens.input + last.tokens.output + last.tokens.reasoning + last.tokens.cache.read + last.tokens.cache.write
     const model = props.api.state.provider.find((item) => item.id === last.providerID)?.models[last.modelID]
+    const limit = model?.limit.context ?? 128000
     return {
       tokens,
+      limit,
       percent: model?.limit.context ? Math.round((tokens / model.limit.context) * 100) : null,
     }
   })
@@ -145,10 +154,12 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
         <text fg={theme().text}>
           <b>Context</b>
         </text>
-        <text fg={theme().textMuted}>{state().tokens.toLocaleString()} tokens</text>
-        <text fg={theme().textMuted}>{state().percent ?? 0}% used</text>
+        <text fg={theme().textMuted}>
+          Limit: {state().limit.toLocaleString()} / Used: {state().tokens.toLocaleString()} ({state().percent ?? 0}%)
+        </text>
+        <text fg={theme().accent}>{contextBar()}</text>
         <Show when={tpsLabel()}>{(label) => <text fg={theme().textMuted}>{label()}</text>}</Show>
-        <text fg={theme().textMuted}>{money.format(cost())} spent</text>
+        <text fg={theme().textMuted}>{cost().toFixed(4)} spent</text>
         <Show when={latency()}>
           {(l) => (
             <text fg={theme().textMuted}>
@@ -158,13 +169,15 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
         </Show>
       </box>
       <box>
-        <text fg={theme().text}>
-          <b>Plan & Limits</b>
+        <text fg={theme().text} onMouseUp={() => setExpanded(!expanded())}>
+          <b>Plan & Limits</b> {expanded() ? "▼" : "▶"}
         </text>
-        <text fg={theme().textMuted}>Tier: {tier().charAt(0).toUpperCase() + tier().slice(1)}</text>
-        <text fg={theme().textMuted}>Balance: ${balanceUSD().toFixed(2)}</text>
-        <text fg={theme().textMuted}>Spent: ${(totalCost() / 100).toFixed(4)}</text>
-        <text fg={theme().accent}>{progressBar()}</text>
+        <Show when={expanded()}>
+          <text fg={theme().textMuted}>Tier: {tier().charAt(0).toUpperCase() + tier().slice(1)}</text>
+          <text fg={theme().textMuted}>Balance: ${balanceUSD().toFixed(2)}</text>
+          <text fg={theme().textMuted}>Spent: ${(totalCost() / 100).toFixed(4)}</text>
+          <text fg={theme().accent}>{progressBar()}</text>
+        </Show>
       </box>
     </box>
   )
