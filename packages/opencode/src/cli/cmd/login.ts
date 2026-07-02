@@ -3,6 +3,7 @@ import { createServer, type Server, type IncomingMessage, type ServerResponse } 
 import open from "open"
 import fs from "fs/promises"
 import path from "path"
+import { setTimeout as sleep } from "timers/promises"
 import { Global } from "../../global"
 import { UI } from "../ui"
 
@@ -181,51 +182,162 @@ export const startLoginServer = (): Promise<Server> => {
   })
 }
 
+const handleAuthCodeFlow = async () => {
+  UI.empty()
+  UI.println(UI.Style.TEXT_HIGHLIGHT_BOLD + "Starting OAuth login..." + UI.Style.TEXT_NORMAL)
+
+  const dashboardUrl = getDashboardUrl()
+  const authorizeUrl = buildAuthorizeUrl(dashboardUrl)
+
+  const server = await startLoginServer()
+
+  UI.println(UI.Style.TEXT_DIM + "Waiting for authorization at:" + UI.Style.TEXT_NORMAL)
+  UI.println(authorizeUrl)
+  UI.println("")
+  UI.println(UI.Style.TEXT_DIM + "Opening browser..." + UI.Style.TEXT_NORMAL)
+
+  try {
+    await open(authorizeUrl)
+  } catch (e) {
+    UI.println(UI.Style.TEXT_WARNING + "Could not open browser automatically." + UI.Style.TEXT_NORMAL)
+    UI.println(UI.Style.TEXT_DIM + "Please open the URL above in your browser." + UI.Style.TEXT_NORMAL)
+  }
+
+  UI.println(UI.Style.TEXT_DIM + "Waiting for authorization..." + UI.Style.TEXT_NORMAL)
+
+  const code = await waitForCode()
+  server.close()
+
+  UI.println(UI.Style.TEXT_DIM + "Exchanging code for token..." + UI.Style.TEXT_NORMAL)
+
+  const tokenData = await exchangeCodeForToken(code, dashboardUrl)
+
+  const configPath = path.join(Global.Path.config, "gateway.json")
+  await writeConfig(configPath, {
+    ...tokenData,
+    dashboard_url: dashboardUrl,
+  })
+
+  UI.println("")
+  UI.println(UI.Style.TEXT_SUCCESS_BOLD + "✓ Login successful!" + UI.Style.TEXT_NORMAL)
+  UI.println(UI.Style.TEXT_DIM + "  Email: " + UI.Style.TEXT_NORMAL + tokenData.email)
+  UI.println(UI.Style.TEXT_DIM + "  Tier: " + UI.Style.TEXT_NORMAL + tokenData.tier)
+  UI.println(UI.Style.TEXT_DIM + "  Config saved to: " + UI.Style.TEXT_NORMAL + configPath)
+  UI.println("")
+}
+
+const handleDeviceFlow = async () => {
+  UI.empty()
+  UI.println(UI.Style.TEXT_HIGHLIGHT_BOLD + "Starting device login..." + UI.Style.TEXT_NORMAL)
+
+  const dashboardUrl = getDashboardUrl()
+
+  const deviceRes = await fetch(`${dashboardUrl}/api/auth/oauth/device`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ client_id: "sleepy-cli" }),
+  })
+
+  if (!deviceRes.ok) {
+    UI.println(UI.Style.TEXT_DANGER_BOLD + "Failed to start device login." + UI.Style.TEXT_NORMAL)
+    return
+  }
+
+  const deviceData = await deviceRes.json()
+  const { device_code, user_code, verification_uri_complete, interval } = deviceData
+
+  UI.println("")
+  UI.println(UI.Style.TEXT_DIM + "Open this URL in your browser:" + UI.Style.TEXT_NORMAL)
+  UI.println(UI.Style.TEXT_HIGHLIGHT_BOLD + "  " + verification_uri_complete + UI.Style.TEXT_NORMAL)
+  UI.println("")
+  UI.println(UI.Style.TEXT_DIM + "Enter the following code:" + UI.Style.TEXT_NORMAL)
+  UI.println(UI.Style.TEXT_HIGHLIGHT_BOLD + "  " + user_code + UI.Style.TEXT_NORMAL)
+  UI.println("")
+
+  try {
+    await open(verification_uri_complete)
+    UI.println(UI.Style.TEXT_DIM + "Browser opened automatically." + UI.Style.TEXT_NORMAL)
+  } catch {
+    UI.println(UI.Style.TEXT_WARNING + "Could not open browser automatically." + UI.Style.TEXT_NORMAL)
+    UI.println(UI.Style.TEXT_DIM + "Please open the URL above and enter the code in your browser." + UI.Style.TEXT_NORMAL)
+  }
+
+  UI.println(UI.Style.TEXT_DIM + "Waiting for authorization..." + UI.Style.TEXT_NORMAL)
+
+  const pollMs = (interval ?? 5) * 1000
+  let tokenData = null
+
+  while (true) {
+    await sleep(pollMs)
+
+    const pollRes = await fetch(`${dashboardUrl}/api/auth/oauth/device/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+        device_code,
+        client_id: "sleepy-cli",
+      }),
+    })
+
+    if (pollRes.ok) {
+      tokenData = await pollRes.json()
+      break
+    }
+
+    const pollBody = await pollRes.json()
+
+    if (pollBody.error === "authorization_pending") {
+      continue
+    }
+
+    if (pollBody.error === "slow_down") {
+      continue
+    }
+
+    if (pollBody.error === "expired_token") {
+      UI.println(UI.Style.TEXT_DANGER_BOLD + "Login expired. Please try again." + UI.Style.TEXT_NORMAL)
+      return
+    }
+
+    if (pollBody.error === "access_denied") {
+      UI.println(UI.Style.TEXT_DANGER_BOLD + "Login denied." + UI.Style.TEXT_NORMAL)
+      return
+    }
+
+    UI.println(UI.Style.TEXT_DANGER_BOLD + "Login failed: " + (pollBody.error || "Unknown error") + UI.Style.TEXT_NORMAL)
+    return
+  }
+
+  const configPath = path.join(Global.Path.config, "gateway.json")
+  await writeConfig(configPath, {
+    access_token: tokenData.access_token,
+    endpoint: tokenData.endpoint,
+    tier: tokenData.tier,
+    email: tokenData.email,
+    dashboard_url: dashboardUrl,
+  })
+
+  UI.println("")
+  UI.println(UI.Style.TEXT_SUCCESS_BOLD + "✓ Login successful!" + UI.Style.TEXT_NORMAL)
+  UI.println(UI.Style.TEXT_DIM + "  Email: " + UI.Style.TEXT_NORMAL + tokenData.email)
+  UI.println(UI.Style.TEXT_DIM + "  Tier: " + UI.Style.TEXT_NORMAL + tokenData.tier)
+  UI.println(UI.Style.TEXT_DIM + "  Config saved to: " + UI.Style.TEXT_NORMAL + configPath)
+  UI.println("")
+}
+
 export const LoginCommand = cmd({
   command: "login",
   describe: "Log in to Sleepy CLI via OAuth",
-  async handler() {
-    UI.empty()
-    UI.println(UI.Style.TEXT_HIGHLIGHT_BOLD + "Starting OAuth login..." + UI.Style.TEXT_NORMAL)
-
-    const dashboardUrl = getDashboardUrl()
-    const authorizeUrl = buildAuthorizeUrl(dashboardUrl)
-
-    const server = await startLoginServer()
-
-    UI.println(UI.Style.TEXT_DIM + "Waiting for authorization at:" + UI.Style.TEXT_NORMAL)
-    UI.println(authorizeUrl)
-    UI.println("")
-    UI.println(UI.Style.TEXT_DIM + "Opening browser..." + UI.Style.TEXT_NORMAL)
-
-    try {
-      await open(authorizeUrl)
-    } catch (e) {
-      UI.println(UI.Style.TEXT_WARNING + "Could not open browser automatically." + UI.Style.TEXT_NORMAL)
-      UI.println(UI.Style.TEXT_DIM + "Please open the URL above in your browser." + UI.Style.TEXT_NORMAL)
+  builder: (yargs) =>
+    yargs.option("device", {
+      type: "boolean",
+      description: "Use device code flow for environments without a browser",
+    }),
+  async handler(args) {
+    if (args.device) {
+      return handleDeviceFlow()
     }
-
-    UI.println(UI.Style.TEXT_DIM + "Waiting for authorization..." + UI.Style.TEXT_NORMAL)
-
-    const code = await waitForCode()
-
-    server.close()
-
-    UI.println(UI.Style.TEXT_DIM + "Exchanging code for token..." + UI.Style.TEXT_NORMAL)
-
-    const tokenData = await exchangeCodeForToken(code, dashboardUrl)
-
-    const configPath = path.join(Global.Path.config, "gateway.json")
-    await writeConfig(configPath, {
-      ...tokenData,
-      dashboard_url: dashboardUrl,
-    })
-
-    UI.println("")
-    UI.println(UI.Style.TEXT_SUCCESS_BOLD + "✓ Login successful!" + UI.Style.TEXT_NORMAL)
-    UI.println(UI.Style.TEXT_DIM + "  Email: " + UI.Style.TEXT_NORMAL + tokenData.email)
-    UI.println(UI.Style.TEXT_DIM + "  Tier: " + UI.Style.TEXT_NORMAL + tokenData.tier)
-    UI.println(UI.Style.TEXT_DIM + "  Config saved to: " + UI.Style.TEXT_NORMAL + configPath)
-    UI.println("")
+    return handleAuthCodeFlow()
   },
 })
