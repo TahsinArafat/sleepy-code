@@ -1,9 +1,12 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "name": "@sleepy-ai/cli",
   "type": "module",
   "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
   "publishConfig": {
     "access": "public"
   },

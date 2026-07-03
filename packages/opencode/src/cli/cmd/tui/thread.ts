@@ -285,9 +285,10 @@ export const TuiThreadCommand = cmd({
             events: createEventSource(client),
           }
 
-      setTimeout(() => {
-        client.call("checkUpgrade", { directory: cwd }).catch(() => {})
-      }, 1000).unref?.()
+      // Check for updates on startup and every hour thereafter
+      const checkUpgrade = () => client.call("checkUpgrade", { directory: cwd }).catch(() => {})
+      setTimeout(checkUpgrade, 1000).unref?.()
+      setInterval(checkUpgrade, 60 * 60 * 1000).unref?.()
 
       try {
         await tui({
