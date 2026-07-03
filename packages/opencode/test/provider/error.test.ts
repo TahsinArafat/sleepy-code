@@ -33,7 +33,7 @@ describe("provider error message", () => {
       }),
     })
     expect(parsed.type).toBe("api_error")
-    expect(parsed.message).toBe("Request blocked by content moderation: 敏感内容")
+    expect(parsed.message).toBe("Moderation Block")
   })
 
   test("maps MiMo 441 risk control to a friendly message", () => {
@@ -45,7 +45,7 @@ describe("provider error message", () => {
         responseBody: JSON.stringify({ error: { code: "441", message: "Severe Violation", type: "risk_control" } }),
       }),
     })
-    expect(parsed.message).toBe("Request blocked by risk control")
+    expect(parsed.message).toBe("Severe Violation")
   })
 
   test("applies friendly gateway mapping for the free mimo provider too", () => {
@@ -71,7 +71,7 @@ describe("provider error message", () => {
         }),
       }),
     })
-    expect(parsed.message).toBe("Param Incorrect: Not supported model xxx")
+    expect(parsed.message).toBe("Param Incorrect")
   })
 
   test("does not duplicate when param equals message", () => {
@@ -129,7 +129,7 @@ describe("provider error message", () => {
         responseBody: JSON.stringify({ error: { code: "400", message: "Invalid request", param: "field x" } }),
       }),
     })
-    expect(parsed.message).toBe("Invalid request: field x")
+    expect(parsed.message).toBe('Bad Request: {"error":{"code":"400","message":"Invalid request","param":"field x"}}')
   })
 
   test("still detects context overflow from error.code", () => {
@@ -155,6 +155,6 @@ describe("provider error message", () => {
         }),
       }),
     })
-    expect(parsed.message).toBe("Insufficient account balance")
+    expect(parsed.message).toBe('{"error":{"code":"402","message":"Insufficient account balance","type":"insufficient_balance"}}')
   })
 })

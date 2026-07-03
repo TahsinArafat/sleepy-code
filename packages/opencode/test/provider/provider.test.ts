@@ -2620,7 +2620,7 @@ async function removeSleepyConfig() {
 }
 
 test("sleepy provider loads from config.json with credentials", async () => {
-  await writeSleepyConfig({ endpoint: "https://gateway.sleepy.dev", token: "test-token-123" })
+  await writeSleepyConfig({ endpoint: "https://www.sleepyai.org", token: "test-token-123" })
   try {
     await using tmp = await tmpdir({
       init: async (dir) => {
@@ -2646,7 +2646,7 @@ test("sleepy provider loads from config.json with credentials", async () => {
 })
 
 test("sleepy model smart has correct config", async () => {
-  await writeSleepyConfig({ endpoint: "https://gateway.sleepy.dev", token: "test-token" })
+  await writeSleepyConfig({ endpoint: "https://www.sleepyai.org", token: "test-token" })
   try {
     await using tmp = await tmpdir({
       init: async (dir) => {
@@ -2660,7 +2660,7 @@ test("sleepy model smart has correct config", async () => {
         const smart = providers[ProviderID.make("sleepy")].models["smart"]
         expect(String(smart.id)).toBe("smart")
         expect(smart.name).toBe("Sleepy Smart Routing (Auto)")
-        expect(smart.api.url).toBe("https://gateway.sleepy.dev/v1")
+        expect(smart.api.url).toBe("https://www.sleepyai.org/api/v1")
         expect(smart.api.npm).toBe("@ai-sdk/openai-compatible")
         expect(smart.headers["Authorization"]).toBe("Bearer test-token")
         expect(smart.cost.input).toBe(0.0015)
@@ -2682,7 +2682,7 @@ test("sleepy model smart has correct config", async () => {
 })
 
 test("sleepy model cheap has correct config", async () => {
-  await writeSleepyConfig({ endpoint: "https://gateway.sleepy.dev", token: "test-token" })
+  await writeSleepyConfig({ endpoint: "https://www.sleepyai.org", token: "test-token" })
   try {
     await using tmp = await tmpdir({
       init: async (dir) => {
@@ -2707,7 +2707,7 @@ test("sleepy model cheap has correct config", async () => {
 })
 
 test("sleepy model fast has correct config", async () => {
-  await writeSleepyConfig({ endpoint: "https://gateway.sleepy.dev", token: "test-token" })
+  await writeSleepyConfig({ endpoint: "https://www.sleepyai.org", token: "test-token" })
   try {
     await using tmp = await tmpdir({
       init: async (dir) => {
@@ -2732,7 +2732,7 @@ test("sleepy model fast has correct config", async () => {
 })
 
 test("sleepy model high has correct config", async () => {
-  await writeSleepyConfig({ endpoint: "https://gateway.sleepy.dev", token: "test-token" })
+  await writeSleepyConfig({ endpoint: "https://www.sleepyai.org", token: "test-token" })
   try {
     await using tmp = await tmpdir({
       init: async (dir) => {
@@ -2793,7 +2793,7 @@ test("sleepy provider absent when config.json has no credentials", async () => {
 })
 
 test("defaultModel returns sleepy/smart when no config model set", async () => {
-  await writeSleepyConfig({ endpoint: "https://gateway.sleepy.dev", token: "test-token" })
+  await writeSleepyConfig({ endpoint: "https://www.sleepyai.org", token: "test-token" })
   try {
     await using tmp = await tmpdir({
       init: async (dir) => {
@@ -2814,7 +2814,7 @@ test("defaultModel returns sleepy/smart when no config model set", async () => {
 })
 
 test("defaultModel respects config model over sleepy fallback", async () => {
-  await writeSleepyConfig({ endpoint: "https://gateway.sleepy.dev", token: "test-token" })
+  await writeSleepyConfig({ endpoint: "https://www.sleepyai.org", token: "test-token" })
   try {
     await using tmp = await tmpdir({
       init: async (dir) => {
