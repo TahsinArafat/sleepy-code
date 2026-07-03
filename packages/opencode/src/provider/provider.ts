@@ -1308,6 +1308,30 @@ const layer: Layer.Layer<
                 models: sleepyModels,
               }
               log.info("sleepy provider injected from config", { endpoint, dashboardUrl })
+
+              // Start background session polling — checks every 5 minutes if the session is still valid.
+              // Network errors are ignored (offline = still valid). 401/403 = session revoked/expired.
+              const SESSION_CHECK_MS = 5 * 60 * 1000
+              const checkSession = async () => {
+                try {
+                  const res = await fetch(`${dashboardUrl}/api/auth/session/check`, {
+                    method: "POST",
+                    headers: { Authorization: `Bearer ${token}` },
+                    signal: AbortSignal.timeout(10_000),
+                  })
+                  if (res.status === 401 || res.status === 403) {
+                    const body = await res.json().catch(() => ({}))
+                    log.warn("session expired — run 'sleepy login' to re-authenticate", { reason: body.reason, status: res.status })
+                    console.error("\n⚠  Session expired. Your login has been revoked or expired.")
+                    console.error("   Run 'sleepy login' to re-authenticate.\n")
+                  }
+                } catch {
+                  // Network error or timeout — user is offline, ignore
+                }
+              }
+              setInterval(checkSession, SESSION_CHECK_MS)
+              // Run first check after 30 seconds to avoid slowing startup
+              setTimeout(checkSession, 30_000)
             }
           }
         } catch {
