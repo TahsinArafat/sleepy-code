@@ -4,21 +4,21 @@
   <img src="assets/readme/mimocode-banner.png" alt="SleepyCode" width="700">
 </p>
 
-<p align="center"><strong>MiMo Code: Where Models and Agents Co-Evolve</strong></p>
+<p align="center"><strong>Sleepy Code: Where Models and Agents Co-Evolve</strong></p>
 
 <p align="center">
   中文 | <a href="README.md">English</a>
 </p>
 
 <p align="center">
-  <a href="https://mimo.xiaomi.com/zh/mimocode">官网</a> | <a href="https://mimo.xiaomi.com/zh/blog/mimo-code-long-horizon">博客</a>
+  <a href="https://www.sleepyai.org">官网</a> | <a href="https://www.sleepyai.org/blog">博客</a>
 </p>
 
 ---
 
 SleepyCode 是一个终端原生的 AI 编程助手。它能读写代码、执行命令、管理 Git，通过持久化记忆系统，在多次会话间保持对你项目的深度理解，并自我进化。
 
-内置 MiMo Auto 限时免费通道——零配置即可开始使用。也支持接入各家主流 LLM 厂商 API。
+内置 Sleepy Auto 限时免费通道——零配置即可开始使用。也支持接入各家主流 LLM 厂商 API。
 
 ---
 
@@ -26,18 +26,18 @@ SleepyCode 是一个终端原生的 AI 编程助手。它能读写代码、执�
 
 ```bash
 # 一键安装
-curl -fsSL https://mimo.xiaomi.com/install | bash
+curl -fsSL https://www.sleepyai.org/install | bash
 
 # 或通过 npm 安装
-npm install -g @mimo-ai/cli
+npm install -g @sleepy-ai/cli
 
 # 运行
 mimo
 ```
 
 首次启动自动引导配置。支持：
-- **MiMo Auto（限时免费）** — 匿名通道，零配置
-- **小米 MiMo 平台** — OAuth 登录
+- **Sleepy Auto（限时免费）** — 匿名通道，零配置
+- **小米 Sleepy 平台** — OAuth 登录
 - **从 Claude Code 导入** — 一键迁移已有认证
 - **自定义 Provider** — TUI 内添加任意 OpenAI 兼容 API
 
@@ -66,11 +66,11 @@ sudo apt install xsel
 
 ---
 
-## MiMo 生态
+## Sleepy 生态
 
-除了 SleepyCode，小米 MiMo 模型也能在 Cursor、Cline、Zed 等各种 Agent 和编程工具里使用。
+除了 SleepyCode，小米 Sleepy 模型也能在 Cursor、Cline、Zed 等各种 Agent 和编程工具里使用。
 
-**[awesome-mimo-agent](https://github.com/XiaomiMiMo/awesome-mimo-agent)** 收集了这些工具接入 MiMo 模型的配置教程，想换个工具试试 MiMo 的话可以去看看。也欢迎把你自己的接入方式提 PR 分享出来。
+**[awesome-mimo-agent](https://github.com/XiaomiMiMo/awesome-mimo-agent)** 收集了这些工具接入 Sleepy 模型的配置教程，想换个工具试试 Sleepy 的话可以去看看。也欢迎把你自己的接入方式提 PR 分享出来。
 
 ---
 
@@ -121,7 +121,7 @@ Compose 模式提供结构化的 specs-driven 开发流程，内置规划、执�
 
 ### 语音输入
 
-基于 TenVAD 和 MiMo ASR 的实时流式语音输入。通过 `/voice` 激活，按停顿分片转写，文本逐段追加到输入框。仅对 MiMo 登录用户可用。需要安装 `sox`（macOS 上 `brew install sox`，其他平台类似）。
+基于 TenVAD 和 Sleepy ASR 的实时流式语音输入。通过 `/voice` 激活，按停顿分片转写，文本逐段追加到输入框。仅对 Sleepy 登录用户可用。需要安装 `sox`（macOS 上 `brew install sox`，其他平台类似）。
 
 <details>
 <summary><strong>WSLg 音频配置</strong></summary>
@@ -149,9 +149,9 @@ export PULSE_SERVER=tcp:127.0.0.1:4713
 </details>
 
 <details>
-<summary><strong>非 MiMo 渠道语音输入（OpenRouter、内部 API 等）</strong></summary>
+<summary><strong>非 Sleepy 渠道语音输入（OpenRouter、内部 API 等）</strong></summary>
 
-语音输入可通过 `voice` 配置字段路由到其他 OpenAI 兼容 provider。ASR 模型（`mimo-v2.5-asr`）仅在 MiMo 平台可用；语音控制模式（`mimo-v2.5`）可通过 OpenRouter 等中转平台使用。
+语音输入可通过 `voice` 配置字段路由到其他 OpenAI 兼容 provider。ASR 模型（`mimo-v2.5-asr`）仅在 Sleepy 平台可用；语音控制模式（`mimo-v2.5`）可通过 OpenRouter 等中转平台使用。
 
 **OpenRouter（仅语音控制）：**
 
@@ -273,5 +273,5 @@ SleepyCode 基于 [OpenCode](https://github.com/anomalyco/opencode) fork 构建�
 源代码基于 [MIT 许可证](./LICENSE) 开源。
 
 使用 SleepyCode 还需遵守[使用限制](./USE_RESTRICTIONS.md)。
-使用小米 MiMo 托管服务须遵守 [MiMo 服务条款](https://platform.xiaomimimo.com/docs/terms/user-agreement)。
-使用 MiMo 名称、标志和商标须遵守 MiMo 商标政策。
+使用 Sleepy 托管服务须遵守 [Sleepy 服务条款](https://www.sleepyai.org/terms)。
+使用 Sleepy 名称、标志和商标须遵守 Sleepy 商标政策。

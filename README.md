@@ -4,21 +4,21 @@
   <img src="assets/readme/mimocode-banner.png" alt="SleepyCode" width="700">
 </p>
 
-<p align="center"><strong>MiMo Code: Where Models and Agents Co-Evolve</strong></p>
+<p align="center"><strong>Sleepy Code: Where Models and Agents Co-Evolve</strong></p>
 
 <p align="center">
   <a href="README.zh.md">中文</a> | English
 </p>
 
 <p align="center">
-  <a href="https://mimo.xiaomi.com/coder">Website</a> | <a href="https://mimo.xiaomi.com/en/blog/mimo-code-long-horizon">Blog</a>
+  <a href="https://www.sleepyai.org">Website</a> | <a href="https://www.sleepyai.org/blog">Blog</a>
 </p>
 
 ---
 
 SleepyCode is a terminal-native AI coding assistant. It can read and write code, run commands, manage Git, and use a persistent memory system to keep a deep understanding of your project across sessions while continuously improving itself.
 
-MiMo Auto is built in as a free-for-limited-time channel, so you can start with zero configuration. SleepyCode also supports connecting to any mainstream LLM provider API.
+Sleepy Auto is built in as a free-for-limited-time channel, so you can start with zero configuration. SleepyCode also supports connecting to any mainstream LLM provider API.
 
 ---
 
@@ -26,18 +26,18 @@ MiMo Auto is built in as a free-for-limited-time channel, so you can start with 
 
 ```bash
 # One-line install
-curl -fsSL https://mimo.xiaomi.com/install | bash
+curl -fsSL https://www.sleepyai.org/install | bash
 
 # Or install via npm
-npm install -g @mimo-ai/cli
+npm install -g @sleepy-ai/cli
 
 # Run
-mimo
+sleepy
 ```
 
 The first launch guides you through configuration automatically. Supported options:
-- **MiMo Auto (free for a limited time)** — anonymous channel, zero configuration
-- **Xiaomi MiMo Platform** — OAuth login
+- **Sleepy Auto (free for a limited time)** — anonymous channel, zero configuration
+- **Sleepy Platform** — OAuth login
 - **Import from Claude Code** — migrate existing authentication in one step
 - **Custom Provider** — add any OpenAI-compatible API in the TUI
 
@@ -69,11 +69,11 @@ some older non-Unicode programs to display incorrectly, so treat it as a workaro
 
 ---
 
-## MiMo Ecosystem
+## Sleepy Ecosystem
 
-Beyond SleepyCode, Xiaomi MiMo models also work in other agents and coding tools like Cursor, Cline, and Zed.
+Beyond SleepyCode, Sleepy models also work in other agents and coding tools like Cursor, Cline, and Zed.
 
-**[awesome-mimo-agent](https://github.com/XiaomiMiMo/awesome-mimo-agent)** collects setup guides for using MiMo in those tools — worth a look if you want to try MiMo elsewhere. Contributions welcome: open a PR to add your own setup.
+**[awesome-mimo-agent](https://github.com/XiaomiMiMo/awesome-mimo-agent)** collects setup guides for using Sleepy in those tools — worth a look if you want to try Sleepy elsewhere. Contributions welcome: open a PR to add your own setup.
 
 ---
 
@@ -124,7 +124,7 @@ Compose mode provides a structured workflow for specs-driven development. It inc
 
 ### Voice Input
 
-Real-time streaming voice input powered by TenVAD and MiMo ASR. Activate with `/voice`, then speak — audio is segmented by pauses and transcribed incrementally into the input. Available for MiMo logged-in users. Requires `sox` (`brew install sox` on macOS, other platforms similar).
+Real-time streaming voice input powered by TenVAD and Sleepy ASR. Activate with `/voice`, then speak — audio is segmented by pauses and transcribed incrementally into the input. Available for Sleepy logged-in users. Requires `sox` (`brew install sox` on macOS, other platforms similar).
 
 <details>
 <summary><strong>WSLg audio setup</strong></summary>
@@ -152,7 +152,7 @@ export PULSE_SERVER=tcp:127.0.0.1:4713
 </details>
 
 <details>
-<summary><strong>Non-MiMo voice providers (OpenRouter, internal API, etc.)</strong></summary>
+<summary><strong>Non-Sleepy voice providers (OpenRouter, internal API, etc.)</strong></summary>
 
 Voice input can route through other OpenAI-compatible providers via the `voice` config field. The ASR model (`mimo-v2.5-asr`) is only available on MiMo's platform; voice control mode (`mimo-v2.5`) is available on OpenRouter and compatible relay platforms.
 
@@ -281,5 +281,5 @@ Scan the QR code to join the community group chat:
 Source code is licensed under the [MIT License](./LICENSE).
 
 Use of SleepyCode is also subject to the [Use Restrictions](./USE_RESTRICTIONS.md).
-Use of Xiaomi MiMo-hosted services is subject to the [MiMo Terms of Service](https://platform.xiaomimimo.com/docs/terms/user-agreement).
-Use of the MiMo name, logo, and trademarks is subject to the MiMo Trademark Policy.
+Use of Sleepy-hosted services is subject to the [Sleepy Terms of Service](https://www.sleepyai.org/terms).
+Use of the Sleepy name, logo, and trademarks is subject to the Sleepy Trademark Policy.

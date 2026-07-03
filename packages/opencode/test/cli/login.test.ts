@@ -95,7 +95,7 @@ describe("login command", () => {
         json: () =>
           Promise.resolve({
             access_token: "token-123",
-            endpoint: "https://api.sleepy.ai",
+            endpoint: "https://www.sleepyai.org/api",
             tier: "pro",
             email: "test@example.com",
           }),
@@ -105,10 +105,10 @@ describe("login command", () => {
 
     const { exchangeCodeForToken } = await import("../../src/cli/cmd/login")
 
-    await exchangeCodeForToken("test-code", "https://dashboard.sleepy.ai")
+    await exchangeCodeForToken("test-code", "https://www.sleepyai.org")
 
     expect(mockFetch).toHaveBeenCalledWith(
-      "https://dashboard.sleepy.ai/api/auth/oauth/token",
+      "https://www.sleepyai.org/api/auth/oauth/token",
       expect.objectContaining({
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -123,7 +123,7 @@ describe("login command", () => {
 
     await writeConfig(configPath, {
       access_token: "token-123",
-      endpoint: "https://api.sleepy.ai",
+      endpoint: "https://www.sleepyai.org/api",
       tier: "pro",
       email: "test@example.com",
     })
@@ -133,18 +133,18 @@ describe("login command", () => {
 
     expect(parsed).toEqual({
       access_token: "token-123",
-      endpoint: "https://api.sleepy.ai",
+      endpoint: "https://www.sleepyai.org/api",
       tier: "pro",
       email: "test@example.com",
     })
   })
 
   test("Browser opens correct OAuth URL", async () => {
-    process.env.SLEEPY_DASHBOARD_URL = "https://dashboard.sleepy.ai"
+    process.env.SLEEPY_DASHBOARD_URL = "https://www.sleepyai.org"
     const { buildAuthorizeUrl } = await import("../../src/cli/cmd/login")
 
-    const url = buildAuthorizeUrl("https://dashboard.sleepy.ai")
-    expect(url).toContain("https://dashboard.sleepy.ai/api/auth/oauth/authorize")
+    const url = buildAuthorizeUrl("https://www.sleepyai.org")
+    expect(url).toContain("https://www.sleepyai.org/api/auth/oauth/authorize")
     expect(url).toContain("client_id=sleepy-cli")
     expect(url).toContain("redirect_uri=")
     expect(url).toContain("localhost%3A40821")

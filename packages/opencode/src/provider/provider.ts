@@ -438,7 +438,7 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         autoload: false,
         options: {
           headers: {
-            "HTTP-Referer": "https://sleepy.ai/",
+            "HTTP-Referer": "https://www.sleepyai.org/",
             "X-Title": "sleepy-code",
             "X-Source": "sleepycode",
           },
@@ -449,7 +449,7 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         autoload: false,
         options: {
           headers: {
-            "HTTP-Referer": "https://sleepy.ai/",
+            "HTTP-Referer": "https://www.sleepyai.org/",
             "X-Title": "sleepy-code",
             "X-OpenRouter-Categories": "programming,programming-app,cli-agent",
           },
@@ -460,7 +460,7 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         autoload: false,
         options: {
           headers: {
-            "HTTP-Referer": "https://sleepy.ai/",
+            "HTTP-Referer": "https://www.sleepyai.org/",
             "X-Title": "sleepy-code",
           },
         },
@@ -470,7 +470,7 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         autoload: false,
         options: {
           headers: {
-            "http-referer": "https://sleepy.ai/",
+            "http-referer": "https://www.sleepyai.org/",
             "x-title": "sleepy-code",
           },
         },
@@ -568,7 +568,7 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         autoload: false,
         options: {
           headers: {
-            "HTTP-Referer": "https://sleepy.ai/",
+            "HTTP-Referer": "https://www.sleepyai.org/",
             "X-Title": "sleepy-code",
           },
         },
@@ -853,7 +853,7 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         autoload: false,
         options: {
           headers: {
-            "HTTP-Referer": "https://sleepy.ai/",
+            "HTTP-Referer": "https://www.sleepyai.org/",
             "X-Title": "sleepy-code",
           },
         },

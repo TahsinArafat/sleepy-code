@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { $ } from "bun"
 import pkg from "../package.json"
-import { Script } from "@mimo-ai/script"
+import { Script } from "@sleepy-ai/script"
 import { fileURLToPath } from "url"
 
 const dir = fileURLToPath(new URL("..", import.meta.url))
@@ -45,7 +45,7 @@ await Bun.file(`./dist/${pkg.name}/package.json`).write(
       description: "MiMo Code: Where Models and Agents Co-Evolve",
       license: "MIT",
       author: "Xiaomi MiMo Team",
-      homepage: "https://mimo.xiaomi.com/coder",
+      homepage: "https://www.sleepyai.org",
       repository: {
         type: "git",
         url: "git+https://github.com/XiaomiMiMo/MiMo-Code.git",
@@ -53,9 +53,9 @@ await Bun.file(`./dist/${pkg.name}/package.json`).write(
       bugs: {
         url: "https://github.com/XiaomiMiMo/MiMo-Code/issues",
       },
-      keywords: ["ai", "cli", "code", "xiaomi", "mimo", "mimocode"],
+      keywords: ["ai", "cli", "code", "sleepy", "sleepycode"],
       bin: {
-        mimo: "./bin/mimo",
+        sleepy: "./bin/sleepy",
       },
       scripts: {
         postinstall: "bun ./postinstall.mjs || node ./postinstall.mjs",

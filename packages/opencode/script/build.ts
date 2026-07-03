@@ -14,10 +14,10 @@ process.chdir(dir)
 
 await import("./generate.ts")
 
-import { Script } from "@mimo-ai/script"
+import { Script } from "@sleepy-ai/script"
 import pkg from "../package.json"
 
-const BINARY_PREFIX = "mimocode"
+const BINARY_PREFIX = "sleepycode"
 
 // Load migrations from migration directories
 const migrationDirs = (
@@ -244,25 +244,25 @@ for (const item of targets) {
       autoloadTsconfig: true,
       autoloadPackageJson: true,
       target: name.replace(BINARY_PREFIX, "bun") as any,
-      outfile: `dist/${name}/bin/mimo`,
-      execArgv: [`--user-agent=mimocode/${Script.version}`, "--use-system-ca", "--"],
+      outfile: `dist/${name}/bin/sleepy`,
+      execArgv: [`--user-agent=sleepycode/${Script.version}`, "--use-system-ca", "--"],
       windows: {},
     },
     files: embeddedFileMap ? { "opencode-web-ui.gen.ts": embeddedFileMap } : {},
     entrypoints: ["./src/index.ts", parserWorker, workerPath, ...(embeddedFileMap ? ["opencode-web-ui.gen.ts"] : [])],
     define: {
-      MIMOCODE_VERSION: `'${Script.version}'`,
+      SLEEPYCODE_VERSION: `'${Script.version}'`,
       OPENCODE_MIGRATIONS: JSON.stringify(migrations),
       OTUI_TREE_SITTER_WORKER_PATH: bunfsRoot + workerRelativePath,
       OPENCODE_WORKER_PATH: workerPath,
-      MIMOCODE_CHANNEL: `'${Script.channel}'`,
+      SLEEPYCODE_CHANNEL: `'${Script.channel}'`,
       OPENCODE_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "",
     },
   })
 
   // Smoke test: only run if binary is for current platform
   if (item.os === process.platform && item.arch === process.arch && !item.abi) {
-    const binaryPath = `dist/${name}/bin/mimo`
+    const binaryPath = `dist/${name}/bin/sleepy`
     console.log(`Running smoke test: ${binaryPath} --version`)
     try {
       const versionOutput = await $`${binaryPath} --version`.text()
@@ -275,22 +275,22 @@ for (const item of targets) {
 
   await $`rm -rf ./dist/${name}/bin/tui`
   await Bun.file(`dist/${name}/README.md`).write(
-    `This is the ${item.os}-${item.arch} binary for [@mimo-ai/cli](https://www.npmjs.com/package/@mimo-ai/cli). Install that package directly.\n`,
+    `This is the ${item.os}-${item.arch} binary for [@sleepy-ai/cli](https://www.npmjs.com/package/@sleepy-ai/cli). Install that package directly.\n`,
   )
   await Bun.file(`dist/${name}/package.json`).write(
     JSON.stringify(
       {
-        name: `@mimo-ai/${name}`,
+        name: `@sleepy-ai/${name}`,
         version: Script.version,
-        description: "Platform-specific binary for @mimo-ai/cli.",
+        description: "Platform-specific binary for @sleepy-ai/cli.",
         license: "MIT",
         author: "Xiaomi MiMo Team",
-        homepage: "https://mimo.xiaomi.com/coder",
+        homepage: "https://www.sleepyai.org",
         repository: {
           type: "git",
           url: "git+https://github.com/XiaomiMiMo/MiMo-Code.git",
         },
-        keywords: ["ai", "coding", "agent", "cli", "mimo"],
+        keywords: ["ai", "coding", "agent", "cli", "sleepy"],
         os: [item.os],
         cpu: [item.arch],
       },

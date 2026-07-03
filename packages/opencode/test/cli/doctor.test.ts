@@ -75,7 +75,7 @@ describe("doctor command", () => {
     await fs.writeFile(
       configPath,
       JSON.stringify({
-        endpoint: "https://api.sleepy.ai",
+        endpoint: "https://www.sleepyai.org/api",
         email: "test@example.com",
         tier: "pro",
         access_token: "sk_sleepy_vk_abcdefgh1234567890xxxx",
@@ -96,7 +96,7 @@ describe("doctor command", () => {
 
     const output = stripAnsi(stderrOutput)
     expect(output).toContain("Credentials found")
-    expect(output).toContain("https://api.sleepy.ai")
+    expect(output).toContain("https://www.sleepyai.org/api")
     expect(output).toContain("test@example.com")
     expect(output).toContain("pro")
     // Token should be masked
@@ -109,7 +109,7 @@ describe("doctor command", () => {
     await fs.writeFile(
       configPath,
       JSON.stringify({
-        endpoint: "https://api.sleepy.ai",
+        endpoint: "https://www.sleepyai.org/api",
         email: "test@example.com",
         tier: "pro",
         access_token: "sk_sleepy_vk_test1234",
@@ -124,7 +124,7 @@ describe("doctor command", () => {
 
     const output = stripAnsi(stderrOutput)
     expect(output).toContain("Failed to connect")
-    expect(output).toContain("https://api.sleepy.ai/api/monitoring/health")
+    expect(output).toContain("https://www.sleepyai.org/api/api/monitoring/health")
   })
 
   test("warns when sleepy.json is missing from workspace", async () => {
@@ -184,7 +184,7 @@ describe("doctor command", () => {
     await fs.writeFile(
       configPath,
       JSON.stringify({
-        endpoint: "https://api.sleepy.ai",
+        endpoint: "https://www.sleepyai.org/api",
         email: "test@example.com",
         tier: "pro",
         access_token: fullToken,
