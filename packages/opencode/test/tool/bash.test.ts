@@ -13,7 +13,7 @@ import { Agent } from "../../src/agent/agent"
 import { Truncate } from "../../src/tool"
 import { SessionID, MessageID } from "../../src/session/schema"
 import * as CrossSpawnSpawner from "../../src/effect/cross-spawn-spawner"
-import { AppFileSystem } from "@mimo-ai/shared/filesystem"
+import { AppFileSystem } from "@sleepy-ai/shared/filesystem"
 import { Plugin } from "../../src/plugin"
 
 const runtime = ManagedRuntime.make(
@@ -101,7 +101,7 @@ async function isolateZshDotfiles() {
   Shell.acceptable.reset()
   if (Shell.name(Shell.acceptable()) !== "zsh") return
 
-  const zdotdir = path.join(os.tmpdir(), `mimocode-zdotdir-${Math.random().toString(36).slice(2)}`)
+  const zdotdir = path.join(os.tmpdir(), `sleepycode-zdotdir-${Math.random().toString(36).slice(2)}`)
   await fs.mkdir(zdotdir, { recursive: true })
   const prev = process.env.ZDOTDIR
   process.env.ZDOTDIR = zdotdir
@@ -520,7 +520,7 @@ describe("tool.bash permissions", () => {
       test(
         `asks for external_directory permission for missing PowerShell env paths [${item.label}]`,
         withShell(item, async () => {
-          const key = "MIMOCODE_TEST_MISSING"
+          const key = "SLEEPYCODE_TEST_MISSING"
           const prev = process.env[key]
           delete process.env[key]
           try {

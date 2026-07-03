@@ -1,5 +1,5 @@
-import type { AssistantMessage } from "@mimo-ai/sdk/v2"
-import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from "@mimo-ai/plugin/tui"
+import type { AssistantMessage } from "@sleepy-ai/sdk/v2"
+import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from "@sleepy-ai/plugin/tui"
 import { Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { completedTPS, formatTPS, streamingTPS } from "./tps"
 import fs from "fs"
@@ -8,6 +8,12 @@ import { Global } from "@/global"
 
 const id = "internal:sidebar-context"
 const REFRESH_MS = 1000
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
+  return `${n}`
+}
 
 function View(props: { api: TuiPluginApi; session_id: string }) {
   const theme = () => props.api.theme.current
@@ -26,6 +32,13 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
       total += (t.cache.write * model.cost.cache.write) / 1_000_000
     }
     return total
+  })
+
+  const stats = createMemo(() => {
+    const assistants = msg().filter((m): m is AssistantMessage => m.role === "assistant")
+    const input = assistants.reduce((s, m) => s + m.tokens.input, 0)
+    const output = assistants.reduce((s, m) => s + m.tokens.output + m.tokens.reasoning, 0)
+    return { input, output, total: input + output }
   })
 
   const state = createMemo(() => {
@@ -55,6 +68,8 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
   const [totalCost, setTotalCost] = createSignal(0)
   const [creditUSD, setCreditUSD] = createSignal(5.0)
   const [balanceUSD, setBalanceUSD] = createSignal(0.0)
+  const [monthlyUsageUSD, setMonthlyUsageUSD] = createSignal(0.0)
+  const [monthlyAllowanceUSD, setMonthlyAllowanceUSD] = createSignal(5.0)
   const [limit5h, setLimit5h] = createSignal(0.5)
   const [limit24h, setLimit24h] = createSignal(1.5)
   const [limitWeekly, setLimitWeekly] = createSignal(3.5)
@@ -85,6 +100,8 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
         setTier(data.tier ?? "free")
         setTotalCost(data.totalCost ?? 0)
         setBalanceUSD(data.balanceUSD ?? 0.0)
+        setMonthlyUsageUSD(data.monthlyUsageUSD ?? 0.0)
+        setMonthlyAllowanceUSD(data.monthlyAllowanceUSD ?? 5.0)
         if (data.limits) {
           setCreditUSD(data.limits.creditUSD ?? 5.0)
           setLimit5h(data.limits.limit5h ?? 0.5)
@@ -202,12 +219,18 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
         </Show>
       </box>
       <box>
+        <text fg={theme().text}><b>Session</b></text>
+        <text fg={theme().textMuted}>
+          In {formatTokens(stats().input)} / Out {formatTokens(stats().output)} / Total {formatTokens(stats().total)}
+        </text>
+      </box>
+      <box>
         <text fg={theme().text} onMouseUp={() => setExpanded(!expanded())}>
           <b>Plan & Limits</b> {expanded() ? "▼" : "▶"}
         </text>
         <Show when={expanded()}>
           <text fg={theme().textMuted}>Tier: {tier().charAt(0).toUpperCase() + tier().slice(1)}</text>
-          <text fg={theme().textMuted}>Balance: ${balanceUSD().toFixed(2)} / Credit: ${creditUSD().toFixed(2)}</text>
+          <text fg={theme().textMuted}>Plan Allowance: ${creditUSD().toFixed(2)}/month</text>
           <text fg={theme().textMuted}>5h limit ({cost5h().toFixed(4)}/${limit5h().toFixed(2)})</text>
           <text fg={theme().warning}>{bar(cost5h(), limit5h())}</text>
           <text fg={theme().textMuted}>24h limit ({cost24h().toFixed(4)}/${limit24h().toFixed(2)})</text>
@@ -216,8 +239,9 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
           <text fg={theme().warning}>{bar(costWeekly(), limitWeekly())}</text>
           <text fg={theme().textMuted}>Monthly limit ({costMonthly().toFixed(4)}/${limitMonthly().toFixed(2)})</text>
           <text fg={theme().warning}>{bar(costMonthly(), limitMonthly())}</text>
-          <text fg={theme().textMuted}>Credit used (${(creditUSD() - balanceUSD()).toFixed(4)}/${creditUSD().toFixed(2)})</text>
-          <text fg={theme().accent}>{bar(creditUSD() - balanceUSD(), creditUSD())}</text>
+          <Show when={balanceUSD() > 0}>
+            <text fg={theme().textMuted}>Extra balance: ${balanceUSD().toFixed(2)}</text>
+          </Show>
         </Show>
       </box>
     </box>

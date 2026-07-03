@@ -1,11 +1,11 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "@mimo-ai/plugin",
+  "name": "@sleepy-ai/plugin",
   "version": "0.1.4",
   "description": "Plugin SDK for extending SleepyCode",
   "keywords": [
-    "mimo",
-    "mimocode",
+    "sleepy",
+    "sleepycode",
     "ai",
     "plugin",
     "coding-assistant"
@@ -38,7 +38,7 @@
     "dist"
   ],
   "dependencies": {
-    "@mimo-ai/sdk": "workspace:*",
+    "@sleepy-ai/sdk": "workspace:*",
     "effect": "catalog:",
     "zod": "catalog:"
   },

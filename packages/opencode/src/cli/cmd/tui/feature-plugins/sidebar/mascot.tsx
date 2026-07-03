@@ -1,5 +1,5 @@
-import type { AssistantMessage } from "@mimo-ai/sdk/v2"
-import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from "@mimo-ai/plugin/tui"
+import type { AssistantMessage } from "@sleepy-ai/sdk/v2"
+import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from "@sleepy-ai/plugin/tui"
 import { createMemo, createSignal, createEffect, onCleanup } from "solid-js"
 
 const id = "internal:sidebar-mascot"

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import path from "path"
-import { resolveSleepyHome } from "@mimo-ai/shared/global"
+import { resolveSleepyHome } from "@sleepy-ai/shared/global"
 
 describe("resolveSleepyHome", () => {
   test("with SLEEPY_HOME set, resolves 4 subdirs under root", () => {

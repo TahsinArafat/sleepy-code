@@ -6,7 +6,7 @@ import type {
   SessionStatus,
   SnapshotFileDiff,
   Todo,
-} from "@mimo-ai/sdk/v2/client"
+} from "@sleepy-ai/sdk/v2/client"
 
 export const SESSION_CACHE_LIMIT = 40
 

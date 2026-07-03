@@ -152,7 +152,7 @@ describe("ProviderTransform.maxOutputTokens", () => {
       ProviderTransform.maxOutputTokens({
         ...baseModel,
         id: ModelID.make("mimo-auto"),
-        providerID: ProviderID.make("mimo"),
+        providerID: ProviderID.make("sleepy"),
       }),
     ).toBe(128_000)
   })
@@ -1635,7 +1635,7 @@ describe("ProviderTransform.message - strip openai metadata when store=false", (
       providerID: "opencode",
       api: {
         id: "opencode-test",
-        url: "https://api.mimocode.ai",
+        url: "https://api.sleepycode.ai",
         npm: "@ai-sdk/openai-compatible",
       },
     }
@@ -1669,7 +1669,7 @@ describe("ProviderTransform.message - strip openai metadata when store=false", (
       providerID: "opencode",
       api: {
         id: "opencode-test",
-        url: "https://api.mimocode.ai",
+        url: "https://api.sleepycode.ai",
         npm: "@ai-sdk/openai-compatible",
       },
     }

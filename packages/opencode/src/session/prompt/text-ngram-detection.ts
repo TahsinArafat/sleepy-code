@@ -50,9 +50,9 @@ export class TextNgramMonitor {
 
 export function createTextNgramMonitor() {
   return new TextNgramMonitor(
-    Flag.MIMOCODE_TEXT_NGRAM_N,
-    Flag.MIMOCODE_TEXT_REPEAT_THRESHOLD,
-    Flag.MIMOCODE_TEXT_WINDOW_TOKENS,
+    Flag.SLEEPYCODE_TEXT_NGRAM_N,
+    Flag.SLEEPYCODE_TEXT_REPEAT_THRESHOLD,
+    Flag.SLEEPYCODE_TEXT_WINDOW_TOKENS,
   )
 }
 
@@ -65,7 +65,7 @@ export function isTextNgramRepeat(value: unknown): value is { _tag: "TextNgramRe
 }
 
 export const TEXT_NGRAM_RECOVERY_REMIND = `<system-reminder>
-REPETITION DETECTED: Your recent output contains repeated phrases (sliding n-gram match within your last ${Flag.MIMOCODE_TEXT_WINDOW_TOKENS} tokens).
+REPETITION DETECTED: Your recent output contains repeated phrases (sliding n-gram match within your last ${Flag.SLEEPYCODE_TEXT_WINDOW_TOKENS} tokens).
 
 STOP repeating yourself and retry with a different approach:
 - Vary your wording and reasoning — do not reuse the same phrases

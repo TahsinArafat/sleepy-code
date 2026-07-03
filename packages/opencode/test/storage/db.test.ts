@@ -8,7 +8,7 @@ import { Database } from "../../src/storage"
 describe("Database.Path", () => {
   test("returns database path for the current channel", () => {
     const expected =
-      ["latest", "beta", "prod"].includes(InstallationChannel) || Flag.MIMOCODE_DISABLE_CHANNEL_DB
+      ["latest", "beta", "prod"].includes(InstallationChannel) || Flag.SLEEPYCODE_DISABLE_CHANNEL_DB
         ? path.join(Global.Path.data, "sleepy.db")
         : path.join(Global.Path.data, `sleepy-${InstallationChannel.replace(/[^a-zA-Z0-9._-]/g, "-")}.db`)
     expect(Database.getChannelPath()).toBe(expected)

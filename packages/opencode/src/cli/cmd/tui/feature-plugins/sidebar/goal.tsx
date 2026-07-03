@@ -1,4 +1,4 @@
-import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from "@mimo-ai/plugin/tui"
+import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from "@sleepy-ai/plugin/tui"
 import { createMemo, Show } from "solid-js"
 
 const id = "internal:sidebar-goal"

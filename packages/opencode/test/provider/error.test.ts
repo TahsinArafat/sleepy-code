@@ -4,7 +4,7 @@ import { parseAPICallError } from "../../src/provider/error"
 import { ProviderID } from "../../src/provider/schema"
 
 const xiaomi = ProviderID.make("xiaomi")
-const mimo = ProviderID.make("mimo")
+const mimo = ProviderID.make("sleepy")
 const openai = ProviderID.make("openai")
 
 function apiError(opts: { message: string; statusCode?: number; responseBody?: string }) {

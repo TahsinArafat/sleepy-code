@@ -551,7 +551,7 @@ describe("Actor tool subagent_type enum (F36)", () => {
         const tool = yield* ActorTool
         const def = yield* tool.init()
         const fakeModel = {
-          providerID: "mimo",
+          providerID: "sleepy",
           api: { id: "mimo-v2.5-pro", npm: "@ai-sdk/openai-compatible" },
           id: "mimo-v2.5-pro",
           capabilities: { input: {} },

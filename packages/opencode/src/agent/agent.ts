@@ -188,7 +188,7 @@ export const layer = Layer.effect(
             hardPermission: Permission.fromConfig({
               edit: {
                 "*": "deny",
-                [path.join(".mimocode", "plans", "*.md")]: "allow",
+                [path.join(".sleepycode", "plans", "*.md")]: "allow",
                 [path.relative(Instance.worktree, path.join(Global.Path.data, path.join("plans", "*.md")))]: "allow",
               },
             }),

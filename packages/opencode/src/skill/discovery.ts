@@ -2,7 +2,7 @@ import { Effect, Layer, Schema, Context } from "effect"
 import path from "path"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { withTransientReadRetry } from "@/util/effect-http-client"
-import { AppFileSystem } from "@mimo-ai/shared/filesystem"
+import { AppFileSystem } from "@sleepy-ai/shared/filesystem"
 import { Global } from "../global"
 import { Log } from "../util"
 

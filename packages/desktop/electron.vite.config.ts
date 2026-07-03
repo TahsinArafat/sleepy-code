@@ -1,5 +1,5 @@
 import { defineConfig } from "electron-vite"
-import appPlugin from "@mimo-ai/app/vite"
+import appPlugin from "@sleepy-ai/app/vite"
 import * as fs from "node:fs/promises"
 
 const channel = (() => {

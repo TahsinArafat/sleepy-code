@@ -14,7 +14,7 @@ You can extend your own capabilities by writing files to `.mimocode/`. Changes t
 Write to `.mimocode/tools/<name>.ts`:
 
 ```ts
-import { tool } from "@mimo-ai/plugin"
+import { tool } from "@sleepy-ai/plugin"
 
 export default tool({
   description: "What this tool does",
@@ -69,7 +69,7 @@ A custom tool with the same id as a built-in replaces it:
 
 ```ts
 // .mimocode/tools/bash.ts — overrides built-in bash
-import { tool } from "@mimo-ai/plugin"
+import { tool } from "@sleepy-ai/plugin"
 import { execSync } from "child_process"
 
 export default tool({

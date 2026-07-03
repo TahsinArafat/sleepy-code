@@ -7,7 +7,7 @@ import { Global } from "@/global"
 import { unique } from "remeda"
 import { JsonError } from "./error"
 import * as Effect from "effect/Effect"
-import { AppFileSystem } from "@mimo-ai/shared/filesystem"
+import { AppFileSystem } from "@sleepy-ai/shared/filesystem"
 
 export const files = Effect.fn("ConfigPaths.projectFiles")(function* (
   name: string,
@@ -26,10 +26,10 @@ export const directories = Effect.fn("ConfigPaths.directories")(function* (direc
   const afs = yield* AppFileSystem.Service
   return unique([
     Global.Path.config,
-    ...(!Flag.MIMOCODE_DISABLE_PROJECT_CONFIG
+    ...(!Flag.SLEEPYCODE_DISABLE_PROJECT_CONFIG
       ? [
           ...(yield* afs.up({
-            targets: [".mimocode"],
+            targets: [".sleepycode"],
             start: directory,
             stop: worktree,
           })),
@@ -41,7 +41,7 @@ export const directories = Effect.fn("ConfigPaths.directories")(function* (direc
         ]
       : []),
     ...(yield* afs.up({
-      targets: [".mimocode"],
+      targets: [".sleepycode"],
       start: Global.Path.home,
       stop: Global.Path.home,
     })),
@@ -50,7 +50,7 @@ export const directories = Effect.fn("ConfigPaths.directories")(function* (direc
       start: Global.Path.home,
       stop: Global.Path.home,
     })),
-    ...(Flag.MIMOCODE_CONFIG_DIR ? [Flag.MIMOCODE_CONFIG_DIR] : []),
+    ...(Flag.SLEEPYCODE_CONFIG_DIR ? [Flag.SLEEPYCODE_CONFIG_DIR] : []),
   ])
 })
 
@@ -58,11 +58,11 @@ export const claudeCommandDirectories = Effect.fn("ConfigPaths.claudeCommandDire
   directory: string,
   worktree?: string,
 ) {
-  if (Flag.MIMOCODE_DISABLE_CLAUDE_CODE_COMMANDS) return []
+  if (Flag.SLEEPYCODE_DISABLE_CLAUDE_CODE_COMMANDS) return []
   const afs = yield* AppFileSystem.Service
   return unique([
     path.join(Global.Path.home, ".claude"),
-    ...(!Flag.MIMOCODE_DISABLE_PROJECT_CONFIG
+    ...(!Flag.SLEEPYCODE_DISABLE_PROJECT_CONFIG
       ? yield* afs.up({
           targets: [".claude"],
           start: directory,

@@ -1,4 +1,4 @@
-import { createMemo, createSignal, onMount, onCleanup, Show } from "solid-js"
+import { createMemo, createSignal, onMount, Show } from "solid-js"
 import { useSDK } from "../context/sdk"
 import { useSync } from "@tui/context/sync"
 import { useLocal } from "@tui/context/local"
@@ -11,20 +11,20 @@ import { DialogPrompt } from "../ui/dialog-prompt"
 import { useToast } from "../ui/toast"
 import * as Clipboard from "@tui/util/clipboard"
 import { useRenderer } from "@opentui/solid"
+import { TextAttributes } from "@opentui/core"
 import os from "os"
 import path from "path"
 import {
-  buildAuthorizeUrl,
-  startLoginServer,
-  waitForCode,
-  exchangeCodeForToken,
+  startDeviceFlow,
+  pollDeviceToken,
   writeConfig,
   getDashboardUrl,
+  type DeviceCodeResponse,
 } from "../../login"
 import { Global } from "@/global"
 import open from "open"
 
-export function DialogMimoLogin() {
+export function DialogSleepyLogin() {
   const dialog = useDialog()
   const sdk = useSDK()
   const sync = useSync()
@@ -38,20 +38,10 @@ export function DialogMimoLogin() {
       {
         title: "Sleepy Login",
         value: "sleepy",
-        description: "Authenticate via Sleepy Dashboard Browser OAuth",
+        description: "Authenticate via Sleepy Dashboard (browser or device code)",
         category: "Recommended",
         onSelect: async () => {
-          const dashboardUrl = getDashboardUrl()
-          const authorizeUrl = buildAuthorizeUrl(dashboardUrl)
-          const server = await startLoginServer()
-          try {
-            await open(authorizeUrl)
-          } catch {
-            // Browser may not open; user can copy URL
-          }
-          dialog.replace(() => (
-            <SleepyOAuthFlow url={authorizeUrl} server={server} dashboardUrl={dashboardUrl} />
-          ))
+          dialog.replace(() => <SleepyDeviceFlow />)
         },
       },
       {
@@ -152,7 +142,7 @@ export function DialogMimoLogin() {
   )
 }
 
-function SleepyOAuthFlow(props: { url: string; server: import("http").Server; dashboardUrl: string }) {
+function SleepyDeviceFlow() {
   const dialog = useDialog()
   const sdk = useSDK()
   const sync = useSync()
@@ -162,9 +152,13 @@ function SleepyOAuthFlow(props: { url: string; server: import("http").Server; da
   const renderer = useRenderer()
   const [copied, setCopied] = createSignal(false)
   const [busy, setBusy] = createSignal(false)
+  const [deviceData, setDeviceData] = createSignal<DeviceCodeResponse | null>(null)
+  const [error, setError] = createSignal<string | null>(null)
 
   function copyUrl() {
-    Clipboard.copy(props.url)
+    const url = deviceData()?.verification_uri_complete
+    if (!url) return
+    Clipboard.copy(url)
       .then(() => {
         setCopied(true)
         setTimeout(() => setCopied(false), 2000)
@@ -172,44 +166,96 @@ function SleepyOAuthFlow(props: { url: string; server: import("http").Server; da
       .catch(toast.error)
   }
 
-  onCleanup(() => {
-    try { props.server.close() } catch {}
-  })
+  function copyCode() {
+    const code = deviceData()?.user_code
+    if (!code) return
+    Clipboard.copy(code)
+      .then(() => {
+        setCopied(true)
+        setTimeout(() => setCopied(false), 2000)
+      })
+      .catch(toast.error)
+  }
 
   onMount(async () => {
+    const dashboardUrl = getDashboardUrl()
+
+    let device: DeviceCodeResponse
     try {
-      const code = await waitForCode()
-      setBusy(true)
-      const tokenData = await exchangeCodeForToken(code, props.dashboardUrl)
-      const configPath = path.join(Global.Path.config, "gateway.json")
-      await writeConfig(configPath, {
-        ...tokenData,
-        dashboard_url: props.dashboardUrl,
-      })
-      await sdk.client.instance.dispose()
-      await sync.bootstrap()
-      local.model.set({ providerID: "sleepy", modelID: "smart" }, { recent: true })
-      toast.show({ message: "Login successful!", variant: "success" })
-      dialog.clear()
+      device = await startDeviceFlow(dashboardUrl)
     } catch (err: any) {
-      toast.show({ message: err?.message ?? "Login failed", variant: "error" })
-      dialog.clear()
-    } finally {
-      try { props.server.close() } catch {}
+      setError(err?.message ?? "Failed to start device login")
+      return
+    }
+
+    setDeviceData(device)
+
+    try {
+      await open(device.verification_uri_complete)
+    } catch {
+      // Browser may not open in all environments
+    }
+
+    setBusy(true)
+
+    const pollMs = (device.interval ?? 5) * 1000
+
+    while (true) {
+      await new Promise((resolve) => setTimeout(resolve, pollMs))
+
+      try {
+        const tokenData = await pollDeviceToken(dashboardUrl, device.device_code)
+        const configPath = path.join(Global.Path.config, "gateway.json")
+        await writeConfig(configPath, {
+          access_token: tokenData.access_token,
+          endpoint: tokenData.endpoint,
+          tier: tokenData.tier,
+          email: tokenData.email,
+          dashboard_url: dashboardUrl,
+        })
+        await sdk.client.instance.dispose()
+        await sync.bootstrap()
+        local.model.set({ providerID: "sleepy", modelID: "smart" }, { recent: true })
+        toast.show({ message: "Login successful!", variant: "success" })
+        dialog.clear()
+        return
+      } catch (err: any) {
+        if (err.code === "authorization_pending" || err.code === "slow_down") continue
+        if (err.code === "expired_token") {
+          setError("Login expired. Please try again.")
+          return
+        }
+        if (err.code === "access_denied") {
+          setError("Login denied.")
+          return
+        }
+        setError(err?.message ?? "Login failed")
+        return
+      }
     }
   })
 
   return (
     <DialogPrompt
-      title="Sleepy OAuth Login"
+      title="Sleepy Device Login"
       placeholder=""
       busy={busy()}
-      busyText="Authenticating..."
+      busyText="Waiting for authorization..."
       description={
         <box gap={1}>
-          <Show when={props.url}>
+          <Show when={error()}>
+            <text fg={theme.error}>{error()}</text>
+            <text
+              fg={theme.primary}
+              attributes={TextAttributes.UNDERLINE}
+              onMouseUp={() => dialog.replace(() => <SleepyDeviceFlow />)}
+            >
+              Try again
+            </text>
+          </Show>
+          <Show when={!error() && deviceData()}>
             <text fg={theme.textMuted}>
-              Open the URL below in your browser to authenticate.
+              Open the URL below in your browser and enter the code to authenticate.
               <Show when={copied()}>{" "}<span style={{ fg: theme.primary }}>(Copied!)</span></Show>
             </text>
             <text
@@ -219,10 +265,22 @@ function SleepyOAuthFlow(props: { url: string; server: import("http").Server; da
                 copyUrl()
               }}
             >
-              {props.url}
+              {deviceData()!.verification_uri_complete}
             </text>
+            <box gap={1} alignItems="center">
+              <text fg={theme.textMuted}>Code:</text>
+              <text
+                fg={theme.accent}
+                attributes={TextAttributes.BOLD}
+                onMouseUp={() => {
+                  if (renderer.getSelection()?.getSelectedText()) return
+                  copyCode()
+                }}
+              >
+                {deviceData()!.user_code}
+              </text>
+            </box>
           </Show>
-          <text fg={theme.textMuted}>Waiting for authorization...</text>
         </box>
       }
     />

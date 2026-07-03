@@ -3,7 +3,7 @@
 ## File Format
 
 ```ts
-import type { Hooks } from "@mimo-ai/plugin"
+import type { Hooks } from "@sleepy-ai/plugin"
 
 const hooks: Hooks = {
   "event.name": async (input, output) => {

@@ -1,7 +1,7 @@
 export * as ConfigError from "./error"
 
 import z from "zod"
-import { NamedError } from "@mimo-ai/shared/util/error"
+import { NamedError } from "@sleepy-ai/shared/util/error"
 
 export const JsonError = NamedError.create(
   "ConfigJsonError",

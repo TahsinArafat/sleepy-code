@@ -9,10 +9,10 @@ import type {
   QuestionRequest,
   Session,
   Todo,
-} from "@mimo-ai/sdk/v2/client"
-import { showToast } from "@mimo-ai/ui/toast"
-import { getFilename } from "@mimo-ai/shared/util/path"
-import { retry } from "@mimo-ai/shared/util/retry"
+} from "@sleepy-ai/sdk/v2/client"
+import { showToast } from "@sleepy-ai/ui/toast"
+import { getFilename } from "@sleepy-ai/shared/util/path"
+import { retry } from "@sleepy-ai/shared/util/retry"
 import { batch } from "solid-js"
 import { reconcile, type SetStoreFunction, type Store } from "solid-js/store"
 import type { State, VcsCache } from "./types"

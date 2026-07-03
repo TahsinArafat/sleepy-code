@@ -1,4 +1,4 @@
-import { ZenData } from "@mimo-ai/console-core/model.js"
+import { ZenData } from "@sleepy-ai/console-core/model.js"
 import {
   fromAnthropicChunk,
   fromAnthropicRequest,

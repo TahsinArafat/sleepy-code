@@ -6,6 +6,7 @@ import path from "path"
 import { setTimeout as sleep } from "timers/promises"
 import { Global } from "../../global"
 import { UI } from "../ui"
+import * as prompts from "@clack/prompts"
 
 const PORT = 40821
 
@@ -276,9 +277,18 @@ export const pollDeviceToken = async (
 
   if (res.ok) return res.json()
 
-  const body = await res.json()
-  const err: any = new Error(body.error || "Unknown error")
-  err.code = body.error
+  let body: Record<string, unknown> | null = null
+  try {
+    body = await res.json()
+  } catch {
+    const text = await res.text().catch(() => "")
+    throw Object.assign(new Error(text ? `Server error: ${text.substring(0, 200)}` : `HTTP ${res.status}`), {
+      code: "server_error",
+    })
+  }
+
+  const err: any = new Error((body?.error as string) || "Unknown error")
+  err.code = body?.error ?? "server_error"
   throw err
 }
 
@@ -370,6 +380,23 @@ export const LoginCommand = cmd({
     if (args.device) {
       return handleDeviceFlow()
     }
+
+    prompts.intro("Login to Sleepy")
+    const method = await prompts.select({
+      message: "How would you like to log in?",
+      options: [
+        { value: "browser", label: "Open in Browser", hint: "recommended" },
+        { value: "device", label: "Use Activation Code" },
+        { value: "exit", label: "Exit" },
+      ],
+    })
+
+    if (prompts.isCancel(method) || method === "exit") {
+      prompts.outro("Goodbye!")
+      return
+    }
+
+    if (method === "device") return handleDeviceFlow()
     return handleAuthCodeFlow()
   },
 })
