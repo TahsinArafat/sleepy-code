@@ -171,7 +171,7 @@ await $`rm -rf dist`
 const extDir = path.join(dir, "src", "ext")
 let stagedExt = false
 if (!fs.existsSync(extDir)) {
-  const overlaySrc = path.resolve(dir, "../../mimoapi/packages/opencode/src/ext")
+  const overlaySrc = path.resolve(dir, "../../sleepyapi/packages/opencode/src/ext")
   if (fs.existsSync(overlaySrc)) {
     console.log(`Staging overlay entrypoints from ${overlaySrc}`)
     fs.cpSync(overlaySrc, extDir, { recursive: true })
@@ -284,11 +284,11 @@ for (const item of targets) {
         version: Script.version,
         description: "Platform-specific binary for @sleepy-ai/cli.",
         license: "MIT",
-        author: "Xiaomi MiMo Team",
+        author: "Sleepy AI",
         homepage: "https://www.sleepyai.org",
         repository: {
           type: "git",
-          url: "git+https://github.com/XiaomiMiMo/MiMo-Code.git",
+          url: "git+https://github.com/TahsinArafat/sleepy-ai.git",
         },
         keywords: ["ai", "coding", "agent", "cli", "sleepy"],
         os: [item.os],
@@ -314,7 +314,7 @@ if (Script.release) {
   // Also publish to Xiaomi FDS (fast download in mainland China; the install
   // script reads from there). Skipped when credentials are absent so local
   // release builds still work.
-  if (process.env.MIMO_FDS_AK && process.env.MIMO_FDS_SK) {
+  if (process.env.SLEEPY_FDS_AK && process.env.SLEEPY_FDS_SK) {
     const { uploadFile } = await import("./fds-upload.ts")
     const archives = fs.readdirSync("dist").filter((f) => f.endsWith(".zip") || f.endsWith(".tar.gz"))
     for (const file of archives) {
@@ -326,7 +326,7 @@ if (Script.release) {
     await uploadFile(tmpLatest, "releases/latest", "text/plain")
     console.log(`Uploaded to FDS: releases/latest -> ${Script.version}`)
   } else {
-    console.log("Skipping FDS upload (MIMO_FDS_AK / MIMO_FDS_SK not set)")
+    console.log("Skipping FDS upload (SLEEPY_FDS_AK / SLEEPY_FDS_SK not set)")
   }
 }
 

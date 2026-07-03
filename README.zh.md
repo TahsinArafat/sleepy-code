@@ -1,7 +1,7 @@
 <h1 align="center">SleepyCode</h1>
 
 <p align="center">
-  <img src="assets/readme/mimocode-banner.png" alt="SleepyCode" width="700">
+  <img src="assets/readme/sleepycode-banner.png" alt="SleepyCode" width="700">
 </p>
 
 <p align="center"><strong>Sleepy Code: Where Models and Agents Co-Evolve</strong></p>
@@ -32,7 +32,7 @@ curl -fsSL https://www.sleepyai.org/install | bash
 npm install -g @sleepy-ai/cli
 
 # 运行
-mimo
+sleepy
 ```
 
 首次启动自动引导配置。支持：
@@ -70,7 +70,7 @@ sudo apt install xsel
 
 除了 SleepyCode，小米 Sleepy 模型也能在 Cursor、Cline、Zed 等各种 Agent 和编程工具里使用。
 
-**[awesome-mimo-agent](https://github.com/XiaomiMiMo/awesome-mimo-agent)** 收集了这些工具接入 Sleepy 模型的配置教程，想换个工具试试 Sleepy 的话可以去看看。也欢迎把你自己的接入方式提 PR 分享出来。
+**[awesome-sleepy-agent](https://github.com/XiaomiSleepy/awesome-sleepy-agent)** 收集了这些工具接入 Sleepy 模型的配置教程，想换个工具试试 Sleepy 的话可以去看看。也欢迎把你自己的接入方式提 PR 分享出来。
 
 ---
 
@@ -151,7 +151,7 @@ export PULSE_SERVER=tcp:127.0.0.1:4713
 <details>
 <summary><strong>非 Sleepy 渠道语音输入（OpenRouter、内部 API 等）</strong></summary>
 
-语音输入可通过 `voice` 配置字段路由到其他 OpenAI 兼容 provider。ASR 模型（`mimo-v2.5-asr`）仅在 Sleepy 平台可用；语音控制模式（`mimo-v2.5`）可通过 OpenRouter 等中转平台使用。
+语音输入可通过 `voice` 配置字段路由到其他 OpenAI 兼容 provider。ASR 模型（`sleepy-v2.5-asr`）仅在 Sleepy 平台可用；语音控制模式（`sleepy-v2.5`）可通过 OpenRouter 等中转平台使用。
 
 **OpenRouter（仅语音控制）：**
 
@@ -159,7 +159,7 @@ export PULSE_SERVER=tcp:127.0.0.1:4713
 ```jsonc
 {
   "voice": {
-    "control_model": "openrouter/xiaomi/mimo-v2.5"
+    "control_model": "openrouter/xiaomi/sleepy-v2.5"
   }
 }
 ```
@@ -174,21 +174,21 @@ export PULSE_SERVER=tcp:127.0.0.1:4713
         "apiKey": "sk-..."
       },
       "models": {
-        "xiaomi/mimo-v2.5-asr": { "name": "MiMo-V2.5-ASR" },
-        "xiaomi/mimo-v2.5": { "name": "MiMo-V2.5" }
+        "xiaomi/sleepy-v2.5-asr": { "name": "Sleepy-V2.5-ASR" },
+        "xiaomi/sleepy-v2.5": { "name": "Sleepy-V2.5" }
       }
     }
   },
   "voice": {
-    "asr_model": "internal/xiaomi/mimo-v2.5-asr",
-    "control_model": "internal/xiaomi/mimo-v2.5"
+    "asr_model": "internal/xiaomi/sleepy-v2.5-asr",
+    "control_model": "internal/xiaomi/sleepy-v2.5"
   }
 }
 ```
 
 自定义 provider 必须在 `models` 中注册至少一个模型才能被系统识别。`voice.*_model` 中的模型名直接传给 API，不必与注册的 key 完全一致。OpenRouter 等内置 provider 无需手动配置 models。
 
-> **注意**：自定义 provider 注册的模型会出现在主模型选择列表中。请勿将 ASR 专用模型（如 `mimo-v2.5-asr`）用作编程主模型。
+> **注意**：自定义 provider 注册的模型会出现在主模型选择列表中。请勿将 ASR 专用模型（如 `sleepy-v2.5-asr`）用作编程主模型。
 
 </details>
 
@@ -201,7 +201,7 @@ export PULSE_SERVER=tcp:127.0.0.1:4713
 
 ## 配置
 
-通过项目目录下的 `.mimocode/mimocode.json`（或全局 `~/.config/mimocode/mimocode.json`）配置。主要选项包括：
+通过项目目录下的 `.sleepycode/sleepycode.json`（或全局 `~/.config/sleepycode/sleepycode.json`）配置。主要选项包括：
 
 - Provider 和模型选择
 - Agent 权限和自定义 Agent
@@ -220,7 +220,7 @@ Max Mode（并行 best-of-N 推理 + 裁判选优）可通过配置中的 `exper
 临时目录之所以经常被用到，是因为多数模型习惯把它当作临时工作空间（比如临时脚本、一次性数据文件）。
 如果你信任所处环境、不想每次都被询问，可以在配置中主动放行：
 
-```json title=".mimocode/mimocode.json"
+```json title=".sleepycode/sleepycode.json"
 {
   "$schema": "https://opencode.ai/config.json",
   "permission": {

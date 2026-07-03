@@ -91,6 +91,7 @@ import { nextThinkingMode, reasoningSummary, useThinkingMode, type ThinkingMode 
 import { TuiPluginRuntime } from "../../plugin"
 import { DialogGoUpsell } from "../../component/dialog-go-upsell"
 import { DialogTokenPlan } from "../../component/dialog-token-plan"
+import { BannerSessionExpired } from "../../component/banner-session-expired"
 import { SessionRetry } from "@/session/retry"
 import { getRevertDiffFiles } from "../../util/revert-diff"
 
@@ -149,6 +150,10 @@ export function Session() {
       questions().length === 0,
   )
   const disabled = createMemo(() => permissions().length > 0 || questions().length > 0)
+  const [sessionExpired, setSessionExpired] = createSignal<{ expired: boolean; message: string }>({
+    expired: false,
+    message: "",
+  })
 
   const pending = createMemo(() => {
     return messages().findLast((x) => x.role === "assistant" && !x.time.completed)?.id
@@ -368,14 +373,18 @@ export function Session() {
 
   const local = useLocal()
 
-  // Free "mimo-auto" channel: on a rate-limit / queue ("too many requests"),
+  // Free "sleepy-auto" channel: on a rate-limit / queue ("too many requests"),
   // nudge the user toward a Token Plan — at most once per 24h.
+  event.on("tui.session.expired", (evt) => {
+    setSessionExpired({ expired: true, message: evt.properties.message })
+  })
+
   event.on("session.status", (evt) => {
     if (evt.properties.sessionID !== route.sessionID) return
     if (evt.properties.status.type !== "retry") return
     if (!SessionRetry.isRateLimitMessage(evt.properties.status.message)) return
     const model = local.model.current()
-    if (!model || model.providerID !== "mimo" || model.modelID !== "mimo-auto") return
+    if (!model || model.providerID !== "sleepy" || model.modelID !== "sleepy-auto") return
     if (dialog.stack.length > 0) return
 
     const seen = kv.get(QUEUE_TOKEN_PLAN_LAST_SEEN_AT)
@@ -1245,20 +1254,23 @@ export function Session() {
               <Show when={session()?.parentID || currentAgentID() !== "main"}>
                 <SubagentFooter />
               </Show>
+              <Show when={sessionExpired().expired}>
+                <BannerSessionExpired message={sessionExpired().message} />
+              </Show>
               <Show when={visible()}>
                 <TuiPluginRuntime.Slot
                   name="session_prompt"
                   mode="replace"
                   session_id={route.sessionID}
                   visible={visible()}
-                  disabled={disabled()}
+                  disabled={disabled() || sessionExpired().expired}
                   on_submit={toBottom}
                   ref={bind}
                 >
                   <Prompt
                     visible={visible()}
                     ref={bind}
-                    disabled={disabled()}
+                    disabled={disabled() || sessionExpired().expired}
                     onSubmit={() => {
                       toBottom()
                     }}
@@ -1403,8 +1415,8 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
   const [copyHover, setCopyHover] = createSignal(false)
   const messages = createMemo(() => sync.data.message[props.message.sessionID]?.[props.message.agentID ?? "main"] ?? [])
   const model = createMemo(() =>
-    props.message.modelID === "mimo-auto"
-      ? t("tui.model.mimo_auto.name")
+    props.message.modelID === "sleepy-auto"
+      ? t("tui.model.sleepy_auto.name")
       : Model.name(ctx.providers(), props.message.providerID, props.message.modelID),
   )
 

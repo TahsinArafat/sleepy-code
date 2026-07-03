@@ -26,6 +26,7 @@ import type {
   EventTuiCommandExecute,
   EventTuiInstructionsLoaded,
   EventTuiPromptAppend,
+  EventTuiSessionExpired,
   EventTuiSessionSelect,
   EventTuiToastShow,
   ExperimentalConsoleGetResponses,
@@ -4549,6 +4550,7 @@ export class Tui extends HeyApiClient {
         | EventTuiToastShow
         | EventTuiSessionSelect
         | EventTuiInstructionsLoaded
+        | EventTuiSessionExpired
     },
     options?: Options<never, ThrowOnError>,
   ) {

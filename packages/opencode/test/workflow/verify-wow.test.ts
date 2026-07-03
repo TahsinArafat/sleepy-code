@@ -1,6 +1,6 @@
 // Real-LLM end-to-end verification of workflow-of-workflows.
 //
-// Unlike the mock-LLM suite, this drives WorkflowRuntime against the REAL mimo
+// Unlike the mock-LLM suite, this drives WorkflowRuntime against the REAL sleepy
 // router so genuine model agents run inside nested child workflows. It exercises
 // the headline features TOGETHER: saved-name resolution, A→B dataflow hand-off,
 // the file primitives (writeFile/glob/readFile/exists), and nested concurrency.
@@ -24,16 +24,16 @@ import { makeLayer } from "./lib"
 
 const ENABLED = process.env["RUN_WOW_VERIFY"] === "1"
 
-// The real mimo provider, read verbatim from the user's config (key included).
+// The real sleepy provider, read verbatim from the user's config (key included).
 function realConfig() {
   const home = path.join(os.homedir(), ".config", "sleepycode", "sleepycode.json")
   const full = JSON.parse(readFileSync(home, "utf8"))
-  const mimo = full.provider?.mimo
-  if (!mimo?.options?.apiKey) throw new Error("no mimo provider/key in " + home)
-  return { provider: { mimo } }
+  const sleepy = full.provider?.sleepy
+  if (!sleepy?.options?.apiKey) throw new Error("no sleepy provider/key in " + home)
+  return { provider: { sleepy } }
 }
 
-const realRef = { providerID: ProviderID.make("sleepy"), modelID: ModelID.make("mimo-v2.5-pro") }
+const realRef = { providerID: ProviderID.make("sleepy"), modelID: ModelID.make("sleepy-v2.5-pro") }
 
 const it = testEffect(makeLayer())
 const maybe = ENABLED ? it.live : it.live.skip

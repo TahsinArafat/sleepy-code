@@ -110,7 +110,7 @@ const cli = yargs(args)
     Heap.start()
 
     process.env.AGENT = "1"
-    process.env.MIMOCODE = "1"
+    process.env.SLEEPYCODE = "1"
     process.env.SLEEPYCODE_PID = String(process.pid)
 
     Log.Default.info("sleepycode", {

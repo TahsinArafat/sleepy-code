@@ -1,7 +1,7 @@
 <h1 align="center">SleepyCode</h1>
 
 <p align="center">
-  <img src="assets/readme/mimocode-banner.png" alt="SleepyCode" width="700">
+  <img src="assets/readme/sleepycode-banner.png" alt="SleepyCode" width="700">
 </p>
 
 <p align="center"><strong>Sleepy Code: Where Models and Agents Co-Evolve</strong></p>
@@ -73,7 +73,7 @@ some older non-Unicode programs to display incorrectly, so treat it as a workaro
 
 Beyond SleepyCode, Sleepy models also work in other agents and coding tools like Cursor, Cline, and Zed.
 
-**[awesome-mimo-agent](https://github.com/XiaomiMiMo/awesome-mimo-agent)** collects setup guides for using Sleepy in those tools — worth a look if you want to try Sleepy elsewhere. Contributions welcome: open a PR to add your own setup.
+**[awesome-sleepy-agent](https://github.com/XiaomiSleepy/awesome-sleepy-agent)** collects setup guides for using Sleepy in those tools — worth a look if you want to try Sleepy elsewhere. Contributions welcome: open a PR to add your own setup.
 
 ---
 
@@ -154,7 +154,7 @@ export PULSE_SERVER=tcp:127.0.0.1:4713
 <details>
 <summary><strong>Non-Sleepy voice providers (OpenRouter, internal API, etc.)</strong></summary>
 
-Voice input can route through other OpenAI-compatible providers via the `voice` config field. The ASR model (`mimo-v2.5-asr`) is only available on MiMo's platform; voice control mode (`mimo-v2.5`) is available on OpenRouter and compatible relay platforms.
+Voice input can route through other OpenAI-compatible providers via the `voice` config field. The ASR model (`sleepy-v2.5-asr`) is only available on Sleepy's platform; voice control mode (`sleepy-v2.5`) is available on OpenRouter and compatible relay platforms.
 
 **OpenRouter (voice control only):**
 
@@ -162,7 +162,7 @@ Use `/connect` to sign in to OpenRouter, then add to your config:
 ```jsonc
 {
   "voice": {
-    "control_model": "openrouter/xiaomi/mimo-v2.5"
+    "control_model": "openrouter/xiaomi/sleepy-v2.5"
   }
 }
 ```
@@ -177,21 +177,21 @@ Use `/connect` to sign in to OpenRouter, then add to your config:
         "apiKey": "sk-..."
       },
       "models": {
-        "xiaomi/mimo-v2.5-asr": { "name": "MiMo-V2.5-ASR" },
-        "xiaomi/mimo-v2.5": { "name": "MiMo-V2.5" }
+        "xiaomi/sleepy-v2.5-asr": { "name": "Sleepy-V2.5-ASR" },
+        "xiaomi/sleepy-v2.5": { "name": "Sleepy-V2.5" }
       }
     }
   },
   "voice": {
-    "asr_model": "internal/xiaomi/mimo-v2.5-asr",
-    "control_model": "internal/xiaomi/mimo-v2.5"
+    "asr_model": "internal/xiaomi/sleepy-v2.5-asr",
+    "control_model": "internal/xiaomi/sleepy-v2.5"
   }
 }
 ```
 
 Custom providers must register at least one model in their `models` field to be recognized. The model names in `voice.*_model` are sent directly to the API — they don't need to match the registered model keys exactly.
 
-> **Note:** Models registered under a custom provider will appear in the model selection list. Don't use ASR-only models (e.g. `mimo-v2.5-asr`) as your primary coding model.
+> **Note:** Models registered under a custom provider will appear in the model selection list. Don't use ASR-only models (e.g. `sleepy-v2.5-asr`) as your primary coding model.
 
 </details>
 
@@ -204,7 +204,7 @@ Custom providers must register at least one model in their `models` field to be 
 
 ## Configuration
 
-SleepyCode is configured via `.mimocode/mimocode.json` in the project directory (or `~/.config/mimocode/mimocode.json` globally). Key options include:
+SleepyCode is configured via `.sleepycode/sleepycode.json` in the project directory (or `~/.config/sleepycode/sleepycode.json` globally). Key options include:
 
 - Provider and model selection
 - Agent permissions and custom agents
@@ -226,7 +226,7 @@ The temp directory comes up often because most models reach for it as scratch sp
 a quick script, a throwaway data file). If you trust your environment and would rather not
 be prompted each time, you can opt in by allowing it in your config:
 
-```json title=".mimocode/mimocode.json"
+```json title=".sleepycode/sleepycode.json"
 {
   "$schema": "https://opencode.ai/config.json",
   "permission": {

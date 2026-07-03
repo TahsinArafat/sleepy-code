@@ -283,7 +283,7 @@
       "name": "@sleepy-ai/cli",
       "version": "0.1.4",
       "bin": {
-        "sleepy": "./bin/mimo",
+        "sleepy": "./bin/sleepy",
       },
       "dependencies": {
         "@actions/core": "1.11.1",

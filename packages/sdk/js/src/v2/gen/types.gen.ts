@@ -243,6 +243,13 @@ export type EventTuiInstructionsLoaded = {
   }
 }
 
+export type EventTuiSessionExpired = {
+  type: "tui.session.expired"
+  properties: {
+    message: string
+  }
+}
+
 export type EventWorkflowPhase = {
   type: "workflow.phase"
   properties: {
@@ -1526,6 +1533,7 @@ export type GlobalEvent = {
     | EventTuiToastShow
     | EventTuiSessionSelect
     | EventTuiInstructionsLoaded
+    | EventTuiSessionExpired
     | EventWorkflowPhase
     | EventWorkflowLog
     | EventWorkflowStarted
@@ -2711,6 +2719,7 @@ export type Event =
   | EventTuiToastShow
   | EventTuiSessionSelect
   | EventTuiInstructionsLoaded
+  | EventTuiSessionExpired
   | EventWorkflowPhase
   | EventWorkflowLog
   | EventWorkflowStarted
@@ -6365,6 +6374,7 @@ export type TuiPublishData = {
     | EventTuiToastShow
     | EventTuiSessionSelect
     | EventTuiInstructionsLoaded
+    | EventTuiSessionExpired
   path?: never
   query?: {
     directory?: string

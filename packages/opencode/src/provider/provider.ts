@@ -30,6 +30,7 @@ import { withStatics } from "@/util/schema"
 
 import * as ProviderTransform from "./transform"
 import { ModelID, ProviderID } from "./schema"
+import { createSessionChecker } from "./session-check"
 
 const log = Log.create({ service: "provider" })
 const DEFAULT_CONTEXT_WINDOW = 1_000_000
@@ -1152,8 +1153,11 @@ const layer: Layer.Layer<
                     refresh_token: refreshRes.refresh_token,
                     expires_at: Date.now() + (refreshRes.expires_in ?? 3600) * 1000,
                   }
+                  const tmpPath = sleepyConfigPath + ".tmp"
                   yield* Effect.promise(() =>
-                    fsNode.writeFile(sleepyConfigPath, JSON.stringify(updated, null, 2)).catch(() => {}),
+                    fsNode.writeFile(tmpPath, JSON.stringify(updated, null, 2)).then(() => fsNode.rename(tmpPath, sleepyConfigPath)).catch((err) => {
+                      log.error("failed to persist refreshed token — next startup will re-refresh", { error: err.message })
+                    }),
                   )
                 }
               } catch {}
@@ -1311,27 +1315,9 @@ const layer: Layer.Layer<
 
               // Start background session polling — checks every 5 minutes if the session is still valid.
               // Network errors are ignored (offline = still valid). 401/403 = session revoked/expired.
-              const SESSION_CHECK_MS = 5 * 60 * 1000
-              const checkSession = async () => {
-                try {
-                  const res = await fetch(`${dashboardUrl}/api/auth/session/check`, {
-                    method: "POST",
-                    headers: { Authorization: `Bearer ${token}` },
-                    signal: AbortSignal.timeout(10_000),
-                  })
-                  if (res.status === 401 || res.status === 403) {
-                    const body = await res.json().catch(() => ({}))
-                    log.warn("session expired — run 'sleepy login' to re-authenticate", { reason: body.reason, status: res.status })
-                    console.error("\n⚠  Session expired. Your login has been revoked or expired.")
-                    console.error("   Run 'sleepy login' to re-authenticate.\n")
-                  }
-                } catch {
-                  // Network error or timeout — user is offline, ignore
-                }
-              }
-              setInterval(checkSession, SESSION_CHECK_MS)
-              // Run first check after 30 seconds to avoid slowing startup
-              setTimeout(checkSession, 30_000)
+              // Proactively refreshes tokens before expiry to prevent mid-session logouts.
+              const checker = createSessionChecker({ dashboardUrl, token, configPath: sleepyConfigPath })
+              checker.start()
             }
           }
         } catch {

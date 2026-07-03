@@ -23,32 +23,32 @@ describe("voice", () => {
 
     test("parses custom asr_model correctly", async () => {
       const { resolveVoiceConfig } = await import("../../../src/cli/cmd/tui/util/voice")
-      const result = resolveVoiceConfig({ asr_model: "newapi/mimo-v2.5-asr" })
+      const result = resolveVoiceConfig({ asr_model: "newapi/sleepy-v2.5-asr" })
       expect(result.asr.providerID).toBe("newapi")
-      expect(result.asr.model).toBe("mimo-v2.5-asr")
+      expect(result.asr.model).toBe("sleepy-v2.5-asr")
       expect(result.control.providerID).toBe("sleepy")
       expect(result.control.model).toBe("sleepy-v2.5")
     })
 
     test("parses custom control_model correctly", async () => {
       const { resolveVoiceConfig } = await import("../../../src/cli/cmd/tui/util/voice")
-      const result = resolveVoiceConfig({ control_model: "openrouter/xiaomi/mimo-v2.5" })
+      const result = resolveVoiceConfig({ control_model: "openrouter/xiaomi/sleepy-v2.5" })
       expect(result.asr.providerID).toBe("sleepy")
       expect(result.asr.model).toBe("sleepy-v2.5-asr")
       expect(result.control.providerID).toBe("openrouter")
-      expect(result.control.model).toBe("xiaomi/mimo-v2.5")
+      expect(result.control.model).toBe("xiaomi/sleepy-v2.5")
     })
 
     test("supports both custom asr and control", async () => {
       const { resolveVoiceConfig } = await import("../../../src/cli/cmd/tui/util/voice")
       const result = resolveVoiceConfig({
-        asr_model: "newapi/mimo-v2.5-asr",
-        control_model: "openrouter/xiaomi/mimo-v2.5",
+        asr_model: "newapi/sleepy-v2.5-asr",
+        control_model: "openrouter/xiaomi/sleepy-v2.5",
       })
       expect(result.asr.providerID).toBe("newapi")
-      expect(result.asr.model).toBe("mimo-v2.5-asr")
+      expect(result.asr.model).toBe("sleepy-v2.5-asr")
       expect(result.control.providerID).toBe("openrouter")
-      expect(result.control.model).toBe("xiaomi/mimo-v2.5")
+      expect(result.control.model).toBe("xiaomi/sleepy-v2.5")
     })
 
     test("handles model IDs with multiple slashes", async () => {
@@ -60,9 +60,9 @@ describe("voice", () => {
 
     test("treats no-slash model ID as model with default provider", async () => {
       const { resolveVoiceConfig } = await import("../../../src/cli/cmd/tui/util/voice")
-      const result = resolveVoiceConfig({ asr_model: "mimo-v2.5-asr" })
+      const result = resolveVoiceConfig({ asr_model: "sleepy-v2.5-asr" })
       expect(result.asr.providerID).toBe("sleepy")
-      expect(result.asr.model).toBe("mimo-v2.5-asr")
+      expect(result.asr.model).toBe("sleepy-v2.5-asr")
     })
   })
 
@@ -78,7 +78,7 @@ describe("voice", () => {
       const { resolveCredentials } = await import("../../../src/cli/cmd/tui/util/voice")
       const result = resolveCredentials(
         [makeProvider("openrouter", { key: "sk-or-123", modelUrl: "https://openrouter.ai/api/v1" })],
-        { providerID: "openrouter", model: "xiaomi/mimo-v2.5" },
+        { providerID: "openrouter", model: "xiaomi/sleepy-v2.5" },
       )
       expect(result).toEqual({ apiKey: "sk-or-123", baseUrl: "https://openrouter.ai/api/v1" })
     })
@@ -87,7 +87,7 @@ describe("voice", () => {
       const { resolveCredentials } = await import("../../../src/cli/cmd/tui/util/voice")
       const result = resolveCredentials(
         [makeProvider("internal", { apiKey: "sk-int", baseURL: "https://internal.example.com/v1" })],
-        { providerID: "internal", model: "mimo-v2.5" },
+        { providerID: "internal", model: "sleepy-v2.5" },
       )
       expect(result).toEqual({ apiKey: "sk-int", baseUrl: "https://internal.example.com/v1" })
     })
@@ -96,7 +96,7 @@ describe("voice", () => {
       const { resolveCredentials } = await import("../../../src/cli/cmd/tui/util/voice")
       const result = resolveCredentials(
         [makeProvider("openrouter", { key: "sk-or-123", modelUrl: "https://openrouter.ai/api/v1" })],
-        { providerID: "openrouter", model: "xiaomi/mimo-v2.5" },
+        { providerID: "openrouter", model: "xiaomi/sleepy-v2.5" },
       )
       expect("apiKey" in result && result.baseUrl).toBe("https://openrouter.ai/api/v1")
     })
@@ -334,7 +334,7 @@ describe("voice", () => {
         audio: new Int16Array(100),
         apiKey: "test-key",
         baseUrl: "http://127.0.0.1:1",
-        model: "custom-provider/mimo-v2.5",
+        model: "custom-provider/sleepy-v2.5",
         currentText: "hello",
         currentAgent: "build",
         availableAgents: ["build", "plan"],

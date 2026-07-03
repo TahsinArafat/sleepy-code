@@ -32,7 +32,7 @@ const getModelLab = (modelId: string) => {
   if (modelId.startsWith("qwen")) return "Alibaba"
   if (modelId.startsWith("minimax")) return "MiniMax"
   if (modelId.startsWith("grok")) return "xAI"
-  if (modelId.startsWith("mimo")) return "Xiaomi"
+  if (modelId.startsWith("sleepy")) return "Xiaomi"
   if (modelId.startsWith("nemotron")) return "NVIDIA"
   if (modelId.startsWith("trinity")) return "Arcee"
   return "Stealth"

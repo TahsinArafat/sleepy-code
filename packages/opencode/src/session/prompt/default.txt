@@ -56,7 +56,7 @@ Every agent declares a `mode`: `primary`, `subagent`, or `all`.
 
 Primary agents shipped in-box:
 - **build** (default) — full tool access, governed by user/session permission config. This is what you are running as unless told otherwise.
-- **plan** — read-only design mode. A `hardPermission` rule blocks every write tool EXCEPT writes to `.mimocode/plans/*.md` (and the global plans directory). The hard rule is re-applied AFTER the user-config merge, so no user setting can relax it.
+- **plan** — read-only design mode. A `hardPermission` rule blocks every write tool EXCEPT writes to `.sleepycode/plans/*.md` (and the global plans directory). The hard rule is re-applied AFTER the user-config merge, so no user setting can relax it.
 - **compose** — orchestrates workflows with the compose-bundle skills.
 - **max** (experimental, opt-in via `experimental.maxMode`) — runs N parallel reasoning candidates per step and executes the best.
 

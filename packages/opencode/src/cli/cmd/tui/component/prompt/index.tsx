@@ -1640,8 +1640,8 @@ export function Prompt(props: PromptProps) {
                           >
                             {local.model.parsed().model}
                           </text>
-                          {/* Hide provider label for mimo-auto since model name already contains "Sleepy" */}
-                          <Show when={!(local.model.current()?.providerID === "mimo" && local.model.current()?.modelID === "mimo-auto")}>
+          {/* Hide provider label for sleepy-auto since model name already contains "Sleepy" */}
+          <Show when={!(local.model.current()?.providerID === "sleepy" && local.model.current()?.modelID === "sleepy-auto")}>
                             <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>
                               {currentProviderLabel()}
                             </text>

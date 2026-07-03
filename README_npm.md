@@ -24,7 +24,7 @@ curl -fsSL https://www.sleepyai.org/install | bash
 npm install -g @sleepy-ai/cli
 
 # Run
-mimo
+sleepy
 ```
 
 The first launch guides you through configuration automatically. Supported options:
@@ -127,7 +127,7 @@ export PULSE_SERVER=tcp:127.0.0.1:4713
 
 ## Configuration
 
-SleepyCode is configured via `.mimocode/mimocode.json` in the project directory (or `~/.config/mimocode/mimocode.json` globally). Key options include:
+SleepyCode is configured via `.sleepycode/sleepycode.json` in the project directory (or `~/.config/sleepycode/sleepycode.json` globally). Key options include:
 
 - Provider and model selection
 - Agent permissions and custom agents
@@ -141,8 +141,8 @@ Max Mode (parallel best-of-N reasoning with judge selection) can be enabled via 
 
 ## License
 
-Source code is licensed under the [MIT License](https://github.com/XiaomiMiMo/MiMo-Code/blob/main/LICENSE).
+Source code is licensed under the [MIT License](https://github.com/XiaomiSleepy/Sleepy-Code/blob/main/LICENSE).
 
-Use of SleepyCode is also subject to the [Use Restrictions](https://github.com/XiaomiMiMo/MiMo-Code/blob/main/USE_RESTRICTIONS.md).
+Use of SleepyCode is also subject to the [Use Restrictions](https://github.com/XiaomiSleepy/Sleepy-Code/blob/main/USE_RESTRICTIONS.md).
 Use of Sleepy-hosted services is subject to the [Sleepy Terms of Service](https://www.sleepyai.org/terms).
 Use of the Sleepy name, logo, and trademarks is subject to the Sleepy Trademark Policy.

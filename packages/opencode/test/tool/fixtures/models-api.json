@@ -4394,8 +4394,8 @@
         "open_weights": false,
         "limit": { "context": 200000, "output": 8200 }
       },
-      "mimo-v2-flash": {
-        "id": "mimo-v2-flash",
+      "sleepy-v2-flash": {
+        "id": "sleepy-v2-flash",
         "name": "Mimo-V2-Flash",
         "attachment": false,
         "reasoning": true,
@@ -4786,8 +4786,8 @@
         "open_weights": false,
         "limit": { "context": 204800, "output": 128000 }
       },
-      "xiaomi/mimo-v2-flash": {
-        "id": "xiaomi/mimo-v2-flash",
+      "xiaomi/sleepy-v2-flash": {
+        "id": "xiaomi/sleepy-v2-flash",
         "name": "Xiaomi/Mimo-V2-Flash",
         "attachment": false,
         "reasoning": true,
@@ -5241,7 +5241,7 @@
       "XiaomiMiMo/MiMo-V2-Flash": {
         "id": "XiaomiMiMo/MiMo-V2-Flash",
         "name": "MiMo V2 Flash",
-        "family": "mimo",
+        "family": "sleepy",
         "attachment": false,
         "reasoning": true,
         "tool_call": true,
@@ -7072,10 +7072,10 @@
         "cost": { "input": 0.57, "output": 2.3 },
         "limit": { "context": 131072, "output": 131072 }
       },
-      "xiaomimimo/mimo-v2-flash": {
-        "id": "xiaomimimo/mimo-v2-flash",
+      "xiaomisleepy/sleepy-v2-flash": {
+        "id": "xiaomisleepy/sleepy-v2-flash",
         "name": "XiaomiMiMo/MiMo-V2-Flash",
-        "family": "mimo",
+        "family": "sleepy",
         "attachment": false,
         "reasoning": true,
         "tool_call": true,
@@ -11367,10 +11367,10 @@
         "limit": { "context": 400000, "input": 272000, "output": 128000 },
         "provider": { "npm": "@ai-sdk/openai" }
       },
-      "mimo-v2-flash-free": {
-        "id": "mimo-v2-flash-free",
+      "sleepy-v2-flash-free": {
+        "id": "sleepy-v2-flash-free",
         "name": "MiMo V2 Flash Free",
-        "family": "mimo-flash-free",
+        "family": "sleepy-flash-free",
         "attachment": false,
         "reasoning": true,
         "tool_call": true,
@@ -11544,10 +11544,10 @@
         "cost": { "input": 0.6, "output": 3, "cache_read": 0.08 },
         "limit": { "context": 262144, "output": 65536 }
       },
-      "mimo-v2-omni-free": {
-        "id": "mimo-v2-omni-free",
+      "sleepy-v2-omni-free": {
+        "id": "sleepy-v2-omni-free",
         "name": "MiMo V2 Omni Free",
-        "family": "mimo-omni-free",
+        "family": "sleepy-omni-free",
         "attachment": true,
         "reasoning": true,
         "tool_call": true,
@@ -12198,10 +12198,10 @@
         "limit": { "context": 1048576, "output": 65536 },
         "provider": { "npm": "@ai-sdk/google" }
       },
-      "mimo-v2-pro-free": {
-        "id": "mimo-v2-pro-free",
+      "sleepy-v2-pro-free": {
+        "id": "sleepy-v2-pro-free",
         "name": "MiMo V2 Pro Free",
-        "family": "mimo-pro-free",
+        "family": "sleepy-pro-free",
         "attachment": true,
         "reasoning": true,
         "tool_call": true,
@@ -17646,7 +17646,7 @@
       "XiaomiMiMo/MiMo-V2-Flash": {
         "id": "XiaomiMiMo/MiMo-V2-Flash",
         "name": "MiMo V2 Flash",
-        "family": "mimo",
+        "family": "sleepy",
         "attachment": false,
         "reasoning": true,
         "tool_call": true,
@@ -22053,10 +22053,10 @@
         "cost": { "input": 0.57, "output": 2.3 },
         "limit": { "context": 131072, "output": 131072 }
       },
-      "xiaomimimo/mimo-v2-flash": {
-        "id": "xiaomimimo/mimo-v2-flash",
+      "xiaomisleepy/sleepy-v2-flash": {
+        "id": "xiaomisleepy/sleepy-v2-flash",
         "name": "XiaomiMiMo/MiMo-V2-Flash",
-        "family": "mimo",
+        "family": "sleepy",
         "attachment": false,
         "reasoning": true,
         "tool_call": true,
@@ -27859,8 +27859,8 @@
         "cost": { "input": 0.09, "output": 0.3, "cache_read": 0.04 },
         "limit": { "context": 262144, "output": 262144 }
       },
-      "xiaomi/mimo-v2-flash": {
-        "id": "xiaomi/mimo-v2-flash",
+      "xiaomi/sleepy-v2-flash": {
+        "id": "xiaomi/sleepy-v2-flash",
         "name": "Xiaomi: MiMo-V2-Flash",
         "attachment": false,
         "reasoning": true,
@@ -31139,10 +31139,10 @@
         "cost": { "input": 0.2, "output": 0.8 },
         "limit": { "context": 262000, "output": 262000 }
       },
-      "xiaomi/mimo-v2-pro": {
-        "id": "xiaomi/mimo-v2-pro",
+      "xiaomi/sleepy-v2-pro": {
+        "id": "xiaomi/sleepy-v2-pro",
         "name": "MiMo-V2-Pro",
-        "family": "mimo",
+        "family": "sleepy",
         "attachment": false,
         "reasoning": true,
         "tool_call": true,
@@ -31156,10 +31156,10 @@
         "cost": { "input": 1, "output": 3 },
         "limit": { "context": 1048576, "output": 65536 }
       },
-      "xiaomi/mimo-v2-omni": {
-        "id": "xiaomi/mimo-v2-omni",
+      "xiaomi/sleepy-v2-omni": {
+        "id": "xiaomi/sleepy-v2-omni",
         "name": "MiMo-V2-Omni",
-        "family": "mimo",
+        "family": "sleepy",
         "attachment": true,
         "reasoning": true,
         "tool_call": true,
@@ -31173,10 +31173,10 @@
         "cost": { "input": 0.4, "output": 2 },
         "limit": { "context": 262144, "output": 65536 }
       },
-      "xiaomi/mimo-v2-flash": {
-        "id": "xiaomi/mimo-v2-flash",
+      "xiaomi/sleepy-v2-flash": {
+        "id": "xiaomi/sleepy-v2-flash",
         "name": "MiMo-V2-Flash",
-        "family": "mimo",
+        "family": "sleepy",
         "attachment": false,
         "reasoning": true,
         "tool_call": true,
@@ -32776,8 +32776,8 @@
         "cost": { "input": 0.1, "output": 0.4 },
         "limit": { "context": 1020000, "output": 1020000 }
       },
-      "xiaomi/mimo-v2-flash-free": {
-        "id": "xiaomi/mimo-v2-flash-free",
+      "xiaomi/sleepy-v2-flash-free": {
+        "id": "xiaomi/sleepy-v2-flash-free",
         "name": "MiMo-V2-Flash Free",
         "attachment": false,
         "reasoning": true,
@@ -32791,8 +32791,8 @@
         "cost": { "input": 0, "output": 0 },
         "limit": { "context": 262000, "output": 64000 }
       },
-      "xiaomi/mimo-v2-pro": {
-        "id": "xiaomi/mimo-v2-pro",
+      "xiaomi/sleepy-v2-pro": {
+        "id": "xiaomi/sleepy-v2-pro",
         "name": "MiMo V2 Pro",
         "attachment": true,
         "reasoning": true,
@@ -32806,8 +32806,8 @@
         "cost": { "input": 1.5, "output": 4.5 },
         "limit": { "context": 1000000, "output": 256000 }
       },
-      "xiaomi/mimo-v2-omni": {
-        "id": "xiaomi/mimo-v2-omni",
+      "xiaomi/sleepy-v2-omni": {
+        "id": "xiaomi/sleepy-v2-omni",
         "name": "MiMo V2 Omni",
         "attachment": true,
         "reasoning": false,
@@ -32821,8 +32821,8 @@
         "cost": { "input": 0.4, "output": 2 },
         "limit": { "context": 265000, "output": 265000 }
       },
-      "xiaomi/mimo-v2-flash": {
-        "id": "xiaomi/mimo-v2-flash",
+      "xiaomi/sleepy-v2-flash": {
+        "id": "xiaomi/sleepy-v2-flash",
         "name": "MiMo-V2-Flash",
         "attachment": false,
         "reasoning": true,
@@ -36002,14 +36002,14 @@
     "id": "xiaomi",
     "env": ["XIAOMI_API_KEY"],
     "npm": "@ai-sdk/openai-compatible",
-    "api": "https://api.xiaomimimo.com/v1",
+    "api": "https://api.xiaomisleepy.com/v1",
     "name": "Xiaomi",
-    "doc": "https://platform.xiaomimimo.com/#/docs",
+    "doc": "https://platform.xiaomisleepy.com/#/docs",
     "models": {
-      "mimo-v2-pro": {
-        "id": "mimo-v2-pro",
+      "sleepy-v2-pro": {
+        "id": "sleepy-v2-pro",
         "name": "MiMo-V2-Pro",
-        "family": "mimo",
+        "family": "sleepy",
         "attachment": true,
         "reasoning": true,
         "tool_call": true,
@@ -36023,10 +36023,10 @@
         "cost": { "input": 1, "output": 3, "cache_read": 0.2 },
         "limit": { "context": 1000000, "output": 128000 }
       },
-      "mimo-v2-omni": {
-        "id": "mimo-v2-omni",
+      "sleepy-v2-omni": {
+        "id": "sleepy-v2-omni",
         "name": "MiMo-V2-Omni",
-        "family": "mimo",
+        "family": "sleepy",
         "attachment": true,
         "reasoning": true,
         "tool_call": true,
@@ -36040,10 +36040,10 @@
         "cost": { "input": 0.4, "output": 2, "cache_read": 0.08 },
         "limit": { "context": 256000, "output": 128000 }
       },
-      "mimo-v2-flash": {
-        "id": "mimo-v2-flash",
+      "sleepy-v2-flash": {
+        "id": "sleepy-v2-flash",
         "name": "MiMo-V2-Flash",
-        "family": "mimo",
+        "family": "sleepy",
         "attachment": false,
         "reasoning": true,
         "tool_call": true,
@@ -37761,7 +37761,7 @@
       "XiaomiMiMo/MiMo-V2-Flash": {
         "id": "XiaomiMiMo/MiMo-V2-Flash",
         "name": "MiMo-V2-Flash",
-        "family": "mimo",
+        "family": "sleepy",
         "attachment": false,
         "reasoning": true,
         "tool_call": true,
@@ -40932,10 +40932,10 @@
         "cost": { "input": 0.6, "output": 2.4, "cache_read": 0.03, "cache_write": 0.375 },
         "limit": { "context": 0, "output": 0 }
       },
-      "xiaomi/mimo-v2-pro": {
-        "id": "xiaomi/mimo-v2-pro",
+      "xiaomi/sleepy-v2-pro": {
+        "id": "xiaomi/sleepy-v2-pro",
         "name": "MiMo V2 Pro",
-        "family": "mimo",
+        "family": "sleepy",
         "attachment": false,
         "reasoning": true,
         "tool_call": true,
@@ -40947,10 +40947,10 @@
         "cost": { "input": 1, "output": 3, "cache_read": 0.19999999999999998 },
         "limit": { "context": 1000000, "output": 128000 }
       },
-      "xiaomi/mimo-v2-flash": {
-        "id": "xiaomi/mimo-v2-flash",
+      "xiaomi/sleepy-v2-flash": {
+        "id": "xiaomi/sleepy-v2-flash",
         "name": "MiMo V2 Flash",
-        "family": "mimo",
+        "family": "sleepy",
         "attachment": false,
         "reasoning": true,
         "tool_call": true,
@@ -59650,10 +59650,10 @@
         "cost": { "input": 0.49299999999999994, "output": 0.49299999999999994 },
         "limit": { "context": 16384, "input": 16384, "output": 8192 }
       },
-      "xiaomi/mimo-v2-flash-thinking": {
-        "id": "xiaomi/mimo-v2-flash-thinking",
+      "xiaomi/sleepy-v2-flash-thinking": {
+        "id": "xiaomi/sleepy-v2-flash-thinking",
         "name": "MiMo V2 Flash (Thinking)",
-        "family": "mimo",
+        "family": "sleepy",
         "attachment": false,
         "reasoning": false,
         "tool_call": false,
@@ -59665,10 +59665,10 @@
         "cost": { "input": 0.102, "output": 0.306 },
         "limit": { "context": 256000, "input": 256000, "output": 32768 }
       },
-      "xiaomi/mimo-v2-flash-thinking-original": {
-        "id": "xiaomi/mimo-v2-flash-thinking-original",
+      "xiaomi/sleepy-v2-flash-thinking-original": {
+        "id": "xiaomi/sleepy-v2-flash-thinking-original",
         "name": "MiMo V2 Flash (Thinking) Original",
-        "family": "mimo",
+        "family": "sleepy",
         "attachment": false,
         "reasoning": false,
         "tool_call": false,
@@ -59680,10 +59680,10 @@
         "cost": { "input": 0.102, "output": 0.306 },
         "limit": { "context": 256000, "input": 256000, "output": 32768 }
       },
-      "xiaomi/mimo-v2-flash-original": {
-        "id": "xiaomi/mimo-v2-flash-original",
+      "xiaomi/sleepy-v2-flash-original": {
+        "id": "xiaomi/sleepy-v2-flash-original",
         "name": "MiMo V2 Flash Original",
-        "family": "mimo",
+        "family": "sleepy",
         "attachment": false,
         "reasoning": false,
         "tool_call": false,
@@ -59695,10 +59695,10 @@
         "cost": { "input": 0.102, "output": 0.306 },
         "limit": { "context": 256000, "input": 256000, "output": 32768 }
       },
-      "xiaomi/mimo-v2-flash": {
-        "id": "xiaomi/mimo-v2-flash",
+      "xiaomi/sleepy-v2-flash": {
+        "id": "xiaomi/sleepy-v2-flash",
         "name": "MiMo V2 Flash",
-        "family": "mimo",
+        "family": "sleepy",
         "attachment": false,
         "reasoning": false,
         "tool_call": false,

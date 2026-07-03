@@ -41,7 +41,7 @@ async function setupCcFile(ccBase: string, slug: string, name: string, body: str
 const noLazyReconcile = { checkpoint: { memory_reconcile_on_search: false } }
 
 describe("memory.search with cc scope", () => {
-  it.live("ranks CC and mimo hits in one result list", () =>
+  it.live("ranks CC and sleepy hits in one result list", () =>
     provideTmpdirInstance(
       () =>
         Effect.gen(function* () {

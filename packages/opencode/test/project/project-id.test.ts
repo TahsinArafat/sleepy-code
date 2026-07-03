@@ -7,7 +7,7 @@ import { ProjectID } from "../../src/project/schema"
 
 describe("resolveMainGitDir", () => {
   test("returns .git directory for main repo", async () => {
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "mimo-pid-"))
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "sleepy-pid-"))
     const dotgit = path.join(tmp, ".git")
     await fs.mkdir(dotgit)
     expect(resolveMainGitDir(tmp)).toBe(dotgit)
@@ -15,13 +15,13 @@ describe("resolveMainGitDir", () => {
   })
 
   test("returns null for non-git directory", async () => {
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "mimo-pid-nogit-"))
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "sleepy-pid-nogit-"))
     expect(resolveMainGitDir(tmp)).toBeNull()
     await fs.rm(tmp, { recursive: true })
   })
 
   test("resolves worktree to main .git", async () => {
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "mimo-pid-wt-"))
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "sleepy-pid-wt-"))
     const mainRepo = path.join(tmp, "main")
     const mainGit = path.join(mainRepo, ".git")
     const worktree = path.join(tmp, "worktree")
@@ -36,7 +36,7 @@ describe("resolveMainGitDir", () => {
 
 describe("resolveProjectId", () => {
   test("generates new UUID for git project without cache", async () => {
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "mimo-pid-new-"))
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "sleepy-pid-new-"))
     await fs.mkdir(path.join(tmp, ".git"))
     const id = resolveProjectId(tmp)
     expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
@@ -46,7 +46,7 @@ describe("resolveProjectId", () => {
   })
 
   test("reuses cached UUID for git project", async () => {
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "mimo-pid-cache-"))
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "sleepy-pid-cache-"))
     await fs.mkdir(path.join(tmp, ".git"))
     await fs.writeFile(path.join(tmp, ".git", "sleepycode-project-id"), "fixed-uuid-1234")
     expect(resolveProjectId(tmp)).toBe(ProjectID.make("fixed-uuid-1234"))
@@ -54,7 +54,7 @@ describe("resolveProjectId", () => {
   })
 
   test("generates new UUID for non-git directory", async () => {
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "mimo-pid-nogit-new-"))
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "sleepy-pid-nogit-new-"))
     const id = resolveProjectId(tmp)
     expect(id).toMatch(/^[0-9a-f]{8}-/i)
     const cached = await fs.readFile(path.join(tmp, ".sleepycode-project-id"), "utf-8")

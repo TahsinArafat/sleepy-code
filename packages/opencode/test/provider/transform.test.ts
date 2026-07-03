@@ -147,11 +147,11 @@ describe("ProviderTransform.maxOutputTokens", () => {
     release_date: "2026-01-01",
   }
 
-  test("uses 128K for mimo provider models", () => {
+  test("uses 128K for sleepy provider models", () => {
     expect(
       ProviderTransform.maxOutputTokens({
         ...baseModel,
-        id: ModelID.make("mimo-auto"),
+        id: ModelID.make("sleepy-auto"),
         providerID: ProviderID.make("sleepy"),
       }),
     ).toBe(128_000)
@@ -161,13 +161,13 @@ describe("ProviderTransform.maxOutputTokens", () => {
     expect(
       ProviderTransform.maxOutputTokens({
         ...baseModel,
-        id: ModelID.make("mimo-coder"),
+        id: ModelID.make("sleepy-coder"),
         providerID: ProviderID.make("xiaomi"),
       }),
     ).toBe(128_000)
   })
 
-  test("keeps the default cap for non-mimo models", () => {
+  test("keeps the default cap for non-sleepy models", () => {
     expect(ProviderTransform.maxOutputTokens({ ...baseModel, limit: { context: 1_000_000, output: 64_000 } })).toBe(
       32_000,
     )
@@ -2149,10 +2149,10 @@ describe("ProviderTransform.message - cache control on gateway", () => {
 
   test("openai-compatible with claude in model id does NOT trigger caching", () => {
     const model = createModel({
-      id: "mimorouter/claude-opus-4-8",
+      id: "sleepyrouter/claude-opus-4-8",
       providerID: "custom",
       api: {
-        id: "mimorouter/claude-opus-4-8",
+        id: "sleepyrouter/claude-opus-4-8",
         url: "https://proxy.example.com/v1",
         npm: "@ai-sdk/openai-compatible",
       },
