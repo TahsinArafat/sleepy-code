@@ -1133,7 +1133,7 @@ const layer: Layer.Layer<
             const sleepyConfig = JSON.parse(sleepyConfigRaw)
             const endpoint = sleepyConfig.endpoint
             let token = sleepyConfig.access_token || sleepyConfig.token
-            const dashboardUrl = sleepyConfig.dashboard_url || "http://localhost:3000"
+            const dashboardUrl = sleepyConfig.dashboard_url || "https://www.sleepyai.org"
 
             if (token && sleepyConfig.refresh_token && sleepyConfig.expires_at && Date.now() > sleepyConfig.expires_at) {
               try {

@@ -163,11 +163,11 @@ describe("login command", () => {
     delete process.env.SLEEPY_DASHBOARD_URL
   })
 
-  test("Falls back to localhost:3000 when env var not set", () => {
+  test("Falls back to www.sleepyai.org when env var not set", () => {
     delete process.env.SLEEPY_DASHBOARD_URL
     const { getDashboardUrl } = require("../../src/cli/cmd/login")
 
     const url = getDashboardUrl()
-    expect(url).toBe("http://localhost:3000")
+    expect(url).toBe("https://www.sleepyai.org")
   })
 })

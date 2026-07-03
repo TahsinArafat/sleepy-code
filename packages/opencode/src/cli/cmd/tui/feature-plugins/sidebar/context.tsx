@@ -88,7 +88,7 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
         if (!fs.existsSync(configPath)) return
         const sleepyConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"))
         const token = sleepyConfig.access_token || sleepyConfig.token
-        const dashboardUrl = sleepyConfig.dashboard_url || "http://localhost:3000"
+        const dashboardUrl = sleepyConfig.dashboard_url || "https://www.sleepyai.org"
 
         if (!token) return
 

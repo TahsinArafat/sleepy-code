@@ -10,7 +10,7 @@ import * as prompts from "@clack/prompts"
 
 const PORT = 40821
 
-export const getDashboardUrl = (): string => process.env.SLEEPY_DASHBOARD_URL || "http://localhost:3000"
+export const getDashboardUrl = (): string => process.env.SLEEPY_DASHBOARD_URL || "https://www.sleepyai.org"
 
 export const buildAuthorizeUrl = (dashboardUrl: string): string => {
   const params = new URLSearchParams({
