@@ -5,11 +5,6 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Version (e.g. 0.1.6)"
-        required: true
-        default: "0.1.6"
 
 permissions:
   contents: write
@@ -26,21 +21,19 @@ jobs:
         working-directory: packages/opencode
         run: bun install
 
-      - name: Create draft release first
+      - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION=$(node -p "require('./packages/opencode/package.json').version")
-          echo "VERSION=v${VERSION}" >> "$GITHUB_ENV"
-          gh release create "v${VERSION}" \
-            --title "v${VERSION}" \
-            --generate-notes \
-            --draft
+          echo "TAG=v${VERSION}" >> "$GITHUB_ENV"
+          gh release create "v${VERSION}" --title "v${VERSION}" --generate-notes --draft
 
-      - name: Build binaries and upload to release
+      - name: Build and upload binaries
         working-directory: packages/opencode
         env:
-          SLEEPYCODE_CHANNEL: prod
+          SLEEPYCODE_CHANNEL: latest
+          SLEEPYCODE_RELEASE: "true"
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: bun run script/build.ts
@@ -48,4 +41,4 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release edit "$VERSION" --draft=false
+        run: gh release edit "$TAG" --draft=false
