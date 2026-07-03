@@ -1,8 +1,8 @@
 import { Title } from "@solidjs/meta"
 import { A, createAsync, query } from "@solidjs/router"
 import { createMemo, For, Show } from "solid-js"
-import { Database, desc } from "@mimo-ai/console-core/drizzle/index.js"
-import { BenchmarkTable } from "@mimo-ai/console-core/schema/benchmark.sql.js"
+import { Database, desc } from "@sleepy-ai/console-core/drizzle/index.js"
+import { BenchmarkTable } from "@sleepy-ai/console-core/schema/benchmark.sql.js"
 import { useI18n } from "~/context/i18n"
 
 interface BenchmarkResult {
