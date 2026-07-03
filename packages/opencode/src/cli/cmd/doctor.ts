@@ -20,13 +20,20 @@ const checkCredentials = async (): Promise<{ endpoint: string; email: string; ti
 
   try {
     const raw = await fs.readFile(configPath, "utf-8")
-    const config = JSON.parse(raw) as { endpoint: string; email: string; tier: string; access_token: string }
+    const config = JSON.parse(raw)
+
+    const isExpired = config.expires_at ? Date.now() > config.expires_at : false
+    const hasRefresh = !!config.refresh_token
 
     UI.println(UI.Style.TEXT_SUCCESS_BOLD + "✓ Credentials found" + UI.Style.TEXT_NORMAL)
     UI.println(UI.Style.TEXT_DIM + "  Endpoint: " + UI.Style.TEXT_NORMAL + config.endpoint)
     UI.println(UI.Style.TEXT_DIM + "  Email:    " + UI.Style.TEXT_NORMAL + config.email)
     UI.println(UI.Style.TEXT_DIM + "  Tier:     " + UI.Style.TEXT_NORMAL + config.tier)
-    UI.println(UI.Style.TEXT_DIM + "  Token:    " + UI.Style.TEXT_NORMAL + maskToken(config.access_token))
+    UI.println(UI.Style.TEXT_DIM + "  Token:    " + UI.Style.TEXT_NORMAL + maskToken(config.access_token || config.token))
+    UI.println(UI.Style.TEXT_DIM + "  Expires:  " + UI.Style.TEXT_NORMAL + (isExpired ? UI.Style.TEXT_DANGER_BOLD + "EXPIRED" : UI.Style.TEXT_SUCCESS_BOLD + "valid"))
+    if (hasRefresh) {
+      UI.println(UI.Style.TEXT_DIM + "  Refresh:  " + UI.Style.TEXT_NORMAL + "available" + (isExpired ? " (will auto-refresh)" : ""))
+    }
     UI.println("")
 
     return { endpoint: config.endpoint, email: config.email, tier: config.tier }

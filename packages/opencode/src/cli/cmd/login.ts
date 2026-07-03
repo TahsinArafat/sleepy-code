@@ -33,6 +33,8 @@ export const exchangeCodeForToken = async (code: string, dashboardUrl: string) =
 
   return response.json() as Promise<{
     access_token: string
+    refresh_token: string
+    expires_in: number
     endpoint: string
     tier: string
     email: string
@@ -41,7 +43,7 @@ export const exchangeCodeForToken = async (code: string, dashboardUrl: string) =
 
 export const writeConfig = async (
   configPath: string,
-  data: { access_token: string; endpoint: string; tier: string; email: string; dashboard_url?: string }
+  data: { access_token: string; refresh_token?: string; expires_at?: number; endpoint: string; tier: string; email: string; dashboard_url?: string }
 ) => {
   await fs.mkdir(path.dirname(configPath), { recursive: true })
   await fs.writeFile(configPath, JSON.stringify(data, null, 2), "utf-8")
@@ -214,7 +216,12 @@ const handleAuthCodeFlow = async () => {
 
   const configPath = path.join(Global.Path.config, "gateway.json")
   await writeConfig(configPath, {
-    ...tokenData,
+    access_token: tokenData.access_token,
+    refresh_token: tokenData.refresh_token,
+    expires_at: Date.now() + (tokenData.expires_in ?? 3600) * 1000,
+    endpoint: tokenData.endpoint,
+    tier: tokenData.tier,
+    email: tokenData.email,
     dashboard_url: dashboardUrl,
   })
 
@@ -226,24 +233,68 @@ const handleAuthCodeFlow = async () => {
   UI.println("")
 }
 
+export interface DeviceCodeResponse {
+  device_code: string
+  user_code: string
+  verification_uri: string
+  verification_uri_complete: string
+  interval: number
+}
+
+export interface DeviceTokenResponse {
+  access_token: string
+  refresh_token: string
+  expires_in: number
+  endpoint: string
+  tier: string
+  email: string
+}
+
+export const startDeviceFlow = async (dashboardUrl: string): Promise<DeviceCodeResponse> => {
+  const res = await fetch(`${dashboardUrl}/api/auth/oauth/device`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ client_id: "sleepy-cli" }),
+  })
+  if (!res.ok) throw new Error("Failed to start device login")
+  return res.json()
+}
+
+export const pollDeviceToken = async (
+  dashboardUrl: string,
+  deviceCode: string,
+): Promise<DeviceTokenResponse> => {
+  const res = await fetch(`${dashboardUrl}/api/auth/oauth/device/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+      device_code: deviceCode,
+      client_id: "sleepy-cli",
+    }),
+  })
+
+  if (res.ok) return res.json()
+
+  const body = await res.json()
+  const err: any = new Error(body.error || "Unknown error")
+  err.code = body.error
+  throw err
+}
+
 const handleDeviceFlow = async () => {
   UI.empty()
   UI.println(UI.Style.TEXT_HIGHLIGHT_BOLD + "Starting device login..." + UI.Style.TEXT_NORMAL)
 
   const dashboardUrl = getDashboardUrl()
-
-  const deviceRes = await fetch(`${dashboardUrl}/api/auth/oauth/device`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ client_id: "sleepy-cli" }),
-  })
-
-  if (!deviceRes.ok) {
+  let deviceData: DeviceCodeResponse
+  try {
+    deviceData = await startDeviceFlow(dashboardUrl)
+  } catch {
     UI.println(UI.Style.TEXT_DANGER_BOLD + "Failed to start device login." + UI.Style.TEXT_NORMAL)
     return
   }
 
-  const deviceData = await deviceRes.json()
   const { device_code, user_code, verification_uri_complete, interval } = deviceData
 
   UI.println("")
@@ -265,53 +316,34 @@ const handleDeviceFlow = async () => {
   UI.println(UI.Style.TEXT_DIM + "Waiting for authorization..." + UI.Style.TEXT_NORMAL)
 
   const pollMs = (interval ?? 5) * 1000
-  let tokenData = null
+  let tokenData: DeviceTokenResponse | null = null
 
   while (true) {
     await sleep(pollMs)
 
-    const pollRes = await fetch(`${dashboardUrl}/api/auth/oauth/device/token`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-        device_code,
-        client_id: "sleepy-cli",
-      }),
-    })
-
-    if (pollRes.ok) {
-      tokenData = await pollRes.json()
+    try {
+      tokenData = await pollDeviceToken(dashboardUrl, device_code)
       break
-    }
-
-    const pollBody = await pollRes.json()
-
-    if (pollBody.error === "authorization_pending") {
-      continue
-    }
-
-    if (pollBody.error === "slow_down") {
-      continue
-    }
-
-    if (pollBody.error === "expired_token") {
-      UI.println(UI.Style.TEXT_DANGER_BOLD + "Login expired. Please try again." + UI.Style.TEXT_NORMAL)
+    } catch (err: any) {
+      if (err.code === "authorization_pending" || err.code === "slow_down") continue
+      if (err.code === "expired_token") {
+        UI.println(UI.Style.TEXT_DANGER_BOLD + "Login expired. Please try again." + UI.Style.TEXT_NORMAL)
+        return
+      }
+      if (err.code === "access_denied") {
+        UI.println(UI.Style.TEXT_DANGER_BOLD + "Login denied." + UI.Style.TEXT_NORMAL)
+        return
+      }
+      UI.println(UI.Style.TEXT_DANGER_BOLD + "Login failed: " + (err.message || "Unknown error") + UI.Style.TEXT_NORMAL)
       return
     }
-
-    if (pollBody.error === "access_denied") {
-      UI.println(UI.Style.TEXT_DANGER_BOLD + "Login denied." + UI.Style.TEXT_NORMAL)
-      return
-    }
-
-    UI.println(UI.Style.TEXT_DANGER_BOLD + "Login failed: " + (pollBody.error || "Unknown error") + UI.Style.TEXT_NORMAL)
-    return
   }
 
   const configPath = path.join(Global.Path.config, "gateway.json")
   await writeConfig(configPath, {
     access_token: tokenData.access_token,
+    refresh_token: tokenData.refresh_token,
+    expires_at: Date.now() + (tokenData.expires_in ?? 3600) * 1000,
     endpoint: tokenData.endpoint,
     tier: tokenData.tier,
     email: tokenData.email,
