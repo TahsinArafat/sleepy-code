@@ -281,7 +281,7 @@
     },
     "packages/opencode": {
       "name": "@sleepy-ai/cli",
-      "version": "0.1.4",
+      "version": "0.1.7",
       "bin": {
         "sleepy": "./bin/sleepy",
       },
