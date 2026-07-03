@@ -1,8 +1,8 @@
 <h1 align="center">SleepyCode</h1>
 
-<p align="center">
+<!-- <p align="center">
   <img src="assets/readme/sleepycode-banner.png" alt="SleepyCode" width="700">
-</p>
+</p> -->
 
 <p align="center"><strong>Sleepy Code: Where Models and Agents Co-Evolve</strong></p>
 
