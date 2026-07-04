@@ -1,5 +1,5 @@
 import { Prompt, type PromptRef } from "@tui/component/prompt"
-import { createEffect, createMemo, createSignal, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, onCleanup, onMount, Show } from "solid-js"
 import path from "path"
 import fs from "fs"
 import { Logo } from "../component/logo"
@@ -38,10 +38,11 @@ export function Home() {
   const plainTerminal = isPlainTerminal()
   const dialog = useDialog()
   const { theme } = useTheme()
-  const [isAuthed, setAuthed] = createSignal(fs.existsSync(path.join(Global.Path.config, "gateway.json")))
-  createEffect(() => {
-    dialog.stack.length
-    setAuthed(fs.existsSync(path.join(Global.Path.config, "gateway.json")))
+  const gateConfigPath = path.join(Global.Path.config, "gateway.json")
+  const [isAuthed, setAuthed] = createSignal(fs.existsSync(gateConfigPath))
+  onMount(() => {
+    const interval = setInterval(() => setAuthed(fs.existsSync(gateConfigPath)), 2000)
+    onCleanup(() => clearInterval(interval))
   })
   const bgImagePath = createMemo(() => {
     const filename = kv.get("background_image")
