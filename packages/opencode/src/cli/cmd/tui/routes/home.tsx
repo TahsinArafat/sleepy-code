@@ -22,6 +22,7 @@ import { useDialog } from "../ui/dialog"
 import { DialogSleepyLogin } from "../component/dialog-sleepy-login"
 import { useTheme } from "../context/theme"
 import { TextAttributes } from "@opentui/core"
+import { useExit } from "../context/exit"
 
 let once = false
 
@@ -38,6 +39,7 @@ export function Home() {
   const plainTerminal = isPlainTerminal()
   const dialog = useDialog()
   const { theme } = useTheme()
+  const exit = useExit()
   const gateConfigPath = path.join(Global.Path.config, "gateway.json")
   const [isAuthed, setAuthed] = createSignal(fs.existsSync(gateConfigPath))
   onMount(() => {
@@ -166,7 +168,7 @@ export function Home() {
         </Show>
           <Show when={!plainTerminal}>
             <Show when={!isAuthed()}>
-              <box paddingTop={2} alignItems="center" flexShrink={0}>
+              <box paddingTop={2} alignItems="center" gap={2} flexShrink={0}>
                 <box
                   paddingLeft={3}
                   paddingRight={3}
@@ -178,6 +180,16 @@ export function Home() {
                   <text fg={theme.background} attributes={TextAttributes.BOLD}>
                     Login with Browser
                   </text>
+                </box>
+                <box
+                  paddingLeft={3}
+                  paddingRight={3}
+                  paddingTop={1}
+                  paddingBottom={1}
+                  borderColor={theme.textMuted}
+                  onMouseUp={() => exit()}
+                >
+                  <text fg={theme.textMuted}>Exit</text>
                 </box>
               </box>
             </Show>
