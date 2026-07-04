@@ -43,8 +43,9 @@ export function Home() {
   const exit = useExit()
   const gateConfigPath = path.join(Global.Path.config, "gateway.json")
   const [isAuthed, setAuthed] = createSignal(fs.existsSync(gateConfigPath))
+  const modelReady = createMemo(() => isAuthed() && local.model.current() != null)
   onMount(() => {
-    const interval = setInterval(() => setAuthed(fs.existsSync(gateConfigPath)), 2000)
+    const interval = setInterval(() => setAuthed(fs.existsSync(gateConfigPath)), 1000)
     onCleanup(() => clearInterval(interval))
   })
   useKeyboard((evt) => {
@@ -154,6 +155,7 @@ export function Home() {
                 >
                   <Prompt
                     ref={bind}
+                    disabled={!modelReady()}
                     workspaceID={project.workspace.current()}
                     right={<TuiPluginRuntime.Slot name="home_prompt_right" workspace_id={project.workspace.current()} />}
                     placeholders={placeholder}
@@ -163,6 +165,7 @@ export function Home() {
             >
               <Prompt
                 ref={bind}
+                disabled={!modelReady()}
                 workspaceID={project.workspace.current()}
                 placeholders={placeholder}
               />
