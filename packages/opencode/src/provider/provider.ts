@@ -1234,14 +1234,14 @@ const layer: Layer.Layer<
               }
               log.info("sleepy provider injected from config", { endpoint, dashboardUrl })
 
-              // Start background session polling — checks every 5 minutes if the session is still valid.
-              // Network errors are ignored (offline = still valid). 401/403 = session revoked/expired.
+              // Start background session polling — checks every 10 minutes if the session is still valid.
               // Proactively refreshes tokens before expiry to prevent mid-session logouts.
               const checker = createSessionChecker({
                 dashboardUrl,
                 token,
                 configPath: sleepyConfigPath,
                 onRefreshed(newToken) {
+                  token = newToken
                   authHeader.Authorization = `Bearer ${newToken}`
                 },
               })
@@ -1590,7 +1590,7 @@ const layer: Layer.Layer<
 
             const sleepyProviderID = ProviderID.make("sleepy")
             const baseUrl = `${dashboardUrl}/api/v1`
-            const authHeader = `Bearer ${token}`
+            const authHeader = { Authorization: `Bearer ${token}` }
 
             for (const m of freshModels) {
               const existing = sleepy.models[m.modelId]
@@ -1621,7 +1621,7 @@ const layer: Layer.Layer<
                     npm: "@ai-sdk/openai-compatible",
                   },
                   status: "active",
-                  headers: { Authorization: authHeader },
+                  headers: authHeader,
                   options: {},
                   cost: {
                     input: m.inputPrice ?? 0.0015,
