@@ -143,6 +143,7 @@ export function Home() {
               >
                 <Prompt
                   ref={bind}
+                  disabled={!isAuthed()}
                   workspaceID={project.workspace.current()}
                   right={<TuiPluginRuntime.Slot name="home_prompt_right" workspace_id={project.workspace.current()} />}
                   placeholders={placeholder}
@@ -152,6 +153,7 @@ export function Home() {
           >
             <Prompt
               ref={bind}
+              disabled={!isAuthed()}
               workspaceID={project.workspace.current()}
               placeholders={placeholder}
             />
