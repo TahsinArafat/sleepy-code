@@ -451,6 +451,9 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     }
   })
 
+  // Show Home/onboarding when not authenticated (with login dialog on top)
+  const showHome = createMemo(() => ready() && (isAuthenticated() || route.data.type === "home"))
+
   command.register(() => [
     {
       title: t("tui.command.session.list.title"),
@@ -1155,12 +1158,12 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         <TimeToFirstDraw />
       </Show>
       <Show when={ready()}>
-        <Show when={isAuthenticated()}>
+        <Show when={showHome()}>
           <Switch>
             <Match when={route.data.type === "home"}>
               <Home />
             </Match>
-            <Match when={route.data.type === "session"}>
+            <Match when={route.data.type === "session" && isAuthenticated()}>
               <Session />
             </Match>
           </Switch>
