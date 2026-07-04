@@ -38,7 +38,11 @@ export function Home() {
   const plainTerminal = isPlainTerminal()
   const dialog = useDialog()
   const { theme } = useTheme()
-  const isAuthed = createMemo(() => fs.existsSync(path.join(Global.Path.config, "gateway.json")))
+  const [isAuthed, setAuthed] = createSignal(fs.existsSync(path.join(Global.Path.config, "gateway.json")))
+  createEffect(() => {
+    dialog.stack.length
+    setAuthed(fs.existsSync(path.join(Global.Path.config, "gateway.json")))
+  })
   const bgImagePath = createMemo(() => {
     const filename = kv.get("background_image")
     if (!filename || typeof filename !== "string") return undefined
