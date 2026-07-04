@@ -1214,88 +1214,9 @@ const layer: Layer.Layer<
                   }
                 }
               } else {
-                sleepyModels = {
-                  smart: {
-                    id: ModelID.make("smart"),
-                    providerID: sleepyProviderID,
-                    name: "Sleepy Smart Routing (Auto)",
-                    family: "sleepy",
-                    api: { id: "smart", url: baseUrl, npm: "@ai-sdk/openai-compatible" },
-                    status: "active",
-                    headers: { Authorization: authHeader },
-                    options: {},
-                    cost: { input: 0.0015, output: 0.005, cache: { read: 0, write: 0 } },
-                    limit: { context: 128000, output: 4096 },
-                    capabilities: {
-                      temperature: true, reasoning: true, attachment: true, toolcall: true,
-                      input: { text: true, audio: false, image: true, video: false, pdf: true },
-                      output: { text: true, audio: false, image: false, video: false, pdf: false },
-                      interleaved: false,
-                    },
-                    release_date: "",
-                    variants: {},
-                  },
-                  cheap: {
-                    id: ModelID.make("cheap"),
-                    providerID: sleepyProviderID,
-                    name: "Sleepy Eco Route (Low Cost)",
-                    family: "sleepy",
-                    api: { id: "cheap", url: baseUrl, npm: "@ai-sdk/openai-compatible" },
-                    status: "active",
-                    headers: { Authorization: authHeader },
-                    options: {},
-                    cost: { input: 0.00015, output: 0.0006, cache: { read: 0, write: 0 } },
-                    limit: { context: 128000, output: 4096 },
-                    capabilities: {
-                      temperature: true, reasoning: false, attachment: true, toolcall: true,
-                      input: { text: true, audio: false, image: true, video: false, pdf: true },
-                      output: { text: true, audio: false, image: false, video: false, pdf: false },
-                      interleaved: false,
-                    },
-                    release_date: "",
-                    variants: {},
-                  },
-                  fast: {
-                    id: ModelID.make("fast"),
-                    providerID: sleepyProviderID,
-                    name: "Sleepy Sprint Route (Low Latency)",
-                    family: "sleepy",
-                    api: { id: "fast", url: baseUrl, npm: "@ai-sdk/openai-compatible" },
-                    status: "active",
-                    headers: { Authorization: authHeader },
-                    options: {},
-                    cost: { input: 0.00015, output: 0.0006, cache: { read: 0, write: 0 } },
-                    limit: { context: 128000, output: 4096 },
-                    capabilities: {
-                      temperature: true, reasoning: false, attachment: true, toolcall: true,
-                      input: { text: true, audio: false, image: true, video: false, pdf: true },
-                      output: { text: true, audio: false, image: false, video: false, pdf: false },
-                      interleaved: false,
-                    },
-                    release_date: "",
-                    variants: {},
-                  },
-                  high: {
-                    id: ModelID.make("high"),
-                    providerID: sleepyProviderID,
-                    name: "Sleepy Reasoning Route (High Quality)",
-                    family: "sleepy",
-                    api: { id: "high", url: baseUrl, npm: "@ai-sdk/openai-compatible" },
-                    status: "active",
-                    headers: { Authorization: authHeader },
-                    options: {},
-                    cost: { input: 0.003, output: 0.015, cache: { read: 0, write: 0 } },
-                    limit: { context: 128000, output: 4096 },
-                    capabilities: {
-                      temperature: true, reasoning: true, attachment: true, toolcall: true,
-                      input: { text: true, audio: false, image: true, video: false, pdf: true },
-                      output: { text: true, audio: false, image: false, video: false, pdf: false },
-                      interleaved: false,
-                    },
-                    release_date: "",
-                    variants: {},
-                  },
-                }
+                // No models fetched — provider registered but empty.
+                // User must login so models can be fetched from the dashboard API.
+                sleepyModels = {}
               }
 
               database[sleepyProviderID] = {
@@ -2024,11 +1945,6 @@ const layer: Layer.Layer<
         if (!provider) continue
         if (!provider.models[entry.modelID]) continue
         return { providerID: entry.providerID, modelID: entry.modelID }
-      }
-
-      const sleepy = s.providers[ProviderID.make("sleepy")]
-      if (sleepy?.models[ModelID.make("smart")]) {
-        return { providerID: sleepy.id, modelID: ModelID.make("smart") }
       }
 
       const provider = Object.values(s.providers).find((p) => !cfg.provider || Object.keys(cfg.provider).includes(p.id))

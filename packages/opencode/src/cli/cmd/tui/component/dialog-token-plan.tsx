@@ -9,7 +9,7 @@ import { useDialog, type DialogContext } from "@tui/ui/dialog"
 
 const TOKEN_PLAN_URL = "https://www.sleepyai.org/token-plan"
 
-// Shown once per 24h when the free "sleepy-auto" channel hits a rate limit /
+// Shown once per 24h when the free channel hits a rate limit /
 // queue ("too many requests"). Modeled on DialogAgreement (same medium width).
 export function DialogTokenPlan(props: { onClose?: () => void }) {
   const dialog = useDialog()

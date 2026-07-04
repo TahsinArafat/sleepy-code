@@ -373,7 +373,7 @@ export function Session() {
 
   const local = useLocal()
 
-  // Free "sleepy-auto" channel: on a rate-limit / queue ("too many requests"),
+  // On a rate-limit / queue ("too many requests"),
   // nudge the user toward a Token Plan — at most once per 24h.
   event.on("tui.session.expired", (evt) => {
     setSessionExpired({ expired: true, message: evt.properties.message })
@@ -383,8 +383,6 @@ export function Session() {
     if (evt.properties.sessionID !== route.sessionID) return
     if (evt.properties.status.type !== "retry") return
     if (!SessionRetry.isRateLimitMessage(evt.properties.status.message)) return
-    const model = local.model.current()
-    if (!model || model.providerID !== "sleepy" || model.modelID !== "sleepy-auto") return
     if (dialog.stack.length > 0) return
 
     const seen = kv.get(QUEUE_TOKEN_PLAN_LAST_SEEN_AT)
@@ -1414,11 +1412,7 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
   const t = useLanguage().t
   const [copyHover, setCopyHover] = createSignal(false)
   const messages = createMemo(() => sync.data.message[props.message.sessionID]?.[props.message.agentID ?? "main"] ?? [])
-  const model = createMemo(() =>
-    props.message.modelID === "sleepy-auto"
-      ? t("tui.model.sleepy_auto.name")
-      : Model.name(ctx.providers(), props.message.providerID, props.message.modelID),
-  )
+  const model = createMemo(() => Model.name(ctx.providers(), props.message.providerID, props.message.modelID))
 
   const final = createMemo(() => {
     return props.message.finish && props.message.finish !== "tool-calls"

@@ -10,7 +10,7 @@ import { useDialog, type DialogContext } from "@tui/ui/dialog"
 export const FREE_AGREEMENT_KEY = "free_agreement_accepted"
 
 // Model IDs that count as "free" and require the one-time agreement.
-export const FREE_MODEL_IDS = new Set(["sleepy-auto", "sleepy-free"])
+export const FREE_MODEL_IDS = new Set<string>()
 
 const TERMS_URL = "https://www.sleepyai.org/terms"
 const PRIVACY_URL = "https://www.sleepyai.org/privacy"
