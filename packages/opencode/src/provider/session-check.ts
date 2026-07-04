@@ -6,11 +6,11 @@ import z from "zod"
 
 const log = Log.create({ service: "provider.session-check" })
 
-const SESSION_CHECK_MS = 5 * 60 * 1000 // 5 minutes
+const SESSION_CHECK_MS = 10 * 60 * 1000 // 10 minutes
 const REQUEST_TIMEOUT_MS = 10_000
 const INITIAL_DELAY_MS = 30_000
-// Proactively refresh when within 5 minutes of expiry
-const REFRESH_BUFFER_MS = 5 * 60 * 1000
+// Proactively refresh when within 10 minutes of expiry
+const REFRESH_BUFFER_MS = 10 * 60 * 1000
 
 export interface SessionCheckerOptions {
   dashboardUrl: string
@@ -45,23 +45,32 @@ async function writeConfig(configPath: string, config: GatewayConfig): Promise<v
   await fs.rename(tmpPath, configPath)
 }
 
+async function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 async function refreshToken(dashboardUrl: string, refreshTokenValue: string): Promise<{
   access_token: string
   refresh_token: string
   expires_in: number
 } | null> {
-  try {
-    const res = await fetch(`${dashboardUrl}/api/auth/token/refresh`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refresh_token: refreshTokenValue }),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    })
-    if (!res.ok) return null
-    return res.json()
-  } catch {
-    return null
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(`${dashboardUrl}/api/auth/token/refresh`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: refreshTokenValue }),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      })
+      if (res.ok) return res.json()
+      // Non-retryable — token is truly invalid
+      if (res.status === 401 || res.status === 403) return null
+    } catch {
+      // Network error — retry
+    }
+    if (attempt < 2) await sleep(2000 * (attempt + 1))
   }
+  return null
 }
 
 export function createSessionChecker(options: SessionCheckerOptions) {

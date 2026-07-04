@@ -430,7 +430,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   })
 
   const [isAuthenticated, setAuthenticated] = createSignal(false)
-  let loginDismissed = false
+  let pendingLoginCheck = false
   createEffect(() => {
     if (!ready() || sync.status !== "complete") return
     const configPath = path.join(Global.Path.config, "gateway.json")
@@ -438,14 +438,15 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       setAuthenticated(true)
       return
     }
-    if (!isAuthenticated() && !loginDismissed) {
-      loginDismissed = true
+    if (!isAuthenticated() && !pendingLoginCheck) {
+      pendingLoginCheck = true
       dialog.replace(() => <DialogSleepyLogin />)
     }
   })
   createEffect(() => {
-    if (dialog.stack.length === 0 && !isAuthenticated() && ready() && sync.status === "complete") {
-      loginDismissed = false
+    const configPath = path.join(Global.Path.config, "gateway.json")
+    if (dialog.stack.length === 0 && !isAuthenticated() && ready() && sync.status === "complete" && !fs.existsSync(configPath)) {
+      pendingLoginCheck = false
       dialog.replace(() => <DialogSleepyLogin />)
     }
   })
@@ -666,10 +667,11 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           fs.unlinkSync(configPath)
         }
         await sdk.client.auth.remove({ providerID: "sleepy" })
+        setAuthenticated(false)
+        pendingLoginCheck = false
         await sdk.client.instance.dispose()
         await sync.bootstrap()
         route.navigate({ type: "home" })
-        dialog.replace(() => <DialogSleepyLogin />)
         toast.show({ message: t("tui.command.logout.toast"), variant: "info" })
       },
       category: "provider",
