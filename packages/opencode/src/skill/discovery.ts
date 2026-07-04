@@ -31,7 +31,11 @@ export const layer: Layer.Layer<Service, never, AppFileSystem.Service | HttpClie
       const log = Log.create({ service: "skill-discovery" })
       const fs = yield* AppFileSystem.Service
       const http = HttpClient.filterStatusOk(withTransientReadRetry(yield* HttpClient.HttpClient))
-      const cache = path.join(Global.Path.cache, "skills")
+      const cachePath = Global.Path?.cache
+      if (!cachePath) {
+        return Service.of({ pull: () => Effect.succeed([]) })
+      }
+      const cache = path.join(cachePath, "skills")
 
       const download = Effect.fn("Discovery.download")(function* (url: string, dest: string) {
         if (yield* fs.exists(dest).pipe(Effect.orDie)) return true

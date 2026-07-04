@@ -1167,7 +1167,7 @@ const layer: Layer.Layer<
               sleepyCredentials = { token, dashboardUrl }
               const sleepyProviderID = ProviderID.make("sleepy")
               const baseUrl = `${dashboardUrl}/api/v1`
-              const authHeader = `Bearer ${token}`
+              const authHeader = { Authorization: `Bearer ${token}` }
 
               const fetchedModels = yield* Effect.promise(() => fetchModels(dashboardUrl, token))
 
@@ -1186,7 +1186,7 @@ const layer: Layer.Layer<
                       npm: "@ai-sdk/openai-compatible",
                     },
                     status: "active",
-                    headers: { Authorization: authHeader },
+                    headers: authHeader,
                     options: {},
                     cost: {
                       input: m.inputPrice ?? 0.0015,
@@ -1237,7 +1237,14 @@ const layer: Layer.Layer<
               // Start background session polling — checks every 5 minutes if the session is still valid.
               // Network errors are ignored (offline = still valid). 401/403 = session revoked/expired.
               // Proactively refreshes tokens before expiry to prevent mid-session logouts.
-              const checker = createSessionChecker({ dashboardUrl, token, configPath: sleepyConfigPath })
+              const checker = createSessionChecker({
+                dashboardUrl,
+                token,
+                configPath: sleepyConfigPath,
+                onRefreshed(newToken) {
+                  authHeader.Authorization = `Bearer ${newToken}`
+                },
+              })
               checker.start()
             }
           }
