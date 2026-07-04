@@ -440,6 +440,10 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
 
   // Show Home/onboarding when not authenticated (with login dialog on top)
   const showHome = createMemo(() => ready() && (isAuthenticated() || route.data.type === "home"))
+  createEffect(() => {
+    if (!showHome()) return
+    try { fs.appendFileSync("/tmp/sleepy-debug.log", JSON.stringify({ ts: new Date().toISOString(), event: "route", type: route.data.type, authed: isAuthenticated(), ready: ready(), showHome: showHome() }) + "\n") } catch {}
+  })
 
   command.register(() => [
     {
@@ -1150,7 +1154,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
               <Home />
             </Match>
             <Match when={route.data.type === "session" && isAuthenticated()}>
-              {(() => { try { fs.appendFileSync("/tmp/sleepy-debug.log", JSON.stringify({ts:new Date().toISOString(), event:"render-session", sid:route.data.sessionID, authed:isAuthenticated(), ready:ready(), showHome:showHome()})+"\n") } catch {} })()}
               <Session />
             </Match>
           </Switch>

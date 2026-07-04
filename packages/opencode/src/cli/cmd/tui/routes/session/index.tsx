@@ -14,6 +14,7 @@ import {
 } from "solid-js"
 import { Dynamic } from "solid-js/web"
 import path from "path"
+import fs from "fs"
 import { useCurrentAgentID, useRoute, useRouteData } from "@tui/context/route"
 import { useProject } from "@tui/context/project"
 import { useSync } from "@tui/context/sync"
@@ -151,6 +152,9 @@ export function Session() {
   )
   const loading = createMemo(() => !session() && (route.sessionID ?? "").length > 0)
   const disabled = createMemo(() => permissions().length > 0 || questions().length > 0)
+  createEffect(() => {
+    try { fs.appendFileSync("/tmp/sleepy-debug.log", JSON.stringify({ ts: new Date().toISOString(), event: "session-render", sid: route.sessionID, loading: loading(), hasSession: !!session(), syncStatus: sync.status, msgCount: messages().length, visible: visible(), gateway: fs.existsSync(path.join(Global.Path.config, "gateway.json")), }) + "\n") } catch {}
+  })
   const [sessionExpired, setSessionExpired] = createSignal<{ expired: boolean; message: string }>({
     expired: false,
     message: "",
