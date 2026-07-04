@@ -438,19 +438,15 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     }
   })
 
+  // Re-check auth on every bootstrap (login/logout triggers bootstrap)
   createEffect(() => {
-    void route.data.type
-    void isAuthenticated()
-    try { fs.appendFileSync("/tmp/sleepy-debug.log", JSON.stringify({ ts: new Date().toISOString(), event: "route-change", type: route.data.type, authed: isAuthenticated(), ready: ready(), gateway: fs.existsSync(path.join(Global.Path.config, "gateway.json")), syncStatus: sync.status }) + "\n") } catch {}
+    void sync.status
+    if (!ready() || sync.status === "loading") return
+    setAuthenticated(fs.existsSync(path.join(Global.Path.config, "gateway.json")))
   })
 
   // Show Home/onboarding when not authenticated (with login dialog on top)
-  const showHome = createMemo(() => ready() && (isAuthenticated() || route.data.type === "home"))
-  createEffect(() => {
-    void route.data.type
-    void isAuthenticated()
-    try { fs.appendFileSync("/tmp/sleepy-debug.log", JSON.stringify({ ts: new Date().toISOString(), event: "render", type: route.data.type, authed: isAuthenticated(), showHome: showHome() }) + "\n") } catch {}
-  })
+  const showHome = createMemo(() => ready() && (isAuthenticated() || route.data.type === "home" || route.data.type === "session"))
 
   command.register(() => [
     {
@@ -1160,7 +1156,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
             <Match when={route.data.type === "home"}>
               <Home />
             </Match>
-            <Match when={route.data.type === "session" && isAuthenticated()}>
+            <Match when={route.data.type === "session"}>
               <Session />
             </Match>
           </Switch>
