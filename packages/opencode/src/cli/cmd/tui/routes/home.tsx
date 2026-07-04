@@ -1,6 +1,7 @@
 import { Prompt, type PromptRef } from "@tui/component/prompt"
 import { createEffect, createMemo, createSignal, Show } from "solid-js"
 import path from "path"
+import fs from "fs"
 import { Logo } from "../component/logo"
 import { logoThin, logos, type LogoKey } from "@/cli/logo"
 import { StarryBackground } from "../component/starry-background"
@@ -17,6 +18,10 @@ import { useLanguage } from "@tui/context/language"
 import { TuiPluginRuntime } from "../plugin"
 import { Global } from "@/global"
 import { isPlainTerminal } from "../util/terminal"
+import { useDialog } from "../ui/dialog"
+import { DialogSleepyLogin } from "../component/dialog-sleepy-login"
+import { useTheme } from "../context/theme"
+import { TextAttributes } from "@opentui/core"
 
 let once = false
 
@@ -31,6 +36,9 @@ export function Home() {
   const kv = useKV()
   const t = useLanguage().t
   const plainTerminal = isPlainTerminal()
+  const dialog = useDialog()
+  const { theme } = useTheme()
+  const isAuthed = createMemo(() => fs.existsSync(path.join(Global.Path.config, "gateway.json")))
   const bgImagePath = createMemo(() => {
     const filename = kv.get("background_image")
     if (!filename || typeof filename !== "string") return undefined
@@ -151,6 +159,22 @@ export function Home() {
         </Show>
         <Show when={!plainTerminal}>
           <TuiPluginRuntime.Slot name="home_bottom" />
+        </Show>
+        <Show when={!isAuthed() && !plainTerminal}>
+          <box paddingTop={2} alignItems="center" flexShrink={0}>
+            <box
+              paddingLeft={3}
+              paddingRight={3}
+              paddingTop={1}
+              paddingBottom={1}
+              backgroundColor={theme.accent}
+              onMouseUp={() => dialog.replace(() => <DialogSleepyLogin />)}
+            >
+              <text fg={theme.background} attributes={TextAttributes.BOLD}>
+                Login with Browser
+              </text>
+            </box>
+          </box>
         </Show>
         <box flexGrow={1} minHeight={0} />
         <Toast />

@@ -430,17 +430,11 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   })
 
   const [isAuthenticated, setAuthenticated] = createSignal(false)
-  let loginDialogShown = false
   createEffect(() => {
     if (!ready() || sync.status !== "complete") return
     const configPath = path.join(Global.Path.config, "gateway.json")
     if (fs.existsSync(configPath)) {
       setAuthenticated(true)
-      return
-    }
-    if (!isAuthenticated() && !loginDialogShown) {
-      loginDialogShown = true
-      dialog.replace(() => <DialogSleepyLogin />)
     }
   })
 
@@ -664,7 +658,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         }
         await sdk.client.auth.remove({ providerID: "sleepy" })
         setAuthenticated(false)
-        loginDialogShown = true
         await sdk.client.instance.dispose()
         await sync.bootstrap()
         route.navigate({ type: "home" })
