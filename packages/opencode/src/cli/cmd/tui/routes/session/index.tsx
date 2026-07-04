@@ -149,6 +149,7 @@ export function Session() {
       permissions().length === 0 &&
       questions().length === 0,
   )
+  const loading = createMemo(() => !session() && (route.sessionID ?? "").length > 0)
   const disabled = createMemo(() => permissions().length > 0 || questions().length > 0)
   const [sessionExpired, setSessionExpired] = createSignal<{ expired: boolean; message: string }>({
     expired: false,
@@ -1126,7 +1127,7 @@ export function Session() {
               />
             }
           >
-          <Show when={session()}>
+          <Show when={session()} fallback={loading() ? <Spinner /> : undefined}>
             <scrollbox
               ref={(r) => (scroll = r)}
               viewportOptions={{
