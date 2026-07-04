@@ -1,5 +1,6 @@
 import { Prompt, type PromptRef } from "@tui/component/prompt"
 import { createEffect, createMemo, createSignal, onCleanup, onMount, Show } from "solid-js"
+import { useKeyboard } from "@opentui/solid"
 import path from "path"
 import fs from "fs"
 import { Logo } from "../component/logo"
@@ -45,6 +46,13 @@ export function Home() {
   onMount(() => {
     const interval = setInterval(() => setAuthed(fs.existsSync(gateConfigPath)), 2000)
     onCleanup(() => clearInterval(interval))
+  })
+  useKeyboard((evt) => {
+    if (isAuthed()) return
+    if (evt.name === "l" && !evt.ctrl && !evt.meta) {
+      dialog.replace(() => <DialogSleepyLogin />)
+    }
+    if (evt.name === "escape") exit()
   })
   const bgImagePath = createMemo(() => {
     const filename = kv.get("background_image")
@@ -191,6 +199,13 @@ export function Home() {
                 >
                   <text fg={theme.textMuted}>Exit</text>
                 </box>
+              </box>
+            </Show>
+            <Show when={!isAuthed() && !plainTerminal}>
+              <box paddingTop={1} flexShrink={0}>
+                <text fg={theme.textMuted}>
+                  Press <span style={{ fg: theme.accent }}>L</span> to login &middot; <span style={{ fg: theme.textMuted }}>Esc</span> to exit
+                </text>
               </box>
             </Show>
             <TuiPluginRuntime.Slot name="home_bottom" />
