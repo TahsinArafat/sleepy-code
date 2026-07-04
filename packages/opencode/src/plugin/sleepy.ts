@@ -84,18 +84,6 @@ function buildAuthorizeUrl(publicKey: string, redirectUri: string): string {
 
 export async function SleepyAuthPlugin(_input: PluginInput): Promise<Hooks> {
   return {
-    config: async (input) => {
-      input.provider ??= {}
-      // Register sleepy as a config provider so it shows up even before login.
-      // name/api are intentionally left to the models.dev database (name: "Xiaomi",
-      // api: https://www.sleepyai.org/api/v1) — hardcoding "Sleepy" here collided with
-      // the free "sleepy" provider's display name and confused users.
-      input.provider.sleepy ??= {}
-      // Both "opencode" and "opencode-go" stay enabled. The opencode custom
-      // loader strips the free/public tier (and hides paid models until the
-      // user authenticates). "opencode-go" has no free models and no custom
-      // loader, so it only loads once a subscription key/auth is present.
-    },
     auth: {
       provider: "sleepy",
       async loader(getAuth) {

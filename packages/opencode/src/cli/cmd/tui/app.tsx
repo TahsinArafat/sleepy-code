@@ -429,11 +429,27 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     local.neverAsk.set(true)
   })
 
-  let loginPrompted = false
+  const [isAuthenticated, setAuthenticated] = createSignal(false)
   createEffect(() => {
-    if (loginPrompted || !ready() || sync.status !== "complete" || connected()) return
-    loginPrompted = true
-    dialog.replace(() => <DialogSleepyLogin />)
+    if (!ready() || sync.status !== "complete") return
+    const configPath = path.join(Global.Path.config, "gateway.json")
+    if (fs.existsSync(configPath)) {
+      setAuthenticated(true)
+      return
+    }
+    if (sync.data.provider_auth["sleepy"]) {
+      setAuthenticated(true)
+      return
+    }
+    if (!isAuthenticated()) {
+      dialog.replace(() => <DialogSleepyLogin />)
+    }
+  })
+  // After login re-bootstrap, auto-mark authenticated when sleepy has auth
+  createEffect(() => {
+    if (sync.data.provider_auth["sleepy"]) {
+      setAuthenticated(true)
+    }
   })
 
   command.register(() => [
@@ -1139,39 +1155,16 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         <TimeToFirstDraw />
       </Show>
       <Show when={ready()}>
-        <Switch>
-          <Match when={!connected()}>
-            <box flexGrow={1} alignItems="center" justifyContent="center" gap={1}>
-              <text fg={theme.primary} attributes={TextAttributes.BOLD}>
-                Please Log In to Sleepy CLI to Continue
-              </text>
-              <box
-                marginTop={2}
-                paddingLeft={2}
-                paddingRight={2}
-                paddingTop={1}
-                paddingBottom={1}
-                backgroundColor={theme.accent}
-                onMouseUp={() => dialog.replace(() => <DialogSleepyLogin />)}
-              >
-                <text fg={theme.background} attributes={TextAttributes.BOLD}>Log In via Browser</text>
-              </box>
-              <text
-                fg={theme.textMuted}
-                attributes={TextAttributes.UNDERLINE}
-                onMouseUp={() => exit()}
-              >
-                Exit
-              </text>
-            </box>
-          </Match>
-          <Match when={route.data.type === "home"}>
-            <Home />
-          </Match>
-          <Match when={route.data.type === "session"}>
-            <Session />
-          </Match>
-        </Switch>
+        <Show when={isAuthenticated()}>
+          <Switch>
+            <Match when={route.data.type === "home"}>
+              <Home />
+            </Match>
+            <Match when={route.data.type === "session"}>
+              <Session />
+            </Match>
+          </Switch>
+        </Show>
       </Show>
       {plugin()}
       <TuiPluginRuntime.Slot name="app" />
