@@ -164,25 +164,25 @@ export function Home() {
             <text selectable={false}>{t("tui.tips.plain_terminal")}</text>
           </box>
         </Show>
-        <Show when={!plainTerminal}>
-          <TuiPluginRuntime.Slot name="home_bottom" />
-        </Show>
-        <Show when={!isAuthed() && !plainTerminal}>
-          <box paddingTop={2} alignItems="center" flexShrink={0}>
-            <box
-              paddingLeft={3}
-              paddingRight={3}
-              paddingTop={1}
-              paddingBottom={1}
-              backgroundColor={theme.accent}
-              onMouseUp={() => dialog.replace(() => <DialogSleepyLogin />)}
-            >
-              <text fg={theme.background} attributes={TextAttributes.BOLD}>
-                Login with Browser
-              </text>
-            </box>
-          </box>
-        </Show>
+          <Show when={!plainTerminal}>
+            <Show when={!isAuthed()}>
+              <box paddingTop={2} alignItems="center" flexShrink={0}>
+                <box
+                  paddingLeft={3}
+                  paddingRight={3}
+                  paddingTop={1}
+                  paddingBottom={1}
+                  backgroundColor={theme.accent}
+                  onMouseUp={() => dialog.replace(() => <DialogSleepyLogin />)}
+                >
+                  <text fg={theme.background} attributes={TextAttributes.BOLD}>
+                    Login with Browser
+                  </text>
+                </box>
+              </box>
+            </Show>
+            <TuiPluginRuntime.Slot name="home_bottom" />
+          </Show>
         <box flexGrow={1} minHeight={0} />
         <Toast />
       </box>
