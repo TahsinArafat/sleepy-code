@@ -48,6 +48,9 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
         tokens: 0,
         limit: 128000,
         percent: null,
+        modelName: null as string | null,
+        inputPrice: 0,
+        outputPrice: 0,
       }
     }
 
@@ -59,6 +62,9 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
       tokens,
       limit,
       percent: model?.limit.context ? Math.round((tokens / model.limit.context) * 100) : null,
+      modelName: model?.name ?? null,
+      inputPrice: model?.cost?.input ?? 0,
+      outputPrice: model?.cost?.output ?? 0,
     }
   })
 
@@ -204,10 +210,16 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
         <text fg={theme().text}>
           <b>Context</b>
         </text>
+        <Show when={state().modelName}>
+          <text fg={theme().accent}>{state().modelName}</text>
+        </Show>
         <text fg={theme().textMuted}>
           Limit: {state().limit.toLocaleString()} / Used: {state().tokens.toLocaleString()} ({state().percent ?? 0}%)
         </text>
         <text fg={theme().accent}>{contextBar()}</text>
+        <Show when={state().inputPrice > 0 || state().outputPrice > 0}>
+          <text fg={theme().textMuted}>Input: ${state().inputPrice.toFixed(3)}/1M · Output: ${state().outputPrice.toFixed(3)}/1M</text>
+        </Show>
         <Show when={tpsLabel()}>{(label) => <text fg={theme().textMuted}>{label()}</text>}</Show>
         <text fg={theme().textMuted}>{cost().toFixed(4)} spent</text>
         <Show when={latency()}>
