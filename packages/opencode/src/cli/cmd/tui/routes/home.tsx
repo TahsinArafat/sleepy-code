@@ -135,40 +135,40 @@ export function Home() {
           </Show>
         </box>
         <box height={1} minHeight={0} flexShrink={1} />
-        <box
-          width="100%"
-          maxWidth={75}
-          zIndex={1000}
-          paddingTop={1}
-          flexShrink={0}
-        >
-          <Show
-            when={plainTerminal}
-            fallback={
-              <TuiPluginRuntime.Slot
-                name="home_prompt"
-                mode="replace"
-                workspace_id={project.workspace.current()}
-                ref={bind}
-              >
-                <Prompt
-                  ref={bind}
-                  disabled={!isAuthed()}
-                  workspaceID={project.workspace.current()}
-                  right={<TuiPluginRuntime.Slot name="home_prompt_right" workspace_id={project.workspace.current()} />}
-                  placeholders={placeholder}
-                />
-              </TuiPluginRuntime.Slot>
-            }
+        <Show when={isAuthed()}>
+          <box
+            width="100%"
+            maxWidth={75}
+            zIndex={1000}
+            paddingTop={1}
+            flexShrink={0}
           >
-            <Prompt
-              ref={bind}
-              disabled={!isAuthed()}
-              workspaceID={project.workspace.current()}
-              placeholders={placeholder}
-            />
-          </Show>
-        </box>
+            <Show
+              when={plainTerminal}
+              fallback={
+                <TuiPluginRuntime.Slot
+                  name="home_prompt"
+                  mode="replace"
+                  workspace_id={project.workspace.current()}
+                  ref={bind}
+                >
+                  <Prompt
+                    ref={bind}
+                    workspaceID={project.workspace.current()}
+                    right={<TuiPluginRuntime.Slot name="home_prompt_right" workspace_id={project.workspace.current()} />}
+                    placeholders={placeholder}
+                  />
+                </TuiPluginRuntime.Slot>
+              }
+            >
+              <Prompt
+                ref={bind}
+                workspaceID={project.workspace.current()}
+                placeholders={placeholder}
+              />
+            </Show>
+          </box>
+        </Show>
         <Show when={plainTerminal}>
           <box paddingTop={1} flexShrink={0}>
             <text selectable={false}>{t("tui.tips.plain_terminal")}</text>
@@ -189,16 +189,13 @@ export function Home() {
                     Login with Browser
                   </text>
                 </box>
-                <box
-                  paddingLeft={3}
-                  paddingRight={3}
-                  paddingTop={1}
-                  paddingBottom={1}
-                  borderColor={theme.textMuted}
+                <text
+                  fg={theme.textMuted}
+                  attributes={TextAttributes.UNDERLINE}
                   onMouseUp={() => exit()}
                 >
-                  <text fg={theme.textMuted}>Exit</text>
-                </box>
+                  Exit
+                </text>
               </box>
             </Show>
             <Show when={!isAuthed() && !plainTerminal}>
