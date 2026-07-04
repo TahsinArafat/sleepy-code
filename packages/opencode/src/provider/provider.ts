@@ -129,6 +129,18 @@ async function fetchModels(endpoint: string, token: string): Promise<GatewayMode
   }
 }
 
+async function tryRefreshStartup(
+  dashboardUrl: string,
+  refreshToken: string,
+): Promise<{ access_token: string; refresh_token: string; expires_in: number } | null> {
+  const res = await fetch(`${dashboardUrl}/api/auth/token/refresh`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  })
+  return res.ok ? res.json() : null
+}
+
 type BundledSDK = {
   languageModel(modelId: string): LanguageModelV3
 }
@@ -1137,30 +1149,27 @@ const layer: Layer.Layer<
             const dashboardUrl = sleepyConfig.dashboard_url || "https://www.sleepyai.org"
 
             if (token && sleepyConfig.refresh_token && sleepyConfig.expires_at && Date.now() > sleepyConfig.expires_at) {
-              try {
-                const refreshRes = yield* Effect.promise(() =>
-                  fetch(`${dashboardUrl}/api/auth/token/refresh`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ refresh_token: sleepyConfig.refresh_token }),
-                  }).then(async (r) => (r.ok ? r.json() : null)),
-                )
-                if (refreshRes) {
-                  token = refreshRes.access_token
-                  const updated = {
-                    ...sleepyConfig,
-                    access_token: refreshRes.access_token,
-                    refresh_token: refreshRes.refresh_token,
-                    expires_at: Date.now() + (refreshRes.expires_in ?? 3600) * 1000,
-                  }
-                  const tmpPath = sleepyConfigPath + ".tmp"
-                  yield* Effect.promise(() =>
-                    fsNode.writeFile(tmpPath, JSON.stringify(updated, null, 2)).then(() => fsNode.rename(tmpPath, sleepyConfigPath)).catch((err) => {
-                      log.error("failed to persist refreshed token — next startup will re-refresh", { error: err.message })
-                    }),
-                  )
+              const refreshed = yield* Effect.promise(() =>
+                tryRefreshStartup(dashboardUrl, sleepyConfig.refresh_token).catch(() => null),
+              )
+              if (refreshed) {
+                token = refreshed.access_token
+                const updated = {
+                  ...sleepyConfig,
+                  access_token: refreshed.access_token,
+                  refresh_token: refreshed.refresh_token,
+                  expires_at: Date.now() + (refreshed.expires_in ?? 3600) * 1000,
                 }
-              } catch {}
+                const tmpPath = sleepyConfigPath + ".tmp"
+                yield* Effect.promise(() =>
+                  fsNode.writeFile(tmpPath, JSON.stringify(updated, null, 2)).then(() => fsNode.rename(tmpPath, sleepyConfigPath)).catch((err) => {
+                    log.error("failed to persist refreshed token — next startup will re-refresh", { error: err.message })
+                  }),
+                )
+              } else {
+                yield* Effect.promise(() => fsNode.unlink(sleepyConfigPath).catch(() => {}))
+                token = null
+              }
             }
 
             if (endpoint && token) {

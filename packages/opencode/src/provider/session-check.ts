@@ -100,11 +100,11 @@ export function createSessionChecker(options: SessionCheckerOptions) {
   }
 
   async function check(): Promise<boolean> {
-    // Proactive refresh: if token is close to expiry, refresh before it fails
+    // Proactive refresh: if token is close to expiry or already expired, refresh before checking
     const config = await readConfig(options.configPath)
     if (config?.expires_at && config.refresh_token) {
       const timeUntilExpiry = config.expires_at - Date.now()
-      if (timeUntilExpiry < REFRESH_BUFFER_MS && timeUntilExpiry > 0) {
+      if (timeUntilExpiry < REFRESH_BUFFER_MS) {
         const refreshed = await tryRefresh()
         if (refreshed) return true
       }
@@ -117,8 +117,9 @@ export function createSessionChecker(options: SessionCheckerOptions) {
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       })
       if (res.status === 401 || res.status === 403) {
-        // Token rejected — try one refresh attempt before giving up
-        if (config?.refresh_token) {
+        // Token rejected — re-read config for latest refresh token, try one more refresh
+        const latestConfig = await readConfig(options.configPath)
+        if (latestConfig?.refresh_token) {
           const refreshed = await tryRefresh()
           if (refreshed) return true
         }
@@ -127,6 +128,7 @@ export function createSessionChecker(options: SessionCheckerOptions) {
         const message = "Your Sleepy session has expired or been revoked. Run /login to re-authenticate."
         log.warn("session expired — run 'sleepy login' to re-authenticate", { reason: body.reason, status: res.status })
         expired = true
+        void fs.unlink(options.configPath).catch(() => {})
         options.onExpired?.(message)
         void Bus.publish(
           BusEvent.define("tui.session.expired", z.object({ message: z.string() })),

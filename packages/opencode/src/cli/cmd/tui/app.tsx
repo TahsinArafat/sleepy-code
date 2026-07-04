@@ -431,15 +431,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
 
   const [isAuthenticated, setAuthenticated] = createSignal(false)
   createEffect(() => {
-    if (!ready() || sync.status === "loading") return
-    const configPath = path.join(Global.Path.config, "gateway.json")
-    if (fs.existsSync(configPath)) {
-      setAuthenticated(true)
-    }
-  })
-
-  // Re-check auth on every bootstrap (login/logout triggers bootstrap)
-  createEffect(() => {
     void sync.status
     if (!ready() || sync.status === "loading") return
     setAuthenticated(fs.existsSync(path.join(Global.Path.config, "gateway.json")))
