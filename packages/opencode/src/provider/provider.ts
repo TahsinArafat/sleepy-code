@@ -104,7 +104,7 @@ function wrapSSE(res: Response, ms: number, ctl: AbortController) {
 interface GatewayModel {
   modelId: string
   name: string
-  omniRouteModelId: string
+  omniRouteModelId?: string
   contextWindow?: number
   maxOutputLimit?: number
   inputPrice?: number
@@ -1181,7 +1181,7 @@ const layer: Layer.Layer<
                     name: m.name,
                     family: "sleepy",
                     api: {
-                      id: m.omniRouteModelId,
+                      id: m.omniRouteModelId || m.modelId,
                       url: baseUrl,
                       npm: "@ai-sdk/openai-compatible",
                     },
@@ -1589,7 +1589,7 @@ const layer: Layer.Layer<
               const existing = sleepy.models[m.modelId]
               if (existing) {
                 existing.name = m.name
-                existing.api.id = m.omniRouteModelId
+                existing.api.id = m.omniRouteModelId || m.modelId
                 existing.cost = {
                   input: m.inputPrice ?? 0.0015,
                   output: m.outputPrice ?? 0.005,
@@ -1609,7 +1609,7 @@ const layer: Layer.Layer<
                   name: m.name,
                   family: "sleepy",
                   api: {
-                    id: m.omniRouteModelId,
+                    id: m.omniRouteModelId || m.modelId,
                     url: baseUrl,
                     npm: "@ai-sdk/openai-compatible",
                   },

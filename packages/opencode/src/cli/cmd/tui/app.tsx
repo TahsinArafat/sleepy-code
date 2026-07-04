@@ -430,6 +430,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   })
 
   const [isAuthenticated, setAuthenticated] = createSignal(false)
+  let loginDismissed = false
   createEffect(() => {
     if (!ready() || sync.status !== "complete") return
     const configPath = path.join(Global.Path.config, "gateway.json")
@@ -437,18 +438,15 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       setAuthenticated(true)
       return
     }
-    if (sync.data.provider_auth["sleepy"]) {
-      setAuthenticated(true)
-      return
-    }
-    if (!isAuthenticated()) {
+    if (!isAuthenticated() && !loginDismissed) {
+      loginDismissed = true
       dialog.replace(() => <DialogSleepyLogin />)
     }
   })
-  // After login re-bootstrap, auto-mark authenticated when sleepy has auth
   createEffect(() => {
-    if (sync.data.provider_auth["sleepy"]) {
-      setAuthenticated(true)
+    if (dialog.stack.length === 0 && !isAuthenticated() && ready() && sync.status === "complete") {
+      loginDismissed = false
+      dialog.replace(() => <DialogSleepyLogin />)
     }
   })
 
