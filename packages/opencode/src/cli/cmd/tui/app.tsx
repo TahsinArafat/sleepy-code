@@ -438,11 +438,18 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     }
   })
 
+  createEffect(() => {
+    void route.data.type
+    void isAuthenticated()
+    try { fs.appendFileSync("/tmp/sleepy-debug.log", JSON.stringify({ ts: new Date().toISOString(), event: "route-change", type: route.data.type, authed: isAuthenticated(), ready: ready(), gateway: fs.existsSync(path.join(Global.Path.config, "gateway.json")), syncStatus: sync.status }) + "\n") } catch {}
+  })
+
   // Show Home/onboarding when not authenticated (with login dialog on top)
   const showHome = createMemo(() => ready() && (isAuthenticated() || route.data.type === "home"))
   createEffect(() => {
-    if (!showHome()) return
-    try { fs.appendFileSync("/tmp/sleepy-debug.log", JSON.stringify({ ts: new Date().toISOString(), event: "route", type: route.data.type, authed: isAuthenticated(), ready: ready(), showHome: showHome() }) + "\n") } catch {}
+    void route.data.type
+    void isAuthenticated()
+    try { fs.appendFileSync("/tmp/sleepy-debug.log", JSON.stringify({ ts: new Date().toISOString(), event: "render", type: route.data.type, authed: isAuthenticated(), showHome: showHome() }) + "\n") } catch {}
   })
 
   command.register(() => [
