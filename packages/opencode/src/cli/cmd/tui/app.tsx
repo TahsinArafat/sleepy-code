@@ -1150,6 +1150,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
               <Home />
             </Match>
             <Match when={route.data.type === "session" && isAuthenticated()}>
+              {(() => { try { fs.appendFileSync("/tmp/sleepy-debug.log", JSON.stringify({ts:new Date().toISOString(), event:"render-session", sid:route.data.sessionID, authed:isAuthenticated(), ready:ready(), showHome:showHome()})+"\n") } catch {} })()}
               <Session />
             </Match>
           </Switch>
