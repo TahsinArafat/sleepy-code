@@ -1200,12 +1200,6 @@ export function Prompt(props: PromptProps) {
     // temporary hack to make sure the message is sent
     if (!props.sessionID)
       setTimeout(() => {
-        require("fs").appendFileSync("/tmp/sleepy-session-debug.log", JSON.stringify({
-          ts: new Date().toISOString(),
-          event: "navigate",
-          sessionID,
-          from: "home-prompt-submit",
-        }) + "\n")
         route.navigate({
           type: "session",
           sessionID,
