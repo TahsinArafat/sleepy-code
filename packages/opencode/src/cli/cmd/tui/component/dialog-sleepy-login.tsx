@@ -1,7 +1,6 @@
 import { createSignal, onMount, Show } from "solid-js"
 import { useSDK } from "../context/sdk"
 import { useSync } from "@tui/context/sync"
-import { useLocal } from "@tui/context/local"
 import { useDialog } from "@tui/ui/dialog"
 import { useTheme } from "../context/theme"
 import { DialogPrompt } from "../ui/dialog-prompt"
@@ -28,7 +27,6 @@ function SleepyDeviceFlow() {
   const dialog = useDialog()
   const sdk = useSDK()
   const sync = useSync()
-  const local = useLocal()
   const { theme } = useTheme()
   const toast = useToast()
   const renderer = useRenderer()
@@ -97,7 +95,6 @@ function SleepyDeviceFlow() {
         })
         await sdk.client.instance.dispose()
         await sync.bootstrap()
-        local.model.set({ providerID: "sleepy", modelID: "smart" }, { recent: true })
         toast.show({ message: "Login successful!", variant: "success" })
         dialog.clear()
         return
