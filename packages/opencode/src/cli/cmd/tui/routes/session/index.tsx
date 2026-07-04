@@ -127,6 +127,12 @@ function use() {
 
 export function Session() {
   const route = useRouteData("session")
+  require("fs").appendFileSync("/tmp/sleepy-session-debug.log", JSON.stringify({
+    ts: new Date().toISOString(),
+    event: "session-mount",
+    sid: route.sessionID,
+    syncStatus: "??",
+  }) + "\n")
   const fullRoute = useRoute()
   const navigate = fullRoute.navigate
   const sync = useSync()
@@ -149,7 +155,20 @@ export function Session() {
       permissions().length === 0 &&
       questions().length === 0,
   )
-  const loading = createMemo(() => !session() && (route.sessionID ?? "").length > 0)
+  const loading = createMemo(() => {
+    const result = !session() && (route.sessionID ?? "").length > 0
+    if (result) {
+      const fs = require("fs")
+      fs.appendFileSync("/tmp/sleepy-session-debug.log", JSON.stringify({
+        ts: new Date().toISOString(),
+        sid: route.sessionID,
+        hasSession: !!session(),
+        hasMessages: (sync.data.message[route.sessionID]?.["main"] ?? []).length,
+        syncStatus: sync.status,
+      }) + "\n")
+    }
+    return result
+  })
   const disabled = createMemo(() => permissions().length > 0 || questions().length > 0)
   const [sessionExpired, setSessionExpired] = createSignal<{ expired: boolean; message: string }>({
     expired: false,
