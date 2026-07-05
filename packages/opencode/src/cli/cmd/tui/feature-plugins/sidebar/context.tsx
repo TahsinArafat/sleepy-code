@@ -23,7 +23,17 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
     let total = 0
     for (const item of msgs) {
       if (item.role !== "assistant") continue
-      total += item.cost
+      if (item.cost > 0) {
+        total += item.cost
+        continue
+      }
+      const t = item.tokens
+      const model = props.api.state.provider.find((p) => p.id === item.providerID)?.models[item.modelID]
+      if (!model) continue
+      total += (t.input * model.cost.input) / 1_000_000
+      total += ((t.output + t.reasoning) * model.cost.output) / 1_000_000
+      total += (t.cache.read * model.cost.cache.read) / 1_000_000
+      total += (t.cache.write * model.cost.cache.write) / 1_000_000
     }
     return total
   })
