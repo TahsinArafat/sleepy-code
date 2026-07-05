@@ -49,12 +49,16 @@ async function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-async function refreshToken(dashboardUrl: string, refreshTokenValue: string): Promise<{
+async function refreshToken(
+  dashboardUrl: string,
+  refreshTokenValue: string,
+  retries: number = 2,
+): Promise<{
   access_token: string
   refresh_token: string
   expires_in: number
 } | null> {
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const res = await fetch(`${dashboardUrl}/api/auth/token/refresh`, {
         method: "POST",
@@ -68,7 +72,7 @@ async function refreshToken(dashboardUrl: string, refreshTokenValue: string): Pr
     } catch {
       // Network error — retry
     }
-    if (attempt < 2) await sleep(2000 * (attempt + 1))
+    if (attempt < retries) await sleep(2000 * (attempt + 1))
   }
   return null
 }
@@ -79,11 +83,11 @@ export function createSessionChecker(options: SessionCheckerOptions) {
   let expired = false
   let currentToken = options.token
 
-  async function tryRefresh(): Promise<boolean> {
+  async function tryRefresh(retries: number = 0): Promise<boolean> {
     const config = await readConfig(options.configPath)
     if (!config?.refresh_token) return false
 
-    const refreshResult = await refreshToken(options.dashboardUrl, config.refresh_token)
+    const refreshResult = await refreshToken(options.dashboardUrl, config.refresh_token, retries)
     if (!refreshResult) return false
 
     const updated: GatewayConfig = {
@@ -105,7 +109,7 @@ export function createSessionChecker(options: SessionCheckerOptions) {
     if (config?.expires_at && config.refresh_token) {
       const timeUntilExpiry = config.expires_at - Date.now()
       if (timeUntilExpiry < REFRESH_BUFFER_MS) {
-        const refreshed = await tryRefresh()
+        const refreshed = await tryRefresh(0)
         if (refreshed) return true
       }
     }
@@ -120,7 +124,7 @@ export function createSessionChecker(options: SessionCheckerOptions) {
         // Token rejected — re-read config for latest refresh token, try one more refresh
         const latestConfig = await readConfig(options.configPath)
         if (latestConfig?.refresh_token) {
-          const refreshed = await tryRefresh()
+          const refreshed = await tryRefresh(2)
           if (refreshed) return true
         }
 
