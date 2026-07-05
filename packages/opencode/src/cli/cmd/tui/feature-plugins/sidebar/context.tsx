@@ -18,31 +18,12 @@ function formatTokens(n: number): string {
 function View(props: { api: TuiPluginApi; session_id: string }) {
   const theme = () => props.api.theme.current
   const msg = createMemo(() => props.api.state.session.messages(props.session_id))
-
-  // DEBUG: log provider state on mount
-  createEffect(() => {
-    const providers = props.api.state.provider
-    if (providers.length === 0) return
-    const sleepy = providers.find((p) => p.id.includes("sleepy"))
-    const modelKeys = sleepy ? Object.keys(sleepy.models).slice(0, 5) : []
-    console.log("[SIDEBAR-DIAG] providers=" + providers.length + " sleepy.models=" + modelKeys.length + " keys=" + modelKeys.join(","))
-    if (modelKeys.length > 0) {
-      const m = sleepy!.models[modelKeys[0]]
-      console.log("[SIDEBAR-DIAG] firstModel: name=" + m.name + " limit.context=" + m.limit.context + " cost.input=" + m.cost.input)
-    }
-  })
   const cost = createMemo(() => {
     const msgs = msg()
     let total = 0
     for (const item of msgs) {
       if (item.role !== "assistant") continue
-      const t = item.tokens
-      const model = props.api.state.provider.find((p) => p.id === item.providerID)?.models[item.modelID]
-      if (!model) continue
-      total += (t.input * model.cost.input) / 1_000_000
-      total += ((t.output + t.reasoning) * model.cost.output) / 1_000_000
-      total += (t.cache.read * model.cost.cache.read) / 1_000_000
-      total += (t.cache.write * model.cost.cache.write) / 1_000_000
+      total += item.cost
     }
     return total
   })
@@ -55,12 +36,7 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
   })
 
   const state = createMemo(() => {
-    const last = msg().findLast((item): item is AssistantMessage => item.role === "assistant" && item.tokens.output > 0)
-    // If no assistant message with tokens yet, check if there's any assistant at all
-    const anyAssistant = msg().findLast((item) => item.role === "assistant")
-    if (!last && anyAssistant) {
-      console.log("[SIDEBAR-DIAG] assistantFound=true tokens.output=" + anyAssistant.tokens.output + " providerID=" + anyAssistant.providerID + " modelID=" + anyAssistant.modelID)
-    }
+    const last = msg().findLast((item): item is AssistantMessage => item.role === "assistant")
     if (!last) {
       return {
         tokens: 0,
@@ -80,7 +56,7 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
       tokens,
       limit,
       percent: model?.limit.context ? Math.round((tokens / model.limit.context) * 100) : null,
-      modelName: model?.name ?? null,
+      modelName: model?.name ?? last.modelID,
       inputPrice: model?.cost?.input ?? 0,
       outputPrice: model?.cost?.output ?? 0,
     }
