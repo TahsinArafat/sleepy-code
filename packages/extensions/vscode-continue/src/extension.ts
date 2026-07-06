@@ -83,22 +83,46 @@ class SleepyWebview implements vscode.WebviewViewProvider {
   }
 
   private _pushConfig() {
+    const authToken = this._auth.token || "";
+    const apiBase = `${this._auth.url}/api/v1`;
     const models = this._auth.authed ? [
-      { title: "Deepseek V4 Pro", provider: "openai", model: "deepseek-v4-pro", apiKey: this._auth.token, apiBase: `${this._auth.url}/api/v1`, completionOptions: { maxTokens: 4096 } },
-      { title: "Deepseek V4 Flash", provider: "openai", model: "deepseek-v4-flash", apiKey: this._auth.token, apiBase: `${this._auth.url}/api/v1`, completionOptions: { maxTokens: 4096 } },
+      { title: "Deepseek V4 Pro", provider: "openai", model: "deepseek-v4-pro", apiKey: authToken, apiBase },
+      { title: "Deepseek V4 Flash", provider: "openai", model: "deepseek-v4-flash", apiKey: authToken, apiBase },
+      { title: "Deepseek V3 R1", provider: "openai", model: "deepseek-v3-r1", apiKey: authToken, apiBase },
     ] : [];
-    const data = { models, slashCommands: [], contextProviders: [], systemMessage: "", allowAnonymousTelemetry: false };
-    this._view?.webview.postMessage({ messageType: "configUpdate", data });
+    const chatModel = models[0] || undefined;
+    const configResult = {
+      models,
+      selectedModelByRole: { chat: chatModel, edit: chatModel, apply: chatModel, autocomplete: chatModel, embed: chatModel, rerank: chatModel, summarize: chatModel, subagent: chatModel },
+      modelsByRole: { chat: models, edit: models, apply: models, autocomplete: models, embed: models, rerank: models, summarize: models, subagent: models },
+      slashCommands: [], contextProviders: [], systemMessage: "", allowAnonymousTelemetry: false,
+    };
+    this._view?.webview.postMessage({ messageType: "configUpdate", data: { result: configResult, profileId: "sleepy" } });
   }
 
   private async _route(method: string, data: any): Promise<any> {
     switch (method) {
       case "config/getSerializedProfileInfo":
       case "config/reload":
-        return { result: { models: this._auth.authed ? [
-          { title: "Deepseek V4 Pro", provider: "openai", model: "deepseek-v4-pro", apiKey: this._auth.token, apiBase: `${this._auth.url}/api/v1` },
-          { title: "Deepseek V4 Flash", provider: "openai", model: "deepseek-v4-flash", apiKey: this._auth.token, apiBase: `${this._auth.url}/api/v1` },
-        ] : [] }, profileId: "sleepy", profileTitle: "Sleepy" };
+        {
+          const authToken = this._auth.token || "";
+          const apiBase = `${this._auth.url}/api/v1`;
+          const m = this._auth.authed ? [
+            { title: "Deepseek V4 Pro", provider: "openai", model: "deepseek-v4-pro", apiKey: authToken, apiBase },
+            { title: "Deepseek V4 Flash", provider: "openai", model: "deepseek-v4-flash", apiKey: authToken, apiBase },
+            { title: "Deepseek V3 R1", provider: "openai", model: "deepseek-v3-r1", apiKey: authToken, apiBase },
+          ] : [];
+          const chatModel = m[0] || undefined;
+          return {
+            result: {
+              models: m,
+      selectedModelByRole: { chat: chatModel, edit: chatModel, apply: chatModel, autocomplete: chatModel, embed: chatModel, rerank: chatModel, summarize: chatModel, subagent: chatModel },
+      modelsByRole: { chat: m, edit: m, apply: m, autocomplete: m, embed: m, rerank: m, summarize: m, subagent: m },
+              slashCommands: [], contextProviders: [], systemMessage: "", allowAnonymousTelemetry: false,
+            },
+            profileId: "sleepy", profileTitle: "Sleepy"
+          };
+        }
       case "config/listProfiles":
         return { profiles: [{ id: "sleepy", title: "Sleepy" }], selectedProfileId: "sleepy" };
       case "llm/streamChat": {
