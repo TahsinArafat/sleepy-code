@@ -104,12 +104,11 @@ class SleepyWebview {
         }
         try {
             const result = await this._route(method, msg.data || msg);
-            if (msg.messageId)
-                this._view?.webview.postMessage({ messageType: method, data: result, messageId: msg.messageId });
+            // Always respond — GUI may not include messageId in all messages
+            this._view?.webview.postMessage({ messageType: method, data: result, messageId: msg.messageId });
         }
         catch (e) {
-            if (msg.messageId)
-                this._view?.webview.postMessage({ messageType: method, data: e.message, messageId: msg.messageId, status: "error" });
+            this._view?.webview.postMessage({ messageType: method, data: e.message, messageId: msg.messageId, status: "error" });
         }
     }
     _pushConfig() {
