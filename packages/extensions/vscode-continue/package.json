@@ -1,6 +1,6 @@
 {
   "name": "sleepy-code",
-  "icon": "media/sleepy-icon.svg",
+  "icon": "media/sidebar-icon.png",
   "publisher": "sleepy-ai",
   "version": "0.1.0",
   "license": "MIT",
@@ -30,7 +30,7 @@
         {
           "id": "sleepy-sidebar",
           "title": "Sleepy",
-          "icon": "media/sleepy-icon.svg"
+          "icon": "media/sidebar-icon.png"
         }
       ]
     },
