@@ -77,11 +77,16 @@ class SleepyWebview {
         this._auth = _auth;
     }
     resolveWebviewView(view) {
-        this._v = view;
-        view.webview.options = { enableScripts: true };
-        view.webview.html = H(this._auth);
-        view.webview.onDidReceiveMessage(m => this.handle(m));
-        this.push({ t: "auth", authed: this._auth.authed, models: this._auth.models });
+        try {
+            this._v = view;
+            view.webview.options = { enableScripts: true };
+            view.webview.html = H(this._auth);
+            view.webview.onDidReceiveMessage(m => this.handle(m));
+            this.push({ t: "auth", authed: this._auth.authed, models: this._auth.models });
+        }
+        catch (e) {
+            console.error("[Sleepy] webview error:", e);
+        }
     }
     push(d) { this._v?.webview.postMessage(d); }
     async handle(m) {

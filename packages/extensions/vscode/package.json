@@ -14,7 +14,8 @@
     "Machine Learning"
   ],
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onView:sleepy.chat"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -56,7 +57,7 @@
         {
           "id": "sleepy-sidebar",
           "title": "Sleepy",
-          "icon": "media/sleepy-icon.svg"
+          "icon": "$(comment-discussion)"
         }
       ]
     },

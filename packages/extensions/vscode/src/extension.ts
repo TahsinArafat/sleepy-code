@@ -31,11 +31,13 @@ class SleepyWebview implements vscode.WebviewViewProvider {
   constructor(private _uri: vscode.Uri, private _auth: Auth) {}
 
   resolveWebviewView(view: vscode.WebviewView) {
-    this._v = view;
-    view.webview.options = { enableScripts: true };
-    view.webview.html = H(this._auth);
-    view.webview.onDidReceiveMessage(m => this.handle(m));
-    this.push({ t: "auth", authed: this._auth.authed, models: this._auth.models });
+    try {
+      this._v = view;
+      view.webview.options = { enableScripts: true };
+      view.webview.html = H(this._auth);
+      view.webview.onDidReceiveMessage(m => this.handle(m));
+      this.push({ t: "auth", authed: this._auth.authed, models: this._auth.models });
+    } catch (e) { console.error("[Sleepy] webview error:", e); }
   }
 
   push(d: any) { this._v?.webview.postMessage(d); }
