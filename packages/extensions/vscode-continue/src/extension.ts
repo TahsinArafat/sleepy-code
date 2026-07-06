@@ -167,8 +167,8 @@ class SleepyWebview implements vscode.WebviewViewProvider {
       case "openFile": await vscode.window.showTextDocument(vscode.Uri.file(data.path)); return;
       case "history/list": return [];
       case "history/load": return { title: "Session", sessionId: "new", workspaceDir: "", history: [] };
-      case "context/getContextItems": return [];
-      case "context/loadSubmenuItems": return [];
+      case "context/getContextItems": return { status: "success", content: [] };
+      case "context/loadSubmenuItems": return { status: "success", content: [] };
       default: return undefined;
     }
   }
