@@ -88,6 +88,9 @@ class SleepyWebview {
         let html = fs.readFileSync(distPath.fsPath, "utf-8");
         const assetsUri = this._view.webview.asWebviewUri(vscode.Uri.joinPath(this._uri, "gui", "dist")).toString();
         html = html.replace(/(href|src)="\/assets\//g, `$1="${assetsUri}/assets/`);
+        // The Continue GUI expects a global `vscode` object via declare const vscode: any
+        const bridge = `<script>const vscode = acquireVsCodeApi();</script>`;
+        html = html.replace("</body>", `${bridge}</body>`);
         return html;
     }
     async _handle(msg) {
