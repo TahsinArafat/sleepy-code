@@ -12,10 +12,7 @@ export class SleepyChatProvider implements vscode.WebviewViewProvider {
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
     this._view = webviewView;
-    webviewView.webview.options = {
-      enableScripts: true,
-      localResourceRoots: [this._extensionUri],
-    };
+    webviewView.webview.options = { enableScripts: true, localResourceRoots: [this._extensionUri] };
     webviewView.webview.html = this._getHtml();
     webviewView.webview.onDidReceiveMessage(this._handleMessage.bind(this));
     this._auth.onAuthChange(() => this._postAuthState());
@@ -35,192 +32,244 @@ export class SleepyChatProvider implements vscode.WebviewViewProvider {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:system-ui,-apple-system,sans-serif;font-size:13px;color:var(--vscode-editor-foreground);background:var(--vscode-sideBar-background);overflow-x:hidden}
-#header{padding:8px 10px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--vscode-panel-border);min-height:36px}
+body{font-family:system-ui,-apple-system,sans-serif;font-size:13px;color:var(--vscode-editor-foreground);background:var(--vscode-sideBar-background);overflow:hidden;height:100vh;display:flex;flex-direction:column}
+
+#header{display:flex;align-items:center;padding:8px 12px;gap:8px;border-bottom:1px solid var(--vscode-panel-border);min-height:40px}
 #header .brand{font-weight:600;font-size:13px;flex:1}
-#status-dot{width:7px;height:7px;border-radius:50%;display:inline-block;flex-shrink:0}
-#status-dot.online{background:#4ade80}
-#status-dot.offline{background:#f87171}
-#status-dot.loading{background:#fbbf24;animation:pulse 1s infinite}
+#header .dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.dot.on{background:#4ade80}.dot.off{background:#a1a1aa}.dot.busy{background:#fbbf24;animation:pulse 1s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
-#models-bar{padding:6px 10px;border-bottom:1px solid var(--vscode-panel-border);display:flex;gap:4px;align-items:center}
-#models-bar select{flex:1;padding:3px 6px;font-size:12px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:3px}
-#models-bar button{padding:3px 8px;font-size:11px;background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:none;border-radius:3px;cursor:pointer}
-#login-prompt{padding:20px 16px;text-align:center;display:none}
-#login-prompt p{margin-bottom:12px;color:var(--vscode-descriptionForeground);font-size:13px}
-#login-prompt button{padding:8px 20px;font-size:13px;background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:none;border-radius:5px;cursor:pointer}
-#messages{padding:8px 10px;overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:6px}
-.msg{padding:8px 10px;border-radius:6px;line-height:1.5;white-space:pre-wrap;word-break:break-word;font-size:13px}
-.msg.user{background:var(--vscode-textBlockQuote-background);margin-left:16px;border-left:3px solid var(--vscode-focusBorder)}
-.msg.assistant{background:var(--vscode-textBlockQuote-background);margin-right:16px}
-.msg .label{font-size:11px;color:var(--vscode-descriptionForeground);margin-bottom:4px;font-weight:500}
-.msg .model-tag{font-size:10px;color:var(--vscode-descriptionForeground);margin-top:4px;opacity:.7}
-.msg .streaming-cursor{animation:blink 1s infinite}
-@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
-#input-area{padding:8px 10px;border-top:1px solid var(--vscode-panel-border);display:flex;gap:6px;align-items:flex-end}
-#input-area textarea{flex:1;padding:6px 8px;font-size:13px;font-family:inherit;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:4px;resize:none;min-height:32px;max-height:120px}
-#input-area textarea:disabled{opacity:.5}
-#input-area button{padding:6px 14px;font-size:13px;background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:none;border-radius:4px;cursor:pointer;min-height:32px}
-#input-area button:disabled{opacity:.5;cursor:default}
-.empty-state{text-align:center;padding:32px 16px;color:var(--vscode-descriptionForeground);font-size:12px;flex:1;display:flex;align-items:center;justify-content:center}
+
+#login-view{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:32px;text-align:center}
+#login-view h2{font-size:16px;font-weight:600}
+#login-view p{color:var(--vscode-descriptionForeground);font-size:13px;max-width:260px;line-height:1.5}
+#login-view button{padding:8px 24px;font-size:13px;background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:none;border-radius:6px;cursor:pointer;font-weight:500}
+#login-view button:hover{opacity:.9}
+#login-view .sub{font-size:11px;color:var(--vscode-descriptionForeground)}
+#login-view .sub code{font-size:11px;background:var(--vscode-textBlockQuote-background);padding:1px 5px;border-radius:3px}
+
+#chat-view{flex:1;display:none;flex-direction:column;overflow:hidden}
+
+#messages{flex:1;overflow-y:auto;padding:8px 12px}
+.msgs-empty{display:flex;align-items:center;justify-content:center;height:100%;color:var(--vscode-descriptionForeground);font-size:12px;text-align:center;padding:32px;line-height:1.6}
+
+.msg{padding:8px 12px;margin:4px 0;line-height:1.6;font-size:13px}
+.msg.user{background:var(--vscode-textBlockQuote-background);border-radius:8px;margin-left:16px}
+.msg.assistant{background:transparent;margin-right:16px}
+
+.msg .header{font-size:11px;font-weight:600;margin-bottom:4px;opacity:.8}
+.msg.user .header{color:var(--vscode-focusBorder)}
+.msg.assistant .header{color:var(--vscode-editorInfo-foreground)}
+
+.msg .body{word-wrap:break-word}
+.msg .body p{margin:4px 0}
+.msg .body ul,.msg .body ol{padding-left:20px;margin:4px 0}
+.msg .body code{font-size:12px;background:var(--vscode-textBlockQuote-background);padding:1px 4px;border-radius:3px;font-family:var(--vscode-editor-font-family)}
+.msg .body pre{margin:8px 0;border-radius:6px;overflow-x:auto;position:relative}
+.msg .body pre code{display:block;padding:12px;background:var(--vscode-textBlockQuote-background);font-size:12px;line-height:1.5;overflow-x:auto}
+.msg .body pre .copy-btn{position:absolute;top:4px;right:4px;padding:2px 6px;font-size:10px;background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:none;border-radius:3px;cursor:pointer;opacity:0;transition:opacity .15s}
+.msg .body pre:hover .copy-btn{opacity:.8}
+.msg .body pre .copy-btn:active{opacity:1}
+
+.cursor{display:inline-block;width:6px;height:15px;background:var(--vscode-editor-foreground);animation:blink 1s step-end infinite;vertical-align:text-bottom;margin-left:1px}
+@keyframes blink{0%,100%{opacity:0}50%{opacity:1}}
+
+#input-row{display:flex;gap:6px;padding:8px 12px;border-top:1px solid var(--vscode-panel-border);align-items:flex-end}
+#input-row textarea{flex:1;padding:8px 10px;font-size:13px;font-family:inherit;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:8px;resize:none;min-height:36px;max-height:120px;outline:none}
+#input-row textarea:focus{border-color:var(--vscode-focusBorder)}
+#input-row textarea:disabled{opacity:.4}
+#input-row button{padding:6px 14px;font-size:13px;background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:none;border-radius:8px;cursor:pointer;min-height:36px;font-weight:500}
+#input-row button:disabled{opacity:.4;cursor:default}
+#input-row button:not(:disabled):hover{opacity:.9}
+
+#model-bar{display:flex;align-items:center;gap:6px;padding:4px 12px 0}
+#model-bar select{flex:1;padding:2px 6px;font-size:11px;background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border);border-radius:4px}
+#model-bar .hint{font-size:10px;color:var(--vscode-descriptionForeground)}
 </style>
 </head>
 <body>
+
 <div id="header">
   <span class="brand">Sleepy Code</span>
-  <span id="status-dot" class="offline"></span>
+  <span class="dot off" id="dot"></span>
 </div>
-<div id="models-bar" style="display:none">
-  <select id="model-select"></select>
-  <button id="refresh-models" title="Refresh models">↻</button>
-</div>
-<div id="login-prompt">
-  <p>Sign in to use Sleepy Code in VS Code.</p>
+
+<div id="login-view">
+  <h2>Welcome to Sleepy Code</h2>
+  <p>Sign in to start using AI in your editor. Your terminal session is shared — just log in once.</p>
   <button id="login-btn">Login with Browser</button>
+  <span class="sub">Or run <code>sleepy login</code> in your terminal</span>
 </div>
-<div id="messages-container" style="display:flex;flex-direction:column;height:calc(100vh - 120px)">
-  <div id="messages">
-    <div class="empty-state">Send a message to start chatting.</div>
-  </div>
-  <div id="input-area">
-    <textarea id="prompt" placeholder="Type a message..." rows="1" disabled></textarea>
-    <button id="send" disabled>Send</button>
+
+<div id="chat-view">
+  <div id="model-bar"><select id="model-select"></select></div>
+  <div id="messages"><div class="msgs-empty">Send a message to start chatting.</div></div>
+  <div id="input-row">
+    <textarea id="prompt" rows="1" placeholder="Type a message... (Enter to send, Shift+Enter for new line)"></textarea>
+    <button id="send-btn">Send</button>
   </div>
 </div>
+
 <script>
 (function() {
-  const vscode = acquireVsCodeApi();
-  const messagesEl = document.getElementById('messages');
-  const promptEl = document.getElementById('prompt');
-  const sendBtn = document.getElementById('send');
-  const modelSelect = document.getElementById('model-select');
-  const loginPrompt = document.getElementById('login-prompt');
-  const msgContainer = document.getElementById('messages-container');
-  const statusDot = document.getElementById('status-dot');
-  const modelsBar = document.getElementById('models-bar');
-  const loginBtn = document.getElementById('login-btn');
-  const refreshBtn = document.getElementById('refresh-models');
+  const api = acquireVsCodeApi();
+  const $ = id => document.getElementById(id);
+  const msgEl = $('messages');
+  const promptEl = $('prompt');
+  const sendBtn = $('send-btn');
+  const modelSelect = $('model-select');
+  const loginView = $('login-view');
+  const chatView = $('chat-view');
+  const dot = $('dot');
 
-  function setOnline(on) { statusDot.className = on ? 'online' : 'offline'; }
+  let ready = false;
 
-  function streamTarget() {
-    const msgs = messagesEl.querySelectorAll('.msg.assistant');
-    const last = msgs[msgs.length - 1];
-    if (last) {
-      const content = last.querySelector('.content');
-      if (content) return content;
-    }
-    const div = document.createElement('div');
-    div.className = 'msg assistant';
-    div.innerHTML = '<div class="content"></div>';
-    messagesEl.appendChild(div);
-    messagesEl.querySelector('.empty-state')?.remove();
-    return div.querySelector('.content');
+  function esc(t) { return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
+
+  function setOnline(on) { dot.className = 'dot ' + (on ? 'on' : 'off'); }
+  function setBusy(b) { if(b) dot.className = 'dot busy'; else setOnline(true); }
+
+  function setInput(dis) {
+    promptEl.disabled = dis;
+    sendBtn.disabled = dis;
+    if (!dis) setTimeout(() => promptEl.focus(), 100);
   }
 
-  function addMessage(role, content, model) {
+  function renderMarkdown(text) {
+    if (typeof marked !== 'undefined') {
+      try { return marked.parse(text, { breaks: true, gfm: true }); } catch {}
+    }
+    return '<p>' + esc(text).replace(/\\n/g, '<br>') + '</p>';
+  }
+
+  // Add copy handlers after render
+  function addCopyButtons() {
+    msgEl.querySelectorAll('pre .copy-btn').forEach(b => b.remove());
+    msgEl.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'Copy';
+      btn.onclick = () => {
+        const code = pre.querySelector('code');
+        navigator.clipboard.writeText(code ? code.textContent : pre.textContent);
+        btn.textContent = 'Copied!';
+        setTimeout(() => btn.textContent = 'Copy', 1500);
+      };
+      pre.appendChild(btn);
+    });
+  }
+
+  function addMsg(role, content, model) {
     const div = document.createElement('div');
     div.className = 'msg ' + role;
-    let html = '';
-    if (model) html += '<div class="label">' + model + '</div>';
-    html += '<div class="content">' + escapeHtml(content) + '</div>';
-    if (role === 'assistant' && model) html += '<div class="model-tag">via ' + model + '</div>';
-    div.innerHTML = html;
-    messagesEl.appendChild(div);
-    messagesEl.querySelector('.empty-state')?.remove();
+    div.innerHTML = '<div class="header">' + (role === 'user' ? 'You' : esc(model || 'Assistant')) + '</div>';
+    const body = document.createElement('div');
+    body.className = 'body';
+    if (role === 'user') {
+      body.innerHTML = '<p>' + esc(content) + '</p>';
+    } else {
+      body.innerHTML = renderMarkdown(content);
+    }
+    div.appendChild(body);
+    msgEl.appendChild(div);
+    msgEl.querySelector('.msgs-empty')?.remove();
+    addCopyButtons();
     div.scrollIntoView({ behavior: 'smooth', block: 'end' });
-    return div;
+    return body;
   }
 
-  function escapeHtml(t) {
-    return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
-  }
-
-  function setInputState(disabled) {
-    promptEl.disabled = disabled;
-    sendBtn.disabled = disabled;
-    if (!disabled) promptEl.focus();
-  }
-
-  promptEl.addEventListener('input', () => {
-    promptEl.style.height = 'auto';
-    promptEl.style.height = Math.min(promptEl.scrollHeight, 120) + 'px';
-  });
-
-  promptEl.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
-  });
-
-  sendBtn.addEventListener('click', sendMessage);
-  loginBtn.addEventListener('click', () => vscode.postMessage({ type: 'login' }));
-  refreshBtn.addEventListener('click', () => vscode.postMessage({ type: 'refreshModels' }));
-
-  function sendMessage() {
+  function send() {
     const text = promptEl.value.trim();
     if (!text || promptEl.disabled) return;
-    addMessage('user', text);
-    vscode.postMessage({ type: 'chat', text, model: modelSelect.value });
+    addMsg('user', text);
+    api.postMessage({ type: 'chat', text, model: modelSelect.value });
     promptEl.value = '';
     promptEl.style.height = 'auto';
-    setInputState(true);
+    setInput(true);
   }
 
-  function showAuthState(authenticated, email) {
-    if (authenticated) {
-      loginPrompt.style.display = 'none';
-      msgContainer.style.display = 'flex';
-      modelsBar.style.display = 'flex';
+  function authed(auth, email) {
+    if (auth) {
+      loginView.style.display = 'none';
+      chatView.style.display = 'flex';
       setOnline(true);
-      if (!promptEl.disabled) promptEl.focus();
+      setInput(false);
+      if (!ready) { api.postMessage({ type: 'ready' }); ready = true; }
     } else {
-      loginPrompt.style.display = 'block';
-      msgContainer.style.display = 'none';
+      loginView.style.display = 'flex';
+      chatView.style.display = 'none';
       setOnline(false);
     }
-    vscode.postMessage({ type: 'ready' });
   }
 
-  window.addEventListener('message', (event) => {
-    const msg = event.data;
-    switch (msg.type) {
+  // Event handlers
+  $('login-btn').onclick = () => api.postMessage({ type: 'login' });
+
+  promptEl.oninput = () => {
+    promptEl.style.height = 'auto';
+    promptEl.style.height = Math.min(promptEl.scrollHeight, 120) + 'px';
+  };
+  promptEl.onkeydown = e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  };
+  sendBtn.onclick = send;
+
+  window.addEventListener('message', e => {
+    const m = e.data;
+    switch (m.type) {
       case 'authState':
-        showAuthState(msg.authenticated, msg.email);
+        authed(m.authenticated, m.email);
         break;
       case 'setModels':
-        modelSelect.innerHTML = '<option value="">Select a model...</option>' +
-          msg.models.map(m => '<option value="' + m.id + '">' + escapeHtml(m.name) + '</option>').join('');
-        if (msg.models.length > 0) modelSelect.selectedIndex = 1;
-        vscode.postMessage({ type: 'ready' });
+        modelSelect.innerHTML = m.models.map(x => '<option value="' + esc(x.id) + '">' + esc(x.name) + '</option>').join('');
+        setInput(false);
         break;
-      case 'addMessage':
-        addMessage(msg.role, msg.content, msg.model);
-        setInputState(false);
+      case 'addMsg':
+        addMsg(m.role, m.content, m.model);
+        setInput(false);
         break;
       case 'streamChunk':
-        const target = streamTarget();
-        const cursor = target.querySelector('.streaming-cursor');
+        const last = msgEl.querySelector('.msg.assistant:last-child .body');
+        const cursor = last?.querySelector('.cursor');
         if (cursor) cursor.remove();
-        target.innerHTML += escapeHtml(msg.text);
-        target.innerHTML += '<span class="streaming-cursor">▊</span>';
-        target.closest('.msg').scrollIntoView({ behavior: 'smooth', block: 'end' });
+        if (last) {
+          // Not ideal — for streaming we use plain text, not markdown
+          const textNode = document.createTextNode(m.text);
+          last.appendChild(textNode);
+          last.appendChild(document.createTextNode(''));
+          const c = document.createElement('span');
+          c.className = 'cursor';
+          last.appendChild(c);
+          last.parentElement.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        }
         break;
       case 'streamEnd':
-        const last = streamTarget();
-        const cur = last.querySelector('.streaming-cursor');
-        if (cur) cur.remove();
-        setInputState(false);
+        const b = msgEl.querySelector('.msg.assistant:last-child .body');
+        if (b) { const c = b.querySelector('.cursor'); if (c) c.remove(); }
+        // Re-render the assistant message as markdown
+        const lastAssistant = msgEl.querySelector('.msg.assistant:last-child');
+        if (lastAssistant) {
+          const body = lastAssistant.querySelector('.body');
+          if (body) {
+            const raw = body.textContent;
+            body.innerHTML = renderMarkdown(raw);
+            addCopyButtons();
+          }
+        }
+        setInput(false);
         break;
       case 'error':
-        addMessage('assistant', 'Error: ' + msg.text);
-        setInputState(false);
+        addMsg('assistant', '[Error] ' + m.text);
+        setInput(false);
         break;
     }
   });
 
-  // Initial state
-  vscode.postMessage({ type: 'ready' });
+  // Initial load
+  api.postMessage({ type: 'ready' });
 })();
 </script>
 </body>
@@ -241,6 +290,7 @@ body{font-family:system-ui,-apple-system,sans-serif;font-size:13px;color:var(--v
       case "refreshModels":
         await this._auth.refreshModels();
         this._postModels();
+        this._postMessage({ type: "authState", authenticated: this._auth.isAuthenticated, email: this._auth.gateway?.email || null });
         break;
     }
   }
@@ -254,10 +304,10 @@ body{font-family:system-ui,-apple-system,sans-serif;font-size:13px;color:var(--v
 
   private _postModels() {
     if (this._auth.models.length === 0) {
-      this._postMessage({ type: "addMessage", role: "assistant", content: "No models found. Check your Sleepy account." });
+      this._postMessage({ type: "addMsg", role: "assistant", content: "No models found. Check your Sleepy account." });
       return;
     }
-    this._postMessage({ type: "setModels", models: this._auth.models.map(m => ({ id: m.id, name: m.name })) });
+    this._postMessage({ type: "setModels", models: this._auth.models });
   }
 
   private async _handleChat(text: string, modelId: string): Promise<void> {
@@ -265,32 +315,21 @@ body{font-family:system-ui,-apple-system,sans-serif;font-size:13px;color:var(--v
       this._postMessage({ type: "error", text: "Not authenticated. Login first." });
       return;
     }
-
     const model = modelId || this._auth.models[0]?.id || "deepseek-v4-flash";
+    this._postMessage({ type: "addMsg", role: "assistant", content: "⏳", model });
 
     try {
       const res = await fetch(`${this._auth.dashboardUrl}/api/v1/chat/completions`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this._auth.token}`,
-        },
-        body: JSON.stringify({
-          model,
-          messages: [{ role: "user", content: text }],
-          stream: true,
-        }),
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${this._auth.token}` },
+        body: JSON.stringify({ model, messages: [{ role: "user", content: text }], stream: true }),
       });
 
       if (res.status === 401) {
-        const refreshed = await this._auth.refreshToken();
-        if (refreshed) {
-          return this._handleChat(text, modelId);
-        }
+        if (await this._auth.refreshToken()) return this._handleChat(text, modelId);
         this._postMessage({ type: "error", text: "Session expired. Please login again." });
         return;
       }
-
       if (!res.ok) {
         this._postMessage({ type: "error", text: `${res.status}: ${res.statusText}` });
         return;
@@ -299,6 +338,7 @@ body{font-family:system-ui,-apple-system,sans-serif;font-size:13px;color:var(--v
       const reader = res.body?.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      let streamStarted = false;
 
       while (reader) {
         const { done, value } = await reader.read();
@@ -306,7 +346,6 @@ body{font-family:system-ui,-apple-system,sans-serif;font-size:13px;color:var(--v
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
-
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed.startsWith("data: ")) continue;
@@ -316,14 +355,15 @@ body{font-family:system-ui,-apple-system,sans-serif;font-size:13px;color:var(--v
             const parsed = JSON.parse(dataStr);
             const delta = parsed.choices?.[0]?.delta?.content;
             if (delta) {
+              if (!streamStarted) {
+                this._postMessage({ type: "addMsg", role: "assistant", content: "", model });
+                streamStarted = true;
+              }
               this._postMessage({ type: "streamChunk", text: delta });
             }
-            // Check for x-omniroute-tokens from OmniRoute comment headers
-            // These come as separate SSE comment lines before [DONE]
           } catch {}
         }
       }
-
       this._postMessage({ type: "streamEnd" });
     } catch (err: any) {
       this._postMessage({
@@ -333,7 +373,5 @@ body{font-family:system-ui,-apple-system,sans-serif;font-size:13px;color:var(--v
     }
   }
 
-  private _postMessage(message: any) {
-    this._view?.webview.postMessage(message);
-  }
+  private _postMessage(message: any) { this._view?.webview.postMessage(message); }
 }
