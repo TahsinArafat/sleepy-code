@@ -65,12 +65,26 @@ class SleepyWebview implements vscode.WebviewViewProvider {
   private async _handle(msg: any) {
     const method = msg.messageType || msg.type;
     if (!method) return;
+    // onLoad is sent when the GUI first mounts — push config immediately
+    if (method === "onLoad") {
+      this._pushConfig();
+      return;
+    }
     try {
       const result = await this._route(method, msg.data || msg);
       if (msg.messageId) this._view?.webview.postMessage({ messageType: method, data: result, messageId: msg.messageId });
     } catch (e: any) {
       if (msg.messageId) this._view?.webview.postMessage({ messageType: method, data: e.message, messageId: msg.messageId, status: "error" });
     }
+  }
+
+  private _pushConfig() {
+    const models = this._auth.authed ? [
+      { title: "Deepseek V4 Pro", provider: "openai", model: "deepseek-v4-pro", apiKey: this._auth.token, apiBase: `${this._auth.url}/api/v1`, completionOptions: { maxTokens: 4096 } },
+      { title: "Deepseek V4 Flash", provider: "openai", model: "deepseek-v4-flash", apiKey: this._auth.token, apiBase: `${this._auth.url}/api/v1`, completionOptions: { maxTokens: 4096 } },
+    ] : [];
+    const data = { models, slashCommands: [], contextProviders: [], systemMessage: "", allowAnonymousTelemetry: false };
+    this._view?.webview.postMessage({ messageType: "configUpdate", data });
   }
 
   private async _route(method: string, data: any): Promise<any> {
