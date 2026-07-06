@@ -14,8 +14,7 @@
     "Machine Learning"
   ],
   "activationEvents": [
-    "onStartupFinished",
-    "onView:sleepy.chat"
+    "onStartupFinished"
   ],
   "main": "./out/extension.js",
   "contributes": {
