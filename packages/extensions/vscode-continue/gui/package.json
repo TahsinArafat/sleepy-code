@@ -16,7 +16,10 @@
     "lint": "eslint --ext ts"
   },
   "dependencies": {
-    "@continuedev/config-yaml": "file:../packages/config-yaml",
+    "@continuedev/config-yaml": "^1.42.0",
+    "@continuedev/fetch": "^1.9.0",
+    "@continuedev/llm-info": "^1.8.0",
+    "@continuedev/openai-adapters": "^1.37.0",
     "@continuedev/terminal-security": "file:../packages/terminal-security",
     "@headlessui/react": "^2.2.0",
     "@heroicons/react": "^2.0.18",

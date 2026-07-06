@@ -2,22 +2,22 @@
   "compilerOptions": {
     "module": "commonjs",
     "target": "ES2022",
-    "lib": ["ES2022", "dom", "es6", "es5", "dom.iterable", "scripthost"],
+    "lib": ["ES2022"],
     "outDir": "out/tsc/src",
     "sourceMap": true,
-    "rootDir": "../../",
-    "strict": true,
+    "rootDir": "src",
+    "strict": false,
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "skipLibCheck": true,
-    "types": ["mocha"] // This solves conflict between jest and mocha: https://github.com/cypress-io/cypress/issues/7435#issuecomment-631695007
+    "noImplicitAny": false,
+    "types": ["node"],
+    "paths": {
+      "core/*": ["node_modules/@continuedev/core/*"],
+      "core": ["node_modules/@continuedev/core/core"]
+    },
+    "baseUrl": "."
   },
-  "include": ["src/**/*", "../../core/**/*.ts", "../../core/**/*.d.ts"],
-  // core/test uses @types/jest, which conflicts with @types/mocha
-  "exclude": [
-    "../../core/dist/**/*",
-    "../../core/**/*.test.ts",
-    "../../core/**/test/**/*",
-    "../../core/**/*.skip.ts"
-  ]
+  "include": ["src/**/*"],
+  "exclude": ["node_modules"]
 }
