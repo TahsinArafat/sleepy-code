@@ -6,12 +6,14 @@ import { SleepyChatProvider } from "./chat/webview-provider";
 import { SleepyAutocompleteProvider } from "./completion/provider";
 import { SleepyStatusBar } from "./status/status-bar";
 import { SleepyAuth } from "./auth/sleepy-auth";
+import { ContinueConfigWriter } from "./auth/continue-config";
 
 const GATEWAY_PATH = path.join(os.homedir(), ".config", "sleepy", "gateway.json");
 
 export function activate(context: vscode.ExtensionContext) {
   const auth = new SleepyAuth();
   const statusBar = new SleepyStatusBar(auth);
+  const continueCfg = new ContinueConfigWriter(auth);
 
   // Watch gateway.json for changes (e.g., after 'sleepy login' completes)
   let lastMtime = 0;
@@ -24,6 +26,7 @@ export function activate(context: vscode.ExtensionContext) {
         auth.recheck();
         statusBar.update();
         vscode.commands.executeCommand("sleepy.refreshModels");
+        continueCfg.sync();
       }
     } catch {
       // gateway.json deleted
@@ -58,6 +61,24 @@ export function activate(context: vscode.ExtensionContext) {
       }
       auth.loginViaTerminal();
     }),
+    vscode.commands.registerCommand("sleepy.logout", async () => {
+      continueCfg.removeSleepyModels();
+      auth.recheck();
+      statusBar.update();
+      vscode.window.showInformationMessage("Sleepy session removed from Continue config.");
+    }),
+    vscode.commands.registerCommand("sleepy.syncContinue", () => {
+      const ok = continueCfg.sync();
+      if (ok) {
+        vscode.window.showInformationMessage(
+          auth.models.length > 0
+            ? `Synced ${auth.models.length} Sleepy models to Continue config`
+            : "Synced — no Sleepy models available (login first?)"
+        );
+      } else {
+        vscode.window.showErrorMessage("Failed to sync to Continue config.");
+      }
+    }),
     vscode.commands.registerCommand("sleepy.autocomplete.toggle", () => {
       auth.toggleAutocomplete();
       statusBar.update();
@@ -68,13 +89,14 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("sleepy.refreshModels", async () => {
       await auth.refreshModels();
       statusBar.update();
+      continueCfg.sync();
       vscode.window.showInformationMessage(
         auth.models.length > 0 ? `Loaded ${auth.models.length} models` : "No models loaded"
       );
     })
   );
 
+  // Initial sync to Continue
+  continueCfg.sync();
   statusBar.update();
 }
-
-export function deactivate() {}

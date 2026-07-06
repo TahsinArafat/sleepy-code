@@ -34,7 +34,6 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.activate = activate;
-exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
@@ -43,10 +42,12 @@ const webview_provider_1 = require("./chat/webview-provider");
 const provider_1 = require("./completion/provider");
 const status_bar_1 = require("./status/status-bar");
 const sleepy_auth_1 = require("./auth/sleepy-auth");
+const continue_config_1 = require("./auth/continue-config");
 const GATEWAY_PATH = path.join(os.homedir(), ".config", "sleepy", "gateway.json");
 function activate(context) {
     const auth = new sleepy_auth_1.SleepyAuth();
     const statusBar = new status_bar_1.SleepyStatusBar(auth);
+    const continueCfg = new continue_config_1.ContinueConfigWriter(auth);
     // Watch gateway.json for changes (e.g., after 'sleepy login' completes)
     let lastMtime = 0;
     try {
@@ -61,6 +62,7 @@ function activate(context) {
                 auth.recheck();
                 statusBar.update();
                 vscode.commands.executeCommand("sleepy.refreshModels");
+                continueCfg.sync();
             }
         }
         catch {
@@ -83,6 +85,21 @@ function activate(context) {
             return;
         }
         auth.loginViaTerminal();
+    }), vscode.commands.registerCommand("sleepy.logout", async () => {
+        continueCfg.removeSleepyModels();
+        auth.recheck();
+        statusBar.update();
+        vscode.window.showInformationMessage("Sleepy session removed from Continue config.");
+    }), vscode.commands.registerCommand("sleepy.syncContinue", () => {
+        const ok = continueCfg.sync();
+        if (ok) {
+            vscode.window.showInformationMessage(auth.models.length > 0
+                ? `Synced ${auth.models.length} Sleepy models to Continue config`
+                : "Synced — no Sleepy models available (login first?)");
+        }
+        else {
+            vscode.window.showErrorMessage("Failed to sync to Continue config.");
+        }
     }), vscode.commands.registerCommand("sleepy.autocomplete.toggle", () => {
         auth.toggleAutocomplete();
         statusBar.update();
@@ -90,9 +107,11 @@ function activate(context) {
     }), vscode.commands.registerCommand("sleepy.refreshModels", async () => {
         await auth.refreshModels();
         statusBar.update();
+        continueCfg.sync();
         vscode.window.showInformationMessage(auth.models.length > 0 ? `Loaded ${auth.models.length} models` : "No models loaded");
     }));
+    // Initial sync to Continue
+    continueCfg.sync();
     statusBar.update();
 }
-function deactivate() { }
 //# sourceMappingURL=extension.js.map
