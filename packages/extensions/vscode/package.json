@@ -48,7 +48,7 @@
         {
           "id": "sleepy-sidebar",
           "title": "Sleepy",
-          "icon": "$(comment-discussion)"
+          "icon": "media/sleepy-icon.svg"
         }
       ]
     },
