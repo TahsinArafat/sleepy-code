@@ -1,0 +1,11 @@
+import { ConfigHandler } from "core/config/ConfigHandler";
+import { Core } from "core/core";
+import * as vscode from "vscode";
+import { ContinueConsoleWebviewViewProvider } from "./ContinueConsoleWebviewViewProvider";
+import { ContinueGUIWebviewViewProvider } from "./ContinueGUIWebviewViewProvider";
+import { VerticalDiffManager } from "./diff/vertical/manager";
+import EditDecorationManager from "./quickEdit/EditDecorationManager";
+import { QuickEdit } from "./quickEdit/QuickEditQuickPick";
+import { Battery } from "./util/battery";
+import { VsCodeIde } from "./VsCodeIde";
+export declare function registerAllCommands(context: vscode.ExtensionContext, ide: VsCodeIde, extensionContext: vscode.ExtensionContext, sidebar: ContinueGUIWebviewViewProvider, consoleView: ContinueConsoleWebviewViewProvider, configHandler: ConfigHandler, verticalDiffManager: VerticalDiffManager, battery: Battery, quickEdit: QuickEdit, core: Core, editDecorationManager: EditDecorationManager): void;

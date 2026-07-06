@@ -35,14 +35,6 @@
       {
         "command": "sleepy.refreshModels",
         "title": "Sleepy: Refresh Models"
-      },
-      {
-        "command": "sleepy.logout",
-        "title": "Sleepy: Logout (remove from Continue)"
-      },
-      {
-        "command": "sleepy.syncContinue",
-        "title": "Sleepy: Sync to Continue"
       }
     ],
     "keybindings": [
