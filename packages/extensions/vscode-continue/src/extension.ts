@@ -85,19 +85,22 @@ class SleepyWebview implements vscode.WebviewViewProvider {
   private _pushConfig() {
     const authToken = this._auth.token || "";
     const apiBase = `${this._auth.url}/api/v1`;
-    const models = this._auth.authed ? [
-      { title: "Deepseek V4 Pro", provider: "openai", model: "deepseek-v4-pro", apiKey: authToken, apiBase },
-      { title: "Deepseek V4 Flash", provider: "openai", model: "deepseek-v4-flash", apiKey: authToken, apiBase },
-      { title: "Deepseek V3 R1", provider: "openai", model: "deepseek-v3-r1", apiKey: authToken, apiBase },
+    const models: any[] = this._auth.authed ? [
+      { title: "Deepseek V4 Pro", provider: "openai", model: "deepseek-v4-pro", apiKey: authToken, apiBase, contextLength: 1000000, completionOptions: { maxTokens: 4096 } },
+      { title: "Deepseek V4 Flash", provider: "openai", model: "deepseek-v4-flash", apiKey: authToken, apiBase, contextLength: 1000000, completionOptions: { maxTokens: 4096 } },
+      { title: "Deepseek V3 R1", provider: "openai", model: "deepseek-v3-r1", apiKey: authToken, apiBase, contextLength: 128000, completionOptions: { maxTokens: 4096 } },
+      { title: "MiMo 2.5", provider: "openai", model: "mimo-2.5", apiKey: authToken, apiBase, contextLength: 1000000, completionOptions: { maxTokens: 4096 } },
     ] : [];
-    const chatModel = models[0] || undefined;
-    const configResult = {
+    const chatModel = models[0] || null;
+    const roles = { chat: models, edit: models, apply: models, autocomplete: models, embed: models, rerank: models, summarize: models, subagent: models };
+    const selected = { chat: chatModel, edit: chatModel, apply: chatModel, embed: chatModel, autocomplete: chatModel, rerank: chatModel, summarize: chatModel, subagent: chatModel };
+    const configPayload = {
       models,
-      selectedModelByRole: { chat: chatModel, edit: chatModel, apply: chatModel, autocomplete: chatModel, embed: chatModel, rerank: chatModel, summarize: chatModel, subagent: chatModel },
-      modelsByRole: { chat: models, edit: models, apply: models, autocomplete: models, embed: models, rerank: models, summarize: models, subagent: models },
-      slashCommands: [], contextProviders: [], systemMessage: "", allowAnonymousTelemetry: false,
+      modelsByRole: roles,
+      selectedModelByRole: selected,
+      slashCommands: [], contextProviders: [], tools: [], mcpServerStatuses: [], rules: [],
     };
-    this._view?.webview.postMessage({ messageType: "configUpdate", data: { result: configResult, profileId: "sleepy" } });
+    this._view?.webview.postMessage({ messageType: "configUpdate", data: { result: { config: configPayload, errors: [] }, profileId: "sleepy", profiles: [{ id: "sleepy", title: "Sleepy", uri: "", profileType: "local" as const, profileVersion: "sleepy-vscode" as const }] } });
   }
 
   private async _route(method: string, data: any): Promise<any> {
@@ -107,20 +110,22 @@ class SleepyWebview implements vscode.WebviewViewProvider {
         {
           const authToken = this._auth.token || "";
           const apiBase = `${this._auth.url}/api/v1`;
-          const m = this._auth.authed ? [
-            { title: "Deepseek V4 Pro", provider: "openai", model: "deepseek-v4-pro", apiKey: authToken, apiBase },
-            { title: "Deepseek V4 Flash", provider: "openai", model: "deepseek-v4-flash", apiKey: authToken, apiBase },
-            { title: "Deepseek V3 R1", provider: "openai", model: "deepseek-v3-r1", apiKey: authToken, apiBase },
+          const m: any[] = this._auth.authed ? [
+            { title: "Deepseek V4 Pro", provider: "openai", model: "deepseek-v4-pro", apiKey: authToken, apiBase, contextLength: 1000000, completionOptions: { maxTokens: 4096 } },
+            { title: "Deepseek V4 Flash", provider: "openai", model: "deepseek-v4-flash", apiKey: authToken, apiBase, contextLength: 1000000, completionOptions: { maxTokens: 4096 } },
+            { title: "Deepseek V3 R1", provider: "openai", model: "deepseek-v3-r1", apiKey: authToken, apiBase, contextLength: 128000, completionOptions: { maxTokens: 4096 } },
+            { title: "MiMo 2.5", provider: "openai", model: "mimo-2.5", apiKey: authToken, apiBase, contextLength: 1000000, completionOptions: { maxTokens: 4096 } },
           ] : [];
-          const chatModel = m[0] || undefined;
+          const chatModel = m[0] || null;
+          const roles = { chat: m, edit: m, apply: m, autocomplete: m, embed: m, rerank: m, summarize: m, subagent: m };
+          const selected = { chat: chatModel, edit: chatModel, apply: chatModel, embed: chatModel, autocomplete: chatModel, rerank: chatModel, summarize: chatModel, subagent: chatModel };
           return {
             result: {
-              models: m,
-      selectedModelByRole: { chat: chatModel, edit: chatModel, apply: chatModel, autocomplete: chatModel, embed: chatModel, rerank: chatModel, summarize: chatModel, subagent: chatModel },
-      modelsByRole: { chat: m, edit: m, apply: m, autocomplete: m, embed: m, rerank: m, summarize: m, subagent: m },
-              slashCommands: [], contextProviders: [], systemMessage: "", allowAnonymousTelemetry: false,
+              config: { models: m, modelsByRole: roles, selectedModelByRole: selected, slashCommands: [], contextProviders: [], tools: [], mcpServerStatuses: [], rules: [] },
+              errors: [],
             },
-            profileId: "sleepy", profileTitle: "Sleepy"
+            profileId: "sleepy",
+            profiles: [{ id: "sleepy", title: "Sleepy", uri: "", profileType: "local", profileVersion: "sleepy-vscode" }],
           };
         }
       case "config/listProfiles":
