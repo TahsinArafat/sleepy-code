@@ -109,7 +109,7 @@ export function createSessionChecker(options: SessionCheckerOptions) {
     if (config?.expires_at && config.refresh_token) {
       const timeUntilExpiry = config.expires_at - Date.now()
       if (timeUntilExpiry < REFRESH_BUFFER_MS) {
-        const refreshed = await tryRefresh(0)
+        const refreshed = await tryRefresh(1)
         if (refreshed) return true
       }
     }
