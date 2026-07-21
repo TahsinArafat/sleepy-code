@@ -251,7 +251,7 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
         <text fg={theme().text} onMouseUp={() => setExpanded(!expanded())}>
           <b>Plan & Limits</b> {expanded() ? "▼" : "▶"}
         </text>
-        <Show when={expanded() && tier() !== ""}>
+        <Show when={expanded()}><Show when={tier() !== ""} fallback={<text fg={theme().textMuted}>Loading limits...</text>}>
           <text fg={theme().textMuted}>Tier: {tier().charAt(0).toUpperCase() + tier().slice(1)} | Allow: ${creditUSD().toFixed(2)}</text>
           <Show when={balanceUSD() > 0}>
             <text fg={theme().textMuted}>Extra balance: ${balanceUSD().toFixed(2)}</text>
@@ -260,7 +260,7 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
           <box flexDirection="row">{bar(cost24h(), limit24h())}<text fg={theme().textMuted}> 24h (${cost24h().toFixed(2)}/${limit24h().toFixed(2)})</text></box>
           <box flexDirection="row">{bar(costWeekly(), limitWeekly())}<text fg={theme().textMuted}> Wk (${costWeekly().toFixed(2)}/${limitWeekly().toFixed(2)})</text></box>
           <box flexDirection="row">{bar(costMonthly(), limitMonthly())}<text fg={theme().textMuted}> Mo (${costMonthly().toFixed(2)}/${limitMonthly().toFixed(2)})</text></box>
-        </Show>
+        </Show></Show>
       </box>
     </box>
   )
