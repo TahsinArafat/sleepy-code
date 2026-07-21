@@ -117,7 +117,7 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
         setMonthlyUsageUSD(data.monthlyUsageUSD || 0.0)
         setMonthlyAllowanceUSD(data.monthlyAllowanceUSD || 5.0)
         if (data.limits) {
-          setCreditUSD(data.limits.creditUSD || 5.0)
+          setCreditUSD(typeof data.limits.creditUSD === "number" ? data.limits.creditUSD : (data.monthlyAllowanceUSD ?? 5.0))
           setLimit5h(data.limits.limit5h || 0.5)
           setLimit24h(data.limits.limit24h || 1.5)
           setLimitWeekly(data.limits.limitWeekly || 3.5)
