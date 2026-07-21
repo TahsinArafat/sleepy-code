@@ -782,7 +782,7 @@ export const layer = Layer.effect(
         }
 
         for (const dir of directories) {
-          if (dir.endsWith(".sleepycode") || dir === Flag.SLEEPYCODE_CONFIG_DIR) {
+          if (dir.endsWith(".sleepycode") || dir === Flag.SLEEPYCODE_CONFIG_DIR || dir === Global.Path.config) {
             for (const file of ["sleepycode.json", "sleepycode.jsonc"]) {
               const source = path.join(dir, file)
               log.debug(`loading config from ${source}`)

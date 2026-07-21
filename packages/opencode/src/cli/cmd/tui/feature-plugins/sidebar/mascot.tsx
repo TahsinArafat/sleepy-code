@@ -5,15 +5,13 @@ import { createMemo, createSignal, createEffect, onCleanup } from "solid-js"
 const id = "internal:sidebar-mascot"
 
 const IDLE_FRAMES = [
-  `   /\\_/\\\n  ( o.o )  zZ\n   > ^ <`,
-  `   /\\_/\\\n  ( -.- )  zZz\n   > ^ <`,
-  `   /\\_/\\\n  ( ~.~ )  zZzZ\n   > ^ <`,
+  `   _______ \n  |       |\n  |  O O  |\n  |   _   |\n  | |___| |`,
+  `   _______ \n  |       |\n  |  - -  |\n  |   _   |\n  | |___| |`,
 ]
 
 const ACTIVE_FRAMES = [
-  `   /\\_/\\\n  ( ✪ω✪ )  *beep*\n  />⌨ <\\`,
-  `   /\\_/\\\n  ( ✧ω✧ )  *boop*\n  />⌨ <\\`,
-  `   /\\_/\\\n  ( ^ω^ )  *type*\n  />⌨ <\\`,
+  `   _______ \n  |       |\n  |  O O  |\n  |   _   |\n  | |___| |`,
+  `   _______ \n  |       |\n  |  > <  |\n  |   _   |\n  | |___| |`,
 ]
 
 function View(props: { api: TuiPluginApi; session_id: string }) {

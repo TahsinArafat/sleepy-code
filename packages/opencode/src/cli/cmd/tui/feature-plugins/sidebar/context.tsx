@@ -142,7 +142,8 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
     const pct = Math.min(100, Math.max(0, max > 0 ? (used / max) * 100 : 0))
     const filled = Math.round(pct / 10)
     const empty = 10 - filled
-    return `[${"█".repeat(filled)}${"░".repeat(empty)}] ${pct.toFixed(0)}%`
+    const c = pct > 85 ? theme().error : theme().accent
+    return <text fg={c}>{`[${"█".repeat(filled)}${"░".repeat(empty)}]`}</text>
   }
 
   const contextBar = createMemo(() => {
@@ -151,8 +152,9 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
     const percent = Math.min(100, Math.max(0, max > 0 ? (used / max) * 100 : 0))
     const filledLength = Math.round(percent / 10)
     const emptyLength = 10 - filledLength
-    const bar = "█".repeat(filledLength) + "░".repeat(emptyLength)
-    return `[${bar}] ${percent.toFixed(0)}%`
+    const b = "█".repeat(filledLength) + "░".repeat(emptyLength)
+    const c = percent > 85 ? theme().error : theme().accent
+    return <text fg={c}>{`[${b}] ${percent.toFixed(0)}%`}</text>
   })
 
   const lastAssistant = createMemo(() =>
@@ -218,21 +220,23 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
           <text fg={theme().accent}>{state().modelName}</text>
         </Show>
         <text fg={theme().textMuted}>
-          Limit: {state().limit.toLocaleString()} / Used: {state().tokens.toLocaleString()} ({state().percent ?? 0}%)
+          Limit: {state().limit.toLocaleString()} / Used: {state().tokens.toLocaleString()}
         </text>
-        <text fg={theme().accent}>{contextBar()}</text>
+        {contextBar()}
         <Show when={state().inputPrice > 0 || state().outputPrice > 0}>
           <text fg={theme().textMuted}>Input: ${state().inputPrice.toFixed(3)}/1M · Output: ${state().outputPrice.toFixed(3)}/1M</text>
         </Show>
-        <Show when={tpsLabel()}>{(label) => <text fg={theme().textMuted}>{label()}</text>}</Show>
-        <text fg={theme().textMuted}>{cost().toFixed(4)} spent</text>
-        <Show when={latency()}>
-          {(l) => (
-            <text fg={theme().textMuted}>
-              Gateway: <span style={{ fg: theme().success }}>{l()}</span>
-            </text>
-          )}
-        </Show>
+        <box flexDirection="row" flexWrap="wrap" gap={1}>
+          <Show when={tpsLabel()}>{(label) => <text fg={theme().textMuted}>{label()}</text>}</Show>
+          <text fg={theme().textMuted}>Cost: ${cost().toFixed(4)}</text>
+          <Show when={latency()}>
+            {(l) => (
+              <text fg={theme().textMuted}>
+                GW: <span style={{ fg: theme().success }}>{l()}</span>
+              </text>
+            )}
+          </Show>
+        </box>
       </box>
       <box>
         <text fg={theme().text}><b>Session</b></text>
@@ -249,10 +253,10 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
           <Show when={balanceUSD() > 0}>
             <text fg={theme().textMuted}>Extra balance: ${balanceUSD().toFixed(2)}</text>
           </Show>
-          <text fg={theme().textMuted}>5h: {bar(cost5h(), limit5h())} (${cost5h().toFixed(2)}/${limit5h().toFixed(2)})</text>
-          <text fg={theme().textMuted}>24h: {bar(cost24h(), limit24h())} (${cost24h().toFixed(2)}/${limit24h().toFixed(2)})</text>
-          <text fg={theme().textMuted}>Wk: {bar(costWeekly(), limitWeekly())} (${costWeekly().toFixed(2)}/${limitWeekly().toFixed(2)})</text>
-          <text fg={theme().textMuted}>Mo: {bar(costMonthly(), limitMonthly())} (${costMonthly().toFixed(2)}/${limitMonthly().toFixed(2)})</text>
+          <box flexDirection="row"><text fg={theme().textMuted}>5h: </text>{bar(cost5h(), limit5h())}<text fg={theme().textMuted}> (${cost5h().toFixed(2)}/${limit5h().toFixed(2)})</text></box>
+          <box flexDirection="row"><text fg={theme().textMuted}>24h: </text>{bar(cost24h(), limit24h())}<text fg={theme().textMuted}> (${cost24h().toFixed(2)}/${limit24h().toFixed(2)})</text></box>
+          <box flexDirection="row"><text fg={theme().textMuted}>Wk: </text>{bar(costWeekly(), limitWeekly())}<text fg={theme().textMuted}> (${costWeekly().toFixed(2)}/${limitWeekly().toFixed(2)})</text></box>
+          <box flexDirection="row"><text fg={theme().textMuted}>Mo: </text>{bar(costMonthly(), limitMonthly())}<text fg={theme().textMuted}> (${costMonthly().toFixed(2)}/${limitMonthly().toFixed(2)})</text></box>
         </Show>
       </box>
     </box>
