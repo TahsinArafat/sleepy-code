@@ -311,7 +311,7 @@ export function createFrames(options: KnightRiderOptions = {}): string[] {
     return Array.from({ length: width }, (_, charIndex) => {
       if (style === "plane") {
         const dd = state.isMovingForward ? state.activePosition - charIndex : charIndex - state.activePosition
-        if (dd === 0) return "🛸"
+        if (dd === 0) return "😸"
         if (dd > 0 && dd < trailOptions.colors.length) {
           return ["·", "∙", "˙"][(frameIndex + dd) % 3]!
         }

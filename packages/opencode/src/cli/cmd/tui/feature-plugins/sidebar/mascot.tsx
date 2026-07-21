@@ -13,7 +13,7 @@ const IDLE_FRAMES = [
 const ACTIVE_FRAMES = [
   `       /\\_/\\\n      ( ^.^ ) *beep*\n       > ^ <\n      /|   |\\\n     (_|   |_) ~`,
   `       /\\_/\\\n      ( ^w^ ) *boop*\n       > ^ <\n      /|   |\\\n     (_|   |_) _~`,
-  `       /\\_/\\\n     ( =^.^=) *type*\n       > ^ <\n      /|   |\\\n     (_|   |_) ~_`,
+  `       /\\_/\\\n      ( =^.^=) *type*\n       > ^ <\n      /|   |\\\n     (_|   |_) ~_`,
 ]
 
 function View(props: { api: TuiPluginApi; session_id: string }) {

@@ -74,7 +74,7 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
 
   const [tick, setTick] = createSignal(Date.now())
   const [expanded, setExpanded] = createSignal(true)
-  const [tier, setTier] = createSignal("free")
+  const [tier, setTier] = createSignal("")
   const [totalCost, setTotalCost] = createSignal(0)
   const [creditUSD, setCreditUSD] = createSignal(5.0)
   const [balanceUSD, setBalanceUSD] = createSignal(0.0)
@@ -92,7 +92,7 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
 
   onMount(() => {
     let active = true;
-    const poll = async () => {
+        const poll = async (retries = 3) => {
       try {
         const configPath = path.join(Global.Path.config, "gateway.json")
         if (!fs.existsSync(configPath)) return
@@ -105,28 +105,32 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
         const res = await fetch(`${dashboardUrl}/api/usage?days=30`, {
           headers: { Authorization: `Bearer ${token}` }
         })
-        if (!res.ok || !active) return
+        if (!res.ok || !active) {
+          if (retries > 0 && active) setTimeout(() => poll(retries - 1), 2000);
+          return
+        }
         const data = await res.json()
-        setTier(data.tier ?? "free")
-        setTotalCost(data.totalCost ?? 0)
-        setBalanceUSD(data.balanceUSD ?? 0.0)
-        setMonthlyUsageUSD(data.monthlyUsageUSD ?? 0.0)
-        setMonthlyAllowanceUSD(data.monthlyAllowanceUSD ?? 5.0)
+        setTier(data.tier || "free")
+        setTotalCost(data.totalCost || 0)
+        setBalanceUSD(data.balanceUSD || 0.0)
+        setMonthlyUsageUSD(data.monthlyUsageUSD || 0.0)
+        setMonthlyAllowanceUSD(data.monthlyAllowanceUSD || 5.0)
         if (data.limits) {
-          setCreditUSD(data.limits.creditUSD ?? 5.0)
-          setLimit5h(data.limits.limit5h ?? 0.5)
-          setLimit24h(data.limits.limit24h ?? 1.5)
-          setLimitWeekly(data.limits.limitWeekly ?? 3.5)
-          setLimitMonthly(data.limits.limitMonthly ?? 5.0)
-          setRpmLimit(data.limits.rpmLimit ?? 15)
+          setCreditUSD(data.limits.creditUSD || 5.0)
+          setLimit5h(data.limits.limit5h || 0.5)
+          setLimit24h(data.limits.limit24h || 1.5)
+          setLimitWeekly(data.limits.limitWeekly || 3.5)
+          setLimitMonthly(data.limits.limitMonthly || 5.0)
+          setRpmLimit(data.limits.rpmLimit || 15)
         }
         if (data.usageByWindow) {
-          setCost5h(data.usageByWindow.cost5h ?? 0)
-          setCost24h(data.usageByWindow.cost24h ?? 0)
-          setCostWeekly(data.usageByWindow.costWeekly ?? 0)
-          setCostMonthly(data.usageByWindow.costMonthly ?? 0)
+          setCost5h(data.usageByWindow.cost5h || 0)
+          setCost24h(data.usageByWindow.cost24h || 0)
+          setCostWeekly(data.usageByWindow.costWeekly || 0)
+          setCostMonthly(data.usageByWindow.costMonthly || 0)
         }
       } catch {
+        if (retries > 0 && active) setTimeout(() => poll(retries - 1), 2000);
       }
     };
 
@@ -247,7 +251,7 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
         <text fg={theme().text} onMouseUp={() => setExpanded(!expanded())}>
           <b>Plan & Limits</b> {expanded() ? "▼" : "▶"}
         </text>
-        <Show when={expanded()}>
+        <Show when={expanded() && tier() !== ""}>
           <text fg={theme().textMuted}>Tier: {tier().charAt(0).toUpperCase() + tier().slice(1)} | Allow: ${creditUSD().toFixed(2)}</text>
           <Show when={balanceUSD() > 0}>
             <text fg={theme().textMuted}>Extra balance: ${balanceUSD().toFixed(2)}</text>
