@@ -1795,6 +1795,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         }
 
         if (input.noReply === true) return message
+        if (message.parts.length === 0) return message
         return yield* loop({ sessionID: input.sessionID, agentID: input.agentID ?? "main", task_id: input.task_id })
       },
     )

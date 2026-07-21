@@ -71,7 +71,7 @@ import { TuiConfigProvider, useTuiConfig } from "./context/tui-config"
 import { TuiConfig } from "@/cli/cmd/tui/config/tui"
 import { createTuiApi, TuiPluginRuntime, type RouteMap } from "./plugin"
 import { FormatError, FormatUnknownError } from "@/cli/error"
-import { isPlainTerminal } from "./util/terminal"
+import { isPlainTerminal, isWindowsTerminal } from "./util/terminal"
 
 import type { EventSource } from "./context/sdk"
 import { DialogVariant } from "./component/dialog-variant"
@@ -1128,7 +1128,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           return
         }
 
-        promptRef.current?.paste()
+        if (!isWindowsTerminal()) promptRef.current?.paste()
         evt.preventDefault()
         evt.stopPropagation()
       }}

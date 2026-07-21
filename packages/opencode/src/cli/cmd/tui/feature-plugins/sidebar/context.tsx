@@ -65,7 +65,7 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
     return {
       tokens,
       limit,
-      percent: model?.limit.context ? Math.round((tokens / model.limit.context) * 100) : null,
+      percent: limit > 0 ? Math.round((tokens / limit) * 100) : 0,
       modelName: model?.name ?? last.modelID,
       inputPrice: model?.cost?.input ?? 0,
       outputPrice: model?.cost?.output ?? 0,
@@ -148,7 +148,7 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
   const contextBar = createMemo(() => {
     const used = state().tokens
     const max = state().limit ?? 128000
-    const percent = Math.min(100, Math.max(0, (used / max) * 100))
+    const percent = Math.min(100, Math.max(0, max > 0 ? (used / max) * 100 : 0))
     const filledLength = Math.round(percent / 10)
     const emptyLength = 10 - filledLength
     const bar = "█".repeat(filledLength) + "░".repeat(emptyLength)
@@ -245,19 +245,14 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
           <b>Plan & Limits</b> {expanded() ? "▼" : "▶"}
         </text>
         <Show when={expanded()}>
-          <text fg={theme().textMuted}>Tier: {tier().charAt(0).toUpperCase() + tier().slice(1)}</text>
-          <text fg={theme().textMuted}>Plan Allowance: ${creditUSD().toFixed(2)}/month</text>
-          <text fg={theme().textMuted}>5h limit ({cost5h().toFixed(4)}/${limit5h().toFixed(2)})</text>
-          <text fg={theme().warning}>{bar(cost5h(), limit5h())}</text>
-          <text fg={theme().textMuted}>24h limit ({cost24h().toFixed(4)}/${limit24h().toFixed(2)})</text>
-          <text fg={theme().warning}>{bar(cost24h(), limit24h())}</text>
-          <text fg={theme().textMuted}>Weekly limit ({costWeekly().toFixed(4)}/${limitWeekly().toFixed(2)})</text>
-          <text fg={theme().warning}>{bar(costWeekly(), limitWeekly())}</text>
-          <text fg={theme().textMuted}>Monthly limit ({costMonthly().toFixed(4)}/${limitMonthly().toFixed(2)})</text>
-          <text fg={theme().warning}>{bar(costMonthly(), limitMonthly())}</text>
+          <text fg={theme().textMuted}>Tier: {tier().charAt(0).toUpperCase() + tier().slice(1)} | Allow: ${creditUSD().toFixed(2)}</text>
           <Show when={balanceUSD() > 0}>
             <text fg={theme().textMuted}>Extra balance: ${balanceUSD().toFixed(2)}</text>
           </Show>
+          <text fg={theme().textMuted}>5h: {bar(cost5h(), limit5h())} (${cost5h().toFixed(2)}/${limit5h().toFixed(2)})</text>
+          <text fg={theme().textMuted}>24h: {bar(cost24h(), limit24h())} (${cost24h().toFixed(2)}/${limit24h().toFixed(2)})</text>
+          <text fg={theme().textMuted}>Wk: {bar(costWeekly(), limitWeekly())} (${costWeekly().toFixed(2)}/${limitWeekly().toFixed(2)})</text>
+          <text fg={theme().textMuted}>Mo: {bar(costMonthly(), limitMonthly())} (${costMonthly().toFixed(2)}/${limitMonthly().toFixed(2)})</text>
         </Show>
       </box>
     </box>

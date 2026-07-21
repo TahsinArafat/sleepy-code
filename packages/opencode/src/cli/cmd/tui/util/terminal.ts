@@ -9,6 +9,10 @@ export function isMacNativeTerminal(input?: { platform?: NodeJS.Platform; termPr
   )
 }
 
+export function isWindowsTerminal(input?: { wtSession?: string }) {
+  return !!(input?.wtSession ?? process.env.WT_SESSION)
+}
+
 export function isPlainTerminal(input?: { platform?: NodeJS.Platform; termProgram?: string; plain?: string }) {
   const plain = input?.plain ?? process.env.SLEEPYCODE_TUI_PLAIN
   if (plain === "false" || plain === "0") return false

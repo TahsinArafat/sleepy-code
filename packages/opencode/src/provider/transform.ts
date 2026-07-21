@@ -363,6 +363,20 @@ function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage
   return msgs
 }
 
+// Minimal crash guard: ensure msg.content is never a non-string non-array value
+// (object, undefined, null) that would blow up downstream `.map()` calls.
+// Strings are valid ModelMessage content (the AI SDK accepts content: string |
+// Array) and are left untouched. Only genuinely-invalid types are normalized
+// to a safe empty array so every downstream path can safely call `.map()`.
+function normalizeContentArray(msgs: ModelMessage[]): ModelMessage[] {
+  return msgs.map((msg) => {
+    if (typeof msg.content === "string" || Array.isArray(msg.content)) return msg
+    // object / undefined / null — not a valid ModelMessage content shape;
+    // wrap in an empty array so .map() downstream never throws.
+    return { ...msg, content: [] } as ModelMessage
+  })
+}
+
 function unsupportedParts(msgs: ModelMessage[], model: Provider.Model): ModelMessage[] {
   return msgs.map((msg) => {
     if (msg.role !== "user" || !Array.isArray(msg.content)) return msg
@@ -448,6 +462,9 @@ function limitImages(msgs: ModelMessage[]): ModelMessage[] {
 }
 
 export function message(msgs: ModelMessage[], model: Provider.Model, options: Record<string, unknown>) {
+  // Guard against genuinely-invalid content (object/undefined/null) that would
+  // blow up downstream .map() calls. Strings are valid and left untouched.
+  msgs = normalizeContentArray(msgs)
   msgs = unsupportedParts(msgs, model)
   msgs = limitImages(msgs)
   msgs = normalizeMessages(msgs, model, options)
