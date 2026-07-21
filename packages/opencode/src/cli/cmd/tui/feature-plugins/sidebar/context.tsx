@@ -92,6 +92,7 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
 
   onMount(() => {
     let active = true;
+        
         const poll = async (retries = 3) => {
       try {
         const configPath = path.join(Global.Path.config, "gateway.json")
@@ -133,6 +134,7 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
         if (retries > 0 && active) setTimeout(() => poll(retries - 1), 2000);
       }
     };
+
 
     void poll();
     const handle = setInterval(poll, 15000)

@@ -5,15 +5,15 @@ import { createMemo, createSignal, createEffect, onCleanup } from "solid-js"
 const id = "internal:sidebar-mascot"
 
 const IDLE_FRAMES = [
-  `       /\\_/\\\n      ( o.o )\n       > ^ <\n      /|   |\\\n     (_|   |_)`,
-  `       /\\_/\\\n      ( -.- )\n       > ^ <\n      /|   |\\\n     (_|   |_)`,
-  `       /\\_/\\\n      ( ~.~ )\n       > ^ <\n      /|   |\\\n     (_|   |_)`,
+  `    |\\---/|\n    ( o.o )  zZ\n    /  ♥  \\\n   (  u u  )`,
+  `    |\\---/|\n    ( -.- )  zZz\n    /  ♥  \\\n   (  u u  )`,
+  `    |\\---/|\n    ( ~.~ )  zZzZ\n    /  ♥  \\\n   (  u u  )`,
 ]
 
 const ACTIVE_FRAMES = [
-  `       /\\_/\\\n      ( ^.^ ) *beep*\n       > ^ <\n      /|   |\\\n     (_|   |_) ~`,
-  `       /\\_/\\\n      ( ^w^ ) *boop*\n       > ^ <\n      /|   |\\\n     (_|   |_) _~`,
-  `       /\\_/\\\n      ( -.- ) *type*\n       > ^ <\n      /|   |\\\n     (_|   |_) ~_`,
+  `    |\\___/|\n    ( ^.^ )  *beep*\n    /  ⌨  \\\n   (  u u  ) ~`,
+  `    |\\___/|\n    ( ^w^ )  *boop*\n    /  ⌨  \\\n   (  u u  ) _~`,
+  `    |\\___/|\n    ( -.- )  *type*\n    /  ⌨  \\\n   (  u u  ) ~_`,
 ]
 
 function View(props: { api: TuiPluginApi; session_id: string }) {
