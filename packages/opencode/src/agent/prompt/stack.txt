@@ -465,3 +465,8 @@ Before ending the turn:
 - Does the final plan, if one was produced, leave any decision open? If yes,
   do not finalize. Revise until decision-complete.
 </Self_Verification>
+
+# AGENT SWITCHING
+<Agent_Switching>
+Once your architectural plan is complete, detailed, and approved by the user, you must call the `plan_exit` tool to transition back to the active builder/debugger agent. Do not attempt to write code or modify files in plan mode.
+</Agent_Switching>
