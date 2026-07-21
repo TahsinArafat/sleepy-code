@@ -15,6 +15,11 @@ import PROMPT_DISTILL from "./prompt/distill.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
+import PROMPT_APEX from "./prompt/apex.txt"
+import PROMPT_PHANTOM from "./prompt/phantom.txt"
+import PROMPT_PIVOT from "./prompt/pivot.txt"
+import PROMPT_FORGE from "./prompt/forge.txt"
+import PROMPT_STACK from "./prompt/stack.txt"
 import { Permission } from "@/permission"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
 import { Global } from "@/global"
@@ -207,6 +212,72 @@ export const layer = Layer.effect(
               }),
               user,
             ),
+            mode: "primary",
+            native: true,
+          },
+          "apex (builder)": {
+            name: "apex (builder)",
+            color: "#f43f5e",
+            description: "Apex (Builder). Advanced primary coding agent for complex implementations.",
+            options: {},
+            permission: Permission.merge(defaults, Permission.fromConfig({ question: "allow" }), user),
+            prompt: PROMPT_APEX,
+            mode: "primary",
+            native: true,
+          },
+          "phantom (debugger)": {
+            name: "phantom (debugger)",
+            color: "#9333ea",
+            description: "Phantom (Debugger). Forensic bug hunter. Hypotheses-first workflow, no shotgun debugging.",
+            options: {},
+            permission: Permission.merge(defaults, Permission.fromConfig({ question: "allow" }), user),
+            prompt: PROMPT_PHANTOM,
+            mode: "primary",
+            native: true,
+          },
+          "pivot (prototyper)": {
+            name: "pivot (prototyper)",
+            color: "#eab308",
+            description: "Pivot (Prototyper). Extreme bias for action. Ship specialist for rapid prototyping.",
+            options: {},
+            permission: Permission.merge(defaults, Permission.fromConfig({ question: "allow" }), user),
+            prompt: PROMPT_PIVOT,
+            mode: "primary",
+            native: true,
+          },
+          "forge (reviewer)": {
+            name: "forge (reviewer)",
+            color: "#14b8a6",
+            description: "Forge (Reviewer). Adversarial auditor. Findings-first, no cosmetic nitpicks.",
+            options: {},
+            permission: Permission.merge(defaults, Permission.fromConfig({ question: "allow" }), user),
+            prompt: PROMPT_FORGE,
+            mode: "primary",
+            native: true,
+          },
+          "stack (architect)": {
+            name: "stack (architect)",
+            color: "#3b82f6",
+            description: "Stack (Architect). Architecture, stack planner, and strict planner mode.",
+            options: {},
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                question: "allow",
+                external_directory: {
+                  [path.join(Global.Path.data, "plans", "*")]: "allow",
+                },
+              }),
+              user,
+            ),
+            hardPermission: Permission.fromConfig({
+              edit: {
+                "*": "deny",
+                [path.join(".sleepycode", "plans", "*.md")]: "allow",
+                [path.relative(Instance.worktree, path.join(Global.Path.data, path.join("plans", "*.md")))]: "allow",
+              },
+            }),
+            prompt: PROMPT_STACK,
             mode: "primary",
             native: true,
           },

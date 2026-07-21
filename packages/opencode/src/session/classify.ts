@@ -111,7 +111,10 @@ export function classifyAssistantStep(input: {
     )
   )
     return assistant.finish === "other" ? { type: "final", degraded: true } : { type: "final" }
-  if (input.parts.some((part) => part.type === "reasoning" && part.text.trim().length > 0))
+  if (input.parts.some((part) => part.type === "reasoning" && part.text.trim().length > 0)) {
+    if (/(^|\/)gpt-\d/i.test(assistant.modelID))
+      return assistant.finish === "other" ? { type: "final", degraded: true } : { type: "final" }
     return { type: "think-only" }
+  }
   return { type: "invalid", reason: "empty output" }
 }

@@ -21,7 +21,7 @@ function userInfo(id: string): MessageV2.User {
 
 function assistantInfo(
   id: string,
-  extra?: Partial<Pick<MessageV2.Assistant, "finish" | "error" | "summary" | "structured">>,
+  extra?: Partial<Pick<MessageV2.Assistant, "finish" | "error" | "summary" | "structured" | "modelID">>,
 ): MessageV2.Assistant {
   return {
     id: MessageID.make(id),
@@ -107,6 +107,17 @@ describe("classifyAssistantStep", () => {
         parts: [reasoningPart("m-2", "let me think...")],
       }),
     ).toEqual({ type: "think-only" })
+  })
+
+  test("GPT reasoning-only output is terminal", () => {
+    expect(
+      classifyAssistantStep({
+        phase: "after-process",
+        lastUser,
+        assistant: assistantInfo("m-2", { finish: "stop", modelID: ModelID.make("gpt-5") }),
+        parts: [reasoningPart("m-2", "reasoning")],
+      }),
+    ).toEqual({ type: "final" })
   })
 
   describe("core guarantee: any finish + client tool part => continue", () => {

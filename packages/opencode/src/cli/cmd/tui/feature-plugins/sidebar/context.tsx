@@ -65,7 +65,7 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
     return {
       tokens,
       limit,
-      percent: model?.limit.context ? Math.round((tokens / model.limit.context) * 100) : null,
+      percent: limit > 0 ? Math.round((tokens / limit) * 100) : 0,
       modelName: model?.name ?? last.modelID,
       inputPrice: model?.cost?.input ?? 0,
       outputPrice: model?.cost?.output ?? 0,
@@ -74,7 +74,7 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
 
   const [tick, setTick] = createSignal(Date.now())
   const [expanded, setExpanded] = createSignal(true)
-  const [tier, setTier] = createSignal("free")
+  const [tier, setTier] = createSignal("")
   const [totalCost, setTotalCost] = createSignal(0)
   const [creditUSD, setCreditUSD] = createSignal(5.0)
   const [balanceUSD, setBalanceUSD] = createSignal(0.0)
@@ -92,7 +92,8 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
 
   onMount(() => {
     let active = true;
-    const poll = async () => {
+        
+        const poll = async (retries = 3) => {
       try {
         const configPath = path.join(Global.Path.config, "gateway.json")
         if (!fs.existsSync(configPath)) return
@@ -105,30 +106,35 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
         const res = await fetch(`${dashboardUrl}/api/usage?days=30`, {
           headers: { Authorization: `Bearer ${token}` }
         })
-        if (!res.ok || !active) return
+        if (!res.ok || !active) {
+          if (retries > 0 && active) setTimeout(() => poll(retries - 1), 2000);
+          return
+        }
         const data = await res.json()
-        setTier(data.tier ?? "free")
-        setTotalCost(data.totalCost ?? 0)
-        setBalanceUSD(data.balanceUSD ?? 0.0)
-        setMonthlyUsageUSD(data.monthlyUsageUSD ?? 0.0)
-        setMonthlyAllowanceUSD(data.monthlyAllowanceUSD ?? 5.0)
+        setTier(data.tier || "free")
+        setTotalCost(data.totalCost || 0)
+        setBalanceUSD(data.balanceUSD || 0.0)
+        setMonthlyUsageUSD(data.monthlyUsageUSD || 0.0)
+        setMonthlyAllowanceUSD(data.monthlyAllowanceUSD || 5.0)
         if (data.limits) {
-          setCreditUSD(data.limits.creditUSD ?? 5.0)
-          setLimit5h(data.limits.limit5h ?? 0.5)
-          setLimit24h(data.limits.limit24h ?? 1.5)
-          setLimitWeekly(data.limits.limitWeekly ?? 3.5)
-          setLimitMonthly(data.limits.limitMonthly ?? 5.0)
-          setRpmLimit(data.limits.rpmLimit ?? 15)
+          setCreditUSD((data.monthlyAllowanceUSD && data.monthlyAllowanceUSD > 0) ? data.monthlyAllowanceUSD : (typeof data.limits.creditUSD === "number" ? data.limits.creditUSD : 5.0))
+          setLimit5h(data.limits.limit5h || 0.5)
+          setLimit24h(data.limits.limit24h || 1.5)
+          setLimitWeekly(data.limits.limitWeekly || 3.5)
+          setLimitMonthly(data.limits.limitMonthly || 5.0)
+          setRpmLimit(data.limits.rpmLimit || 15)
         }
         if (data.usageByWindow) {
-          setCost5h(data.usageByWindow.cost5h ?? 0)
-          setCost24h(data.usageByWindow.cost24h ?? 0)
-          setCostWeekly(data.usageByWindow.costWeekly ?? 0)
-          setCostMonthly(data.usageByWindow.costMonthly ?? 0)
+          setCost5h(data.usageByWindow.cost5h || 0)
+          setCost24h(data.usageByWindow.cost24h || 0)
+          setCostWeekly(data.usageByWindow.costWeekly || 0)
+          setCostMonthly(data.usageByWindow.costMonthly || 0)
         }
       } catch {
+        if (retries > 0 && active) setTimeout(() => poll(retries - 1), 2000);
       }
     };
+
 
     void poll();
     const handle = setInterval(poll, 15000)
@@ -142,17 +148,19 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
     const pct = Math.min(100, Math.max(0, max > 0 ? (used / max) * 100 : 0))
     const filled = Math.round(pct / 10)
     const empty = 10 - filled
-    return `[${"█".repeat(filled)}${"░".repeat(empty)}] ${pct.toFixed(0)}%`
+    const c = pct > 85 ? theme().error : theme().accent
+    return <text fg={c}>{`[${"▅".repeat(filled)}${"_".repeat(empty)}]`}</text>
   }
 
   const contextBar = createMemo(() => {
     const used = state().tokens
     const max = state().limit ?? 128000
-    const percent = Math.min(100, Math.max(0, (used / max) * 100))
+    const percent = Math.min(100, Math.max(0, max > 0 ? (used / max) * 100 : 0))
     const filledLength = Math.round(percent / 10)
     const emptyLength = 10 - filledLength
-    const bar = "█".repeat(filledLength) + "░".repeat(emptyLength)
-    return `[${bar}] ${percent.toFixed(0)}%`
+    const b = "▅".repeat(filledLength) + "_".repeat(emptyLength)
+    const c = percent > 85 ? theme().error : theme().accent
+    return <text fg={c}>{`[${b}]`}</text>
   })
 
   const lastAssistant = createMemo(() =>
@@ -163,7 +171,8 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
     const last = lastAssistant()
     if (!last || last.time.completed === undefined) return undefined
     const duration = last.time.completed - last.time.created
-    return duration > 0 ? `${Math.round(duration)}ms` : undefined
+    if (duration <= 0) return undefined
+    return duration < 1000 ? `${Math.round(duration)}ms` : `${(duration / 1000).toFixed(1)}s`
   })
 
   const isStreaming = createMemo(() => {
@@ -218,21 +227,21 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
           <text fg={theme().accent}>{state().modelName}</text>
         </Show>
         <text fg={theme().textMuted}>
-          Limit: {state().limit.toLocaleString()} / Used: {state().tokens.toLocaleString()} ({state().percent ?? 0}%)
+          Limit: {state().limit.toLocaleString()} / Used: {state().tokens.toLocaleString()}
         </text>
-        <text fg={theme().accent}>{contextBar()}</text>
+        {contextBar()}
         <Show when={state().inputPrice > 0 || state().outputPrice > 0}>
           <text fg={theme().textMuted}>Input: ${state().inputPrice.toFixed(3)}/1M · Output: ${state().outputPrice.toFixed(3)}/1M</text>
         </Show>
-        <Show when={tpsLabel()}>{(label) => <text fg={theme().textMuted}>{label()}</text>}</Show>
-        <text fg={theme().textMuted}>{cost().toFixed(4)} spent</text>
-        <Show when={latency()}>
-          {(l) => (
-            <text fg={theme().textMuted}>
-              Gateway: <span style={{ fg: theme().success }}>{l()}</span>
-            </text>
-          )}
-        </Show>
+        <box flexDirection="row" flexWrap="wrap" gap={1}>
+          <Show when={tpsLabel()}>{(label) => <text fg={theme().info}>{label()}</text>}</Show>
+          <text fg={theme().warning}>Cost: ${cost().toFixed(4)}</text>
+          <Show when={latency()}>
+            {(l) => (
+              <text fg={theme().success}>GW: {l()}</text>
+            )}
+          </Show>
+        </box>
       </box>
       <box>
         <text fg={theme().text}><b>Session</b></text>
@@ -244,21 +253,16 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
         <text fg={theme().text} onMouseUp={() => setExpanded(!expanded())}>
           <b>Plan & Limits</b> {expanded() ? "▼" : "▶"}
         </text>
-        <Show when={expanded()}>
-          <text fg={theme().textMuted}>Tier: {tier().charAt(0).toUpperCase() + tier().slice(1)}</text>
-          <text fg={theme().textMuted}>Plan Allowance: ${creditUSD().toFixed(2)}/month</text>
-          <text fg={theme().textMuted}>5h limit ({cost5h().toFixed(4)}/${limit5h().toFixed(2)})</text>
-          <text fg={theme().warning}>{bar(cost5h(), limit5h())}</text>
-          <text fg={theme().textMuted}>24h limit ({cost24h().toFixed(4)}/${limit24h().toFixed(2)})</text>
-          <text fg={theme().warning}>{bar(cost24h(), limit24h())}</text>
-          <text fg={theme().textMuted}>Weekly limit ({costWeekly().toFixed(4)}/${limitWeekly().toFixed(2)})</text>
-          <text fg={theme().warning}>{bar(costWeekly(), limitWeekly())}</text>
-          <text fg={theme().textMuted}>Monthly limit ({costMonthly().toFixed(4)}/${limitMonthly().toFixed(2)})</text>
-          <text fg={theme().warning}>{bar(costMonthly(), limitMonthly())}</text>
+        <Show when={expanded()}><Show when={tier() !== ""} fallback={<text fg={theme().textMuted}>Loading limits...</text>}>
+          <text fg={theme().textMuted}>Tier: {tier().charAt(0).toUpperCase() + tier().slice(1)} | Allow: ${creditUSD().toFixed(2)}</text>
           <Show when={balanceUSD() > 0}>
             <text fg={theme().textMuted}>Extra balance: ${balanceUSD().toFixed(2)}</text>
           </Show>
-        </Show>
+          <box flexDirection="row">{bar(cost5h(), limit5h())}<text fg={theme().textMuted}> 5h (${cost5h().toFixed(2)}/${limit5h().toFixed(2)})</text></box>
+          <box flexDirection="row">{bar(cost24h(), limit24h())}<text fg={theme().textMuted}> 24h (${cost24h().toFixed(2)}/${limit24h().toFixed(2)})</text></box>
+          <box flexDirection="row">{bar(costWeekly(), limitWeekly())}<text fg={theme().textMuted}> Wk (${costWeekly().toFixed(2)}/${limitWeekly().toFixed(2)})</text></box>
+          <box flexDirection="row">{bar(costMonthly(), limitMonthly())}<text fg={theme().textMuted}> Mo (${costMonthly().toFixed(2)}/${limitMonthly().toFixed(2)})</text></box>
+        </Show></Show>
       </box>
     </box>
   )

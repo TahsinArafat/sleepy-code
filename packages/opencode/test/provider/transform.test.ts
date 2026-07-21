@@ -3521,3 +3521,42 @@ describe("ProviderTransform.schema - openai discriminated-union flatten", () => 
     expect(result.anyOf).toBeUndefined()
   })
 })
+
+describe("ProviderTransform.message non-array content", () => {
+  const model = {
+    id: "gpt-4o",
+    providerID: "openai",
+    api: { id: "gpt-4o", url: "https://api.openai.com", npm: "@ai-sdk/openai" },
+    name: "GPT-4o",
+    capabilities: {
+      temperature: true,
+      reasoning: false,
+      attachment: true,
+      toolcall: true,
+      input: { text: true, audio: false, image: true, video: false, pdf: false },
+      output: { text: true, audio: false, image: false, video: false, pdf: false },
+      interleaved: false,
+    },
+    cost: { input: 0, output: 0 },
+    limit: { context: 128000, output: 4096 },
+    status: "active",
+    options: {},
+    headers: {},
+  } as any
+
+  test("normalizes invalid message content without changing strings", () => {
+    const result = ProviderTransform.message(
+      [
+        { role: "user", content: "hello" },
+        { role: "assistant", content: undefined },
+        { role: "user", content: { text: "invalid" } },
+      ] as any,
+      model,
+      {},
+    )
+
+    expect(result[0].content).toBe("hello")
+    expect(result[1].content).toEqual([])
+    expect(result[2].content).toEqual([])
+  })
+})
