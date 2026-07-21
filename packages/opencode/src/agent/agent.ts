@@ -215,7 +215,7 @@ export const layer = Layer.effect(
             mode: "primary",
             native: true,
           },
-          apex: {
+          "apex (builder)": {
             name: "apex (builder)",
             color: "#f43f5e",
             description: "Apex (Builder). Advanced primary coding agent for complex implementations.",
@@ -225,7 +225,7 @@ export const layer = Layer.effect(
             mode: "primary",
             native: true,
           },
-          phantom: {
+          "phantom (debugger)": {
             name: "phantom (debugger)",
             color: "#a855f7",
             description: "Phantom (Debugger). Forensic bug hunter. Hypotheses-first workflow, no shotgun debugging.",
@@ -235,7 +235,7 @@ export const layer = Layer.effect(
             mode: "primary",
             native: true,
           },
-          pivot: {
+          "pivot (prototyper)": {
             name: "pivot (prototyper)",
             color: "#eab308",
             description: "Pivot (Prototyper). Extreme bias for action. Ship specialist for rapid prototyping.",
@@ -245,7 +245,7 @@ export const layer = Layer.effect(
             mode: "primary",
             native: true,
           },
-          forge: {
+          "forge (reviewer)": {
             name: "forge (reviewer)",
             color: "#14b8a6",
             description: "Forge (Reviewer). Adversarial auditor. Findings-first, no cosmetic nitpicks.",
@@ -255,7 +255,7 @@ export const layer = Layer.effect(
             mode: "primary",
             native: true,
           },
-          stack: {
+          "stack (architect)": {
             name: "stack (architect)",
             color: "#3b82f6",
             description: "Stack (Architect). Architecture, stack planner, and strict planner mode.",
