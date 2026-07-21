@@ -227,7 +227,7 @@ export const layer = Layer.effect(
           },
           "phantom (debugger)": {
             name: "phantom (debugger)",
-            color: "#a855f7",
+            color: "#9333ea",
             description: "Phantom (Debugger). Forensic bug hunter. Hypotheses-first workflow, no shotgun debugging.",
             options: {},
             permission: Permission.merge(defaults, Permission.fromConfig({ question: "allow" }), user),
