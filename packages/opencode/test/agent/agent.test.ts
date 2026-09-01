@@ -9,10 +9,11 @@ import { ToolRegistry } from "../../src/tool"
 import { ModelID, ProviderID } from "../../src/provider/schema"
 import * as CrossSpawnSpawner from "../../src/effect/cross-spawn-spawner"
 import { testEffect } from "../lib/effect"
+import PROMPT_GENERATE from "../../src/agent/generate.txt"
+import PROMPT_GENERATE_GPT from "../../src/agent/prompt/generate-gpt.txt"
+import PROMPT_EXPLORE from "../../src/agent/prompt/explore.txt"
 
-const itTool = testEffect(
-  Layer.mergeAll(ToolRegistry.defaultLayer, Agent.defaultLayer, CrossSpawnSpawner.defaultLayer),
-)
+const itTool = testEffect(Layer.mergeAll(ToolRegistry.defaultLayer, Agent.defaultLayer, CrossSpawnSpawner.defaultLayer))
 
 // Helper to evaluate permission for a tool with wildcard pattern
 function evalPerm(agent: Agent.Info | undefined, permission: string): Permission.Action | undefined {
@@ -26,6 +27,19 @@ function load<A>(dir: string, fn: (svc: Agent.Interface) => Effect.Effect<A>) {
 
 afterEach(async () => {
   await Instance.disposeAll()
+})
+
+test("agent prompts use runtime tool names and GPT generation guidance", () => {
+  expect(PROMPT_EXPLORE).toContain("Tool names and availability are model-specific")
+  expect(PROMPT_EXPLORE).not.toContain("Use Glob")
+  expect(PROMPT_EXPLORE).not.toContain("Use Grep")
+  expect(PROMPT_EXPLORE).not.toContain("Use Read")
+  expect(PROMPT_GENERATE).toContain("use the actor tool")
+  expect(PROMPT_GENERATE).not.toContain("use the Agent tool")
+  expect(PROMPT_GENERATE_GPT).toContain("`exec`")
+  expect(PROMPT_GENERATE_GPT).toContain("`tools.apply_patch(...)`")
+  expect(PROMPT_GENERATE_GPT).toContain("`tools.view_image(...)`")
+  expect(PROMPT_GENERATE_GPT).toContain("`tools.actor(...)`")
 })
 
 test("returns default native agents when no config", async () => {
@@ -103,7 +117,7 @@ test("plan keeps the edit tool in the schema — not stripped", async () => {
   })
 })
 
-test("plan does not restrict bash/change_directory/workflow", async () => {
+test("plan does not restrict bash/workflow", async () => {
   await using tmp = await tmpdir()
   await Instance.provide({
     directory: tmp.path,
@@ -113,7 +127,6 @@ test("plan does not restrict bash/change_directory/workflow", async () => {
       // These are left to the model's discipline; the permission layer is a
       // backstop for writes only.
       expect(Permission.evaluate("bash", "ls", rt).action).not.toBe("deny")
-      expect(Permission.evaluate("change_directory", "/tmp", rt).action).not.toBe("deny")
       expect(Permission.evaluate("workflow", "*", rt).action).not.toBe("deny")
     },
   })
@@ -132,19 +145,58 @@ test("build agent unaffected — no hardPermission", async () => {
   })
 })
 
-test("plan_enter and plan_exit are allowed (not hidden) for all primary agents", async () => {
+test("compose:* skills are denied for build/plan, allowed for compose", async () => {
   await using tmp = await tmpdir()
   await Instance.provide({
     directory: tmp.path,
     fn: async () => {
       const agents = await load(tmp.path, (svc) => svc.list())
-      const primaryAgents = agents.filter((a) => a.mode === "primary")
-      expect(primaryAgents.length).toBeGreaterThanOrEqual(3)
-      for (const agent of primaryAgents) {
-        const disabled = Permission.disabled(["plan_enter", "plan_exit"], agent.permission)
-        expect(disabled.has("plan_enter")).toBe(false)
+      for (const name of ["build", "plan"]) {
+        const agent = agents.find((a) => a.name === name)
+        expect(agent).toBeDefined()
+        expect(Permission.evaluate("skill", "compose:brainstorm", agent!.permission).action).toBe("deny")
+        expect(Permission.evaluate("skill", "compose:tdd", agent!.permission).action).toBe("deny")
+        expect(Permission.evaluate("skill", "compose:review", agent!.permission).action).toBe("deny")
+      }
+      const compose = agents.find((a) => a.name === "compose")
+      expect(compose).toBeDefined()
+      expect(Permission.evaluate("skill", "compose:brainstorm", compose!.permission).action).toBe("allow")
+      expect(Permission.evaluate("skill", "compose:tdd", compose!.permission).action).toBe("allow")
+      expect(Permission.evaluate("skill", "compose:review", compose!.permission).action).toBe("allow")
+      // Non-compose skills remain allowed for all agents
+      expect(Permission.evaluate("skill", "effect", agents.find((a) => a.name === "build")!.permission).action).toBe(
+        "allow",
+      )
+      expect(Permission.evaluate("skill", "effect", compose!.permission).action).toBe("allow")
+    },
+  })
+})
+
+test("plan_exit is allowed for build and plan agents", async () => {
+  await using tmp = await tmpdir()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const agents = await load(tmp.path, (svc) => svc.list())
+      for (const name of ["build", "plan"]) {
+        const agent = agents.find((a) => a.name === name)
+        expect(agent).toBeDefined()
+        const disabled = Permission.disabled(["plan_exit"], agent!.permission)
         expect(disabled.has("plan_exit")).toBe(false)
       }
+    },
+  })
+})
+
+test("plan_exit is denied for compose agent", async () => {
+  await using tmp = await tmpdir()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const compose = await load(tmp.path, (svc) => svc.get("compose"))
+      expect(compose).toBeDefined()
+      const disabled = Permission.disabled(["plan_exit"], compose!.permission)
+      expect(disabled.has("plan_exit")).toBe(true)
     },
   })
 })
@@ -178,6 +230,30 @@ test("explore agent asks for external directories and allows Truncate.GLOB", asy
   })
 })
 
+test("general and explore agents use dedicated prompts", async () => {
+  await using tmp = await tmpdir()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const general = await load(tmp.path, (svc) => svc.get("general"))
+      const explore = await load(tmp.path, (svc) => svc.get("explore"))
+      expect(general?.description).toContain("Full-capability general-purpose subagent")
+      expect(general?.description).toContain("inherits the parent's available tool surface")
+      expect(general?.prompt).toContain("full-capability general-purpose subagent")
+      expect(general?.prompt).toContain("including reading and searching, editing or creating files")
+      expect(general?.prompt).toContain("complete it end to end")
+      expect(general?.prompt).toContain("The parent agent, not you, communicates with the end user")
+      expect(general?.completionGate).toBe(true)
+      expect(general?.toolAllowlist).toBeUndefined()
+      expect(Permission.evaluate("read", "src/index.ts", general!.permission).action).toBe("allow")
+      expect(Permission.evaluate("edit", "src/index.ts", general!.permission).action).toBe("allow")
+      expect(Permission.evaluate("write", "src/index.ts", general!.permission).action).toBe("allow")
+      expect(Permission.evaluate("bash", "bun test", general!.permission).action).toBe("allow")
+      expect(explore?.prompt).toContain("file search specialist working for a parent agent")
+      expect(explore?.prompt).not.toBe(general?.prompt)
+    },
+  })
+})
 
 test("custom agent from config creates new agent", async () => {
   await using tmp = await tmpdir({
@@ -655,6 +731,51 @@ description: Permission skill.
   }
 })
 
+test("skill directories are allowed even when user denies external_directory globally", async () => {
+  await using tmp = await tmpdir({
+    git: true,
+    config: {
+      permission: {
+        external_directory: "deny",
+      },
+    },
+    init: async (dir) => {
+      const skillDir = path.join(dir, ".sleepycode", "skill", "perm-skill")
+      await Bun.write(
+        path.join(skillDir, "SKILL.md"),
+        `---
+name: perm-skill
+description: Permission skill.
+---
+
+# Permission Skill
+`,
+      )
+    },
+  })
+
+  const home = process.env.HOME
+  const userProfile = process.env.USERPROFILE
+  process.env.HOME = tmp.path
+  process.env.USERPROFILE = tmp.path
+
+  try {
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const build = await load(tmp.path, (svc) => svc.get("build"))
+        const skillDir = path.join(tmp.path, ".sleepycode", "skill", "perm-skill")
+        const target = path.join(skillDir, "reference", "notes.md")
+        expect(Permission.evaluate("external_directory", target, build!.permission).action).toBe("allow")
+        expect(Permission.evaluate("external_directory", "/some/other/path", build!.permission).action).toBe("deny")
+      },
+    })
+  } finally {
+    process.env.HOME = home
+    process.env.USERPROFILE = userProfile
+  }
+})
+
 test("defaultAgent returns build when no default_agent config", async () => {
   await using tmp = await tmpdir()
   await Instance.provide({
@@ -782,13 +903,14 @@ test("defaultAgent throws when all primary agents are disabled", async () => {
         build: { disable: true },
         plan: { disable: true },
         compose: { disable: true },
+        orchestrator: { disable: true },
       },
     },
   })
   await Instance.provide({
     directory: tmp.path,
     fn: async () => {
-      // build, plan, and compose are disabled, no primary-capable agents remain
+      // build, plan, compose, and orchestrator are disabled — no primary agents remain
       await expect(load(tmp.path, (svc) => svc.defaultAgent())).rejects.toThrow("no primary visible agent found")
     },
   })
@@ -902,7 +1024,7 @@ test("title/summary/checkpoint-writer are mode=subagent + hidden (spawnable filt
 // Regression for ses_19d1aa927: the fork agent (checkpoint-writer) inherits
 // compose's tool list verbatim (Task 2.6 removed toolAllowlist). This test
 // confirms the patch-swap in registry.ts fires correctly per model family.
-itTool.live("compose's tool list contains apply_patch on GPT-5+ but not on Claude", () =>
+itTool.live("compose's tool list swaps GPT-specific file tools", () =>
   provideTmpdirInstance((dir) =>
     Effect.gen(function* () {
       const agents = yield* Agent.Service
@@ -917,9 +1039,15 @@ itTool.live("compose's tool list contains apply_patch on GPT-5+ but not on Claud
         agent: compose!,
       })
       const gptIDs = gptTools.map((t) => t.id)
-      expect(gptIDs).toContain("apply_patch")
+      expect(gptIDs).toContain("exec")
+      expect(gptIDs).not.toContain("apply_patch")
+      expect(gptIDs).not.toContain("view_image")
       expect(gptIDs).not.toContain("edit")
       expect(gptIDs).not.toContain("write")
+      expect(gptIDs).not.toContain("read")
+      const exec = gptTools.find((tool) => tool.id === "exec")
+      expect(exec?.description).toContain("apply_patch(input:")
+      expect(exec?.description).toContain("view_image(input:")
 
       const claudeTools = yield* registry.tools({
         modelID: ModelID.make("claude-opus-4-7"),
@@ -929,7 +1057,22 @@ itTool.live("compose's tool list contains apply_patch on GPT-5+ but not on Claud
       const claudeIDs = claudeTools.map((t) => t.id)
       expect(claudeIDs).toContain("edit")
       expect(claudeIDs).toContain("write")
+      expect(claudeIDs).toContain("read")
       expect(claudeIDs).not.toContain("apply_patch")
+      expect(claudeIDs).not.toContain("view_image")
+
+      const claudeCodexIDs = (
+        yield* registry.tools({
+          modelID: ModelID.make("claude-opus-4-7"),
+          providerID: ProviderID.make("anthropic"),
+          agent: compose!,
+          harness: "codex",
+        })
+      ).map((tool) => tool.id)
+      expect(claudeCodexIDs).toContain("exec")
+      expect(claudeCodexIDs).not.toContain("edit")
+      expect(claudeCodexIDs).not.toContain("write")
+      expect(claudeCodexIDs).not.toContain("read")
     }),
   ),
 )

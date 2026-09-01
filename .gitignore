@@ -39,7 +39,7 @@ script/.sync-*.txt
 .claude/
 *.pid
 .sleepy-worktrees
-.sleepycode/
+.sleepycde
 
 # experiment run artifacts (regenerated per run, not source)
 experiment/*.log
@@ -48,3 +48,20 @@ experiment/last-outcome.json
 
 /sleepyapi/
 /packages/opencode/src/ext
+
+# temp
+temp/
+__pycache__
+Thumbs.db
+.playwright-cli/
+.sleepycode/wiki
+.sleepycode/wikis
+.sleepycode/cache
+
+# SDK codegen scratch: script/build.ts writes it, consumes it, then removes it.
+# A failed generation leaves it behind, where it is easy to commit by accident.
+/packages/sdk/js/openapi.json
+/packages/sdk/js/openapi-ts-error-*.log
+
+# others
+codex/

@@ -1,6 +1,7 @@
 import { Schema } from "effect"
 import { zod } from "@/util/effect-zod"
 import { withStatics } from "@/util/schema"
+import { ConfigRetry } from "./retry"
 
 const PositiveInt = Schema.Number.check(Schema.isInt()).check(Schema.isGreaterThan(0))
 
@@ -13,11 +14,28 @@ export const Model = Schema.Struct({
   reasoning: Schema.optional(Schema.Boolean),
   temperature: Schema.optional(Schema.Boolean),
   tool_call: Schema.optional(Schema.Boolean),
+  /**
+   * This model builds a voice from a natural-language description.
+   *
+   * Declared rather than derived, because it is INDISTINGUISHABLE from ordinary
+   * text-to-speech by modality: both are text in, audio out. Deriving it would mean
+   * matching model names in our source, which is the coupling this avoids.
+   */
+  voice_design: Schema.optional(Schema.Boolean),
+  /**
+   * This model reproduces a voice from a reference sample.
+   *
+   * Also declared, even though `input: [text, audio] → output: [audio]` looks like enough
+   * to infer it: a model with that shape could equally be speech-to-speech conversion. An
+   * inference that is right most of the time is the wrong kind of right for choosing which
+   * model a request is routed to.
+   */
+  voice_clone: Schema.optional(Schema.Boolean),
   interleaved: Schema.optional(
     Schema.Union([
       Schema.Literal(true),
       Schema.Struct({
-        field: Schema.Literals(["reasoning_content", "reasoning_details"]),
+        field: Schema.Literals(["reasoning", "reasoning_content", "reasoning_details"]),
       }),
     ]),
   ),
@@ -102,6 +120,12 @@ export class Info extends Schema.Class<Info>("ProviderConfig")({
           description:
             "Timeout in milliseconds for requests to this provider. Default is 300000 (5 minutes). Set to false to disable timeout.",
         }),
+        headerTimeout: Schema.optional(
+          Schema.Union([PositiveInt, Schema.Literal(false)]).annotate({
+            description:
+              "Timeout in milliseconds while waiting for response headers. OpenAI defaults to 300000 (5 minutes). Set to false to disable.",
+          }),
+        ),
         chunkTimeout: Schema.optional(PositiveInt).annotate({
           description:
             "Timeout in milliseconds between streamed SSE chunks for this provider. If no chunk arrives within this window, the request is aborted.",
@@ -110,7 +134,14 @@ export class Info extends Schema.Class<Info>("ProviderConfig")({
       [Schema.Record(Schema.String, Schema.Any)],
     ),
   ),
+  retry: Schema.optional(ConfigRetry.Info).annotate({
+    description: "Provider-specific overrides for retry budgets",
+  }),
   models: Schema.optional(Schema.Record(Schema.String, Model)),
+  only_configured_models: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "When true, show only the models listed in this provider's `models` map and hide the rest of the catalog (acts as an implicit whitelist). Defaults to false: `models` only augments/overrides the catalog without filtering it.",
+  }),
 }) {
   static readonly zod = zod(this)
 }

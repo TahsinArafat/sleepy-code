@@ -10,7 +10,7 @@ import { Npm } from "../npm"
 import { Hash } from "@sleepy-ai/shared/util/hash"
 import { Plugin } from "../plugin"
 import { NamedError } from "@sleepy-ai/shared/util/error"
-import { type LanguageModelV3 } from "@ai-sdk/provider"
+import { type LanguageModelV3, type SpeechModelV3 } from "@ai-sdk/provider"
 import * as ModelsDev from "./models"
 import { Auth } from "../auth"
 import { Env } from "../env"
@@ -27,6 +27,8 @@ import { InstanceState } from "@/effect"
 import { AppFileSystem } from "@sleepy-ai/shared/filesystem"
 import { isRecord } from "@/util/record"
 import { withStatics } from "@/util/schema"
+import { isFreeApiModel, isFreeApiSunset } from "@/util/free-api-sunset"
+import { usesSleepyResponsesApi } from "../tool/gpt"
 
 import * as ProviderTransform from "./transform"
 import { ModelID, ProviderID } from "./schema"
@@ -40,6 +42,7 @@ const BUILTIN_TIERS = new Set(["ultra", "standard", "lite"])
 // F41: warn once per (providerID, modelID) when limit.context falls back to default
 const warnedContextDefaults = new Set<string>()
 
+export const DEFAULT_OPENAI_HEADER_TIMEOUT = 300_000
 export const DEFAULT_CHUNK_TIMEOUT = 480_000 // 8 minutes — bounds single-attempt SSE stall.
 // Tuned for sleepy-v2.5-pro on Sleepy Router whose cold-path TTFT after context
 // rebuild can dip to ~5 minutes silent. Reasoning models with multi-minute
@@ -94,11 +97,138 @@ function wrapSSE(res: Response, ms: number, ctl: AbortController) {
     },
   })
 
-  return new Response(body, {
+  return wrapResponse(res, body)
+}
+
+function wrapResponse(res: Response, body: ReadableStream<Uint8Array>) {
+  const wrapped = new Response(body, {
     headers: new Headers(res.headers),
     status: res.status,
     statusText: res.statusText,
   })
+  Object.defineProperties(wrapped, {
+    redirected: { get: () => res.redirected },
+    type: { get: () => res.type },
+    url: { get: () => res.url },
+  })
+  return wrapped
+}
+
+function timeoutController(ms: number, message = `Response header timed out after ${ms}ms`) {
+  const ctl = new AbortController()
+  const id = setTimeout(() => ctl.abort(Object.assign(new Error(message), { code: "ETIMEDOUT" })), ms)
+  return {
+    signal: ctl.signal,
+    clear: () => clearTimeout(id),
+  }
+}
+
+type AbortSource = "request" | "timeout"
+
+export function trackAbortSource(requestSignal: AbortSignal | null | undefined, timeoutSignals: AbortSignal[]) {
+  const signals = [requestSignal, ...timeoutSignals].filter((signal) => signal !== null && signal !== undefined)
+  let source: AbortSource | undefined = requestSignal?.aborted
+    ? "request"
+    : timeoutSignals.some((signal) => signal.aborted)
+      ? "timeout"
+      : undefined
+  let winner = requestSignal?.aborted ? requestSignal : timeoutSignals.find((signal) => signal.aborted)
+  const listeners = signals.map((signal, index) => {
+    const listener = () => {
+      if (source) return
+      source = index === 0 && requestSignal ? "request" : "timeout"
+      winner = signal
+    }
+    signal.addEventListener("abort", listener, { once: true })
+    if (signal.aborted) listener()
+    return { signal, listener }
+  })
+  return {
+    signal: signals.length === 0 ? undefined : signals.length === 1 ? signals[0] : AbortSignal.any(signals),
+    source: () => source,
+    winner: () => winner,
+    dispose: () => listeners.forEach((item) => item.signal.removeEventListener("abort", item.listener)),
+  }
+}
+
+export function normalizeTimeoutError(error: unknown, source: AbortSource | undefined, signal?: AbortSignal) {
+  if (source !== "timeout") return error
+  const reason = signal?.reason
+  return Object.assign(new Error(reason instanceof Error ? reason.message : "Request timed out"), {
+    code: "ETIMEDOUT",
+    cause: error,
+  })
+}
+
+export function requestSignal(input: RequestInfo | URL, init?: RequestInit) {
+  return init?.signal ?? (input instanceof Request ? input.signal : undefined)
+}
+
+export function wrapRequestTimeout(
+  res: Response,
+  requestSignal: AbortSignal | null | undefined,
+  timeoutSignal: AbortSignal,
+  clear: () => void,
+) {
+  const tracked = trackAbortSource(requestSignal, [timeoutSignal])
+  let finalized = false
+  const finalize = () => {
+    if (finalized) return
+    finalized = true
+    clear()
+    tracked.dispose()
+  }
+  if (!res.body) {
+    finalize()
+    return res
+  }
+
+  const reader = res.body.getReader()
+  return wrapResponse(
+    res,
+    new ReadableStream<Uint8Array>({
+      async pull(ctrl) {
+        const part = await new Promise<Awaited<ReturnType<typeof reader.read>>>((resolve, reject) => {
+          const onAbort = () => {
+            const error = normalizeTimeoutError(
+              tracked.signal?.reason ?? new DOMException("The operation was aborted", "AbortError"),
+              tracked.source(),
+              tracked.winner(),
+            )
+            cleanup()
+            void reader.cancel(error).catch(() => {})
+            reject(error)
+          }
+          const cleanup = () => tracked.signal?.removeEventListener("abort", onAbort)
+          if (tracked.signal?.aborted) return onAbort()
+          tracked.signal?.addEventListener("abort", onAbort, { once: true })
+          reader.read().then(
+            (part) => {
+              cleanup()
+              resolve(part)
+            },
+            (error) => {
+              cleanup()
+              reject(normalizeTimeoutError(error, tracked.source(), tracked.winner()))
+            },
+          )
+        }).catch((error) => {
+          finalize()
+          throw error
+        })
+        if (part.done) {
+          finalize()
+          ctrl.close()
+          return
+        }
+        ctrl.enqueue(part.value)
+      },
+      async cancel(reason) {
+        finalize()
+        await reader.cancel(reason)
+      },
+    }),
+  )
 }
 
 interface GatewayModel {
@@ -234,6 +364,14 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         autoload: false,
         async getModel(sdk: any, modelID: string, _options?: Record<string, any>) {
           return sdk.responses(modelID)
+        },
+        options: { headerTimeout: DEFAULT_OPENAI_HEADER_TIMEOUT },
+      }),
+    xiaomi: () =>
+      Effect.succeed({
+        autoload: false,
+        async getModel(sdk: any, modelID: string, _options?: Record<string, any>) {
+          return usesSleepyResponsesApi(modelID) ? sdk.responses(modelID) : sdk.languageModel(modelID)
         },
         options: {},
       }),
@@ -891,7 +1029,7 @@ const ProviderModalities = Schema.Struct({
 const ProviderInterleaved = Schema.Union([
   Schema.Boolean,
   Schema.Struct({
-    field: Schema.Literals(["reasoning_content", "reasoning_details"]),
+    field: Schema.Literals(["reasoning", "reasoning_content", "reasoning_details"]),
   }),
 ])
 
@@ -900,6 +1038,17 @@ const ProviderCapabilities = Schema.Struct({
   reasoning: Schema.Boolean,
   attachment: Schema.Boolean,
   toolcall: Schema.Boolean,
+  /**
+   * Builds a voice from a text description. Declared in config, never derived.
+   *
+   * Optional rather than a defaulted boolean, and the reason is worth keeping: absence
+   * genuinely means "not declared", which is the same thing as false here. Making it
+   * required would force every hand-built model fixture in the suite to state a capability
+   * it has no opinion about, adding noise to unrelated diffs for no semantic gain.
+   */
+  voiceDesign: Schema.optional(Schema.Boolean),
+  /** Reproduces a voice from a reference sample. Same provenance as `voiceDesign`. */
+  voiceClone: Schema.optional(Schema.Boolean),
   input: ProviderModalities,
   output: ProviderModalities,
   interleaved: ProviderInterleaved,
@@ -969,6 +1118,7 @@ export const ListResult = Schema.Struct({
   all: Schema.Array(Info),
   default: DefaultModelIDs,
   connected: Schema.Array(Schema.String),
+  authenticated: Schema.Array(Schema.String),
 }).pipe(withStatics((s) => ({ zod: zod(s) })))
 export type ListResult = Types.DeepMutable<Schema.Schema.Type<typeof ListResult>>
 
@@ -987,17 +1137,20 @@ export interface Interface {
   readonly getProvider: (providerID: ProviderID) => Effect.Effect<Info>
   readonly getModel: (providerID: ProviderID, modelID: ModelID) => Effect.Effect<Model>
   readonly getLanguage: (model: Model) => Effect.Effect<LanguageModelV3>
+  readonly getSpeech: (model: Model) => Effect.Effect<SpeechModelV3>
   readonly closest: (
     providerID: ProviderID,
     query: string[],
   ) => Effect.Effect<{ providerID: ProviderID; modelID: string } | undefined>
   readonly getSmallModel: (providerID: ProviderID) => Effect.Effect<Model | undefined>
+  readonly getVisionModel: (providerID?: ProviderID) => Effect.Effect<Model | undefined>
   readonly resolveModelRef: (ref: string, contextProviderID?: ProviderID) => Effect.Effect<Model>
   readonly defaultModel: () => Effect.Effect<{ providerID: ProviderID; modelID: ModelID }>
 }
 
 interface State {
   models: Map<string, LanguageModelV3>
+  speech: Map<string, SpeechModelV3>
   providers: Record<ProviderID, Info>
   sdk: Map<string, BundledSDK>
   modelLoaders: Record<string, CustomModelLoader>
@@ -1005,6 +1158,15 @@ interface State {
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Provider") {}
+
+export function sortVisionModels(models: Model[]): Model[] {
+  const inHouse = (m: Model) => m.providerID === "sleepy" || m.providerID === "xiaomi"
+  return [...models].sort((a, b) => {
+    if (inHouse(a) !== inHouse(b)) return inHouse(a) ? -1 : 1
+    if (a.cost.input !== b.cost.input) return a.cost.input - b.cost.input
+    return `${a.providerID}/${a.id}`.localeCompare(`${b.providerID}/${b.id}`)
+  })
+}
 
 function cost(c: ModelsDev.Model["cost"]): Model["cost"] {
   const result: Model["cost"] = {
@@ -1053,6 +1215,8 @@ function fromModelsDevModel(provider: ModelsDev.Provider, model: ModelsDev.Model
       reasoning: model.reasoning ?? false,
       attachment: model.attachment ?? false,
       toolcall: model.tool_call ?? true,
+      voiceDesign: model.voice_design ?? false,
+      voiceClone: model.voice_clone ?? false,
       input: {
         text: model.modalities?.input?.includes("text") ?? false,
         audio: model.modalities?.input?.includes("audio") ?? false,
@@ -1263,6 +1427,7 @@ const layer: Layer.Layer<
 
         const providers: Record<ProviderID, Info> = {} as Record<ProviderID, Info>
         const languages = new Map<string, LanguageModelV3>()
+        const speeches = new Map<string, SpeechModelV3>()
         const modelLoaders: {
           [providerID: string]: CustomModelLoader
         } = {}
@@ -1372,6 +1537,12 @@ const layer: Layer.Layer<
                     model.modalities?.output?.includes("video") ?? existingModel?.capabilities.output.video ?? false,
                   pdf: model.modalities?.output?.includes("pdf") ?? existingModel?.capabilities.output.pdf ?? false,
                 },
+                // Declared per model, never derived: design is indistinguishable from plain
+                // TTS by modality, and a sample-taking model could be speech-to-speech
+                // conversion. `existingModel` carries the value forward when a config entry
+                // only overrides other fields.
+                voiceDesign: model.voice_design ?? existingModel?.capabilities.voiceDesign,
+                voiceClone: model.voice_clone ?? existingModel?.capabilities.voiceClone,
                 interleaved:
                   model.interleaved ??
                   existingModel?.capabilities.interleaved ??
@@ -1405,13 +1576,27 @@ const layer: Layer.Layer<
                   return DEFAULT_CONTEXT_WINDOW
                 })(),
                 input: model.limit?.input ?? existingModel?.limit?.input,
-                output: model.limit?.output ?? existingModel?.limit?.output ?? 0,
+                output:
+                  model.limit?.output ??
+                  existingModel?.limit?.output ??
+                  (ProviderTransform.usesLargeModelDefaults({
+                    id: modelID,
+                    providerID,
+                    api: { id: apiID },
+                  })
+                    ? ProviderTransform.LARGE_MODEL_OUTPUT_TOKEN_MAX
+                    : 0),
               },
               headers: mergeDeep(existingModel?.headers ?? {}, model.headers ?? {}),
               family: model.family ?? existingModel?.family ?? "",
               release_date: model.release_date ?? existingModel?.release_date ?? "",
               cachePromptTTL: model.cachePromptTTL ?? existingModel?.cachePromptTTL,
               variants: {},
+            }
+            // sleepy-auto is a free-tier routing alias absent from models.dev; it routes to a
+            // vision-capable model, so image input is supported.
+            if (providerID === "sleepy" && modelID === "sleepy-auto") {
+              parsedModel.capabilities.input.image = true
             }
             const merged = mergeDeep(ProviderTransform.variants(parsedModel), model.variants ?? {})
             parsedModel.variants = mapValues(
@@ -1552,6 +1737,13 @@ const layer: Layer.Layer<
           }
 
           const configProvider = cfg.provider?.[providerID]
+          // Opt-in implicit whitelist: only when the provider sets
+          // `only_configured_models: true` does a non-empty `models` map hide the
+          // rest of the catalog. Default (false) preserves the augment-only
+          // behavior — `models` overrides/adds without filtering.
+          const configModelKeys = Object.keys(configProvider?.models ?? {})
+          const implicitWhitelist =
+            configProvider?.only_configured_models && configModelKeys.length > 0 ? configModelKeys : undefined
 
           for (const [modelID, model] of Object.entries(provider.models)) {
             model.api.id = model.api.id ?? model.id ?? modelID
@@ -1564,7 +1756,8 @@ const layer: Layer.Layer<
             if (model.status === "deprecated") delete provider.models[modelID]
             if (
               (configProvider?.blacklist && configProvider.blacklist.includes(modelID)) ||
-              (configProvider?.whitelist && !configProvider.whitelist.includes(modelID))
+              (configProvider?.whitelist && !configProvider.whitelist.includes(modelID)) ||
+              (implicitWhitelist && !implicitWhitelist.includes(modelID))
             )
               delete provider.models[modelID]
 
@@ -1663,6 +1856,7 @@ const layer: Layer.Layer<
 
         return {
           models: languages,
+          speech: speeches,
           providers,
           sdk,
           modelLoaders,
@@ -1730,52 +1924,65 @@ const layer: Layer.Layer<
 
         const customFetch = options["fetch"]
         const userChunkTimeout = options["chunkTimeout"]
+        const headerTimeout = options["headerTimeout"]
         const chunkTimeout =
           typeof userChunkTimeout === "number"
             ? userChunkTimeout  // user-set value (incl. 0 / negative to disable)
             : DEFAULT_CHUNK_TIMEOUT
         delete options["chunkTimeout"]
+        delete options["headerTimeout"]
 
         options["fetch"] = async (input: any, init?: BunFetchRequestInit) => {
           const fetchFn = customFetch ?? fetch
           const opts = init ?? {}
+          const callerSignal = requestSignal(input, opts)
           const chunkAbortCtl = typeof chunkTimeout === "number" && chunkTimeout > 0 ? new AbortController() : undefined
-          const signals: AbortSignal[] = []
+          const headerTimeoutMs = headerTimeout === false ? undefined : headerTimeout
+          const headerTimeoutCtl = typeof headerTimeoutMs === "number" ? timeoutController(headerTimeoutMs) : undefined
+          const requestTimeoutCtl =
+            typeof options["timeout"] === "number" && options["timeout"] > 0
+              ? timeoutController(options["timeout"], `Request timed out after ${options["timeout"]}ms`)
+              : undefined
+          const tracked = trackAbortSource(
+            callerSignal,
+            [headerTimeoutCtl?.signal, requestTimeoutCtl?.signal].filter((signal) => signal !== undefined),
+          )
+          const signals = [tracked.signal, chunkAbortCtl?.signal].filter((signal) => signal !== undefined)
+          if (signals.length > 0) opts.signal = signals.length === 1 ? signals[0] : AbortSignal.any(signals)
 
-          if (opts.signal) signals.push(opts.signal)
-          if (chunkAbortCtl) signals.push(chunkAbortCtl.signal)
-          if (options["timeout"] !== undefined && options["timeout"] !== null && options["timeout"] !== false)
-            signals.push(AbortSignal.timeout(options["timeout"]))
+          const res = await Promise.resolve()
+            .then(() =>
+              fetchFn(input, {
+                ...opts,
+                // @ts-ignore see here: https://github.com/oven-sh/bun/issues/16682
+                timeout: false,
+              }),
+            )
+            .catch((error: unknown) => {
+              requestTimeoutCtl?.clear()
+              tracked.dispose()
+              throw normalizeTimeoutError(error, tracked.source(), tracked.winner())
+            })
+            .finally(() => {
+              headerTimeoutCtl?.clear()
+            })
 
-          const combined = signals.length === 0 ? null : signals.length === 1 ? signals[0] : AbortSignal.any(signals)
-          if (combined) opts.signal = combined
-
-          // Strip openai itemId metadata following what codex does
-          if (model.api.npm === "@ai-sdk/openai" && opts.body && opts.method === "POST") {
-            const body = JSON.parse(opts.body as string)
-            const isAzure = model.providerID.includes("azure")
-            const keepIds = isAzure && body.store === true
-            if (!keepIds && Array.isArray(body.input)) {
-              for (const item of body.input) {
-                if ("id" in item) {
-                  delete item.id
-                }
-              }
-              opts.body = JSON.stringify(body)
-            }
-          }
-
-          const res = await fetchFn(input, {
-            ...opts,
-            // @ts-ignore see here: https://github.com/oven-sh/bun/issues/16682
-            timeout: false,
-          })
-
-          if (!chunkAbortCtl) return res
-          return wrapSSE(res, chunkTimeout, chunkAbortCtl)
+          tracked.dispose()
+          const bounded = requestTimeoutCtl
+            ? wrapRequestTimeout(res, callerSignal, requestTimeoutCtl.signal, requestTimeoutCtl.clear)
+            : res
+          if (!chunkAbortCtl) return bounded
+          return wrapSSE(bounded, chunkTimeout, chunkAbortCtl)
         }
 
-        const bundledLoader = BUNDLED_PROVIDERS[model.api.npm]
+        const bundledLoader =
+          model.providerID === "xiaomi" && model.api.npm === "@ai-sdk/openai-compatible"
+            ? () =>
+                import("./sdk/copilot").then(
+                  (module) => (options: any) =>
+                    module.createOpenaiCompatible({ ...options, customToolNames: ["exec"] }),
+                )
+            : BUNDLED_PROVIDERS[model.api.npm]
         if (bundledLoader) {
           log.info("using bundled provider", {
             providerID: model.providerID,
@@ -1840,6 +2047,9 @@ const layer: Layer.Layer<
     })
 
     const getLanguage = Effect.fn("Provider.getLanguage")(function* (model: Model) {
+      if (isFreeApiSunset() && isFreeApiModel({ providerID: model.providerID, modelID: model.id })) {
+        throw new Error("Sleepy free API service has ended. Sign in or configure a third-party API.")
+      }
       const s = yield* InstanceState.get(state)
       const envs = yield* env.all()
       const key = `${model.providerID}/${model.id}`
@@ -1867,6 +2077,64 @@ const layer: Layer.Layer<
               },
               { cause: e },
             )
+          throw e
+        }
+      })
+    })
+
+    /**
+     * Find a provider SDK's speech-model factory.
+     *
+     * Two names exist for the same thing and neither is guaranteed: the standard
+     * provider interface calls it `speechModel`, `@ai-sdk/openai` calls it
+     * `speech`, and `ai`'s own `Provider` type declares neither — so the member
+     * has to be probed at runtime rather than read off the type. The
+     * `typeof === "function"` check is what makes the narrowing honest.
+     */
+    function speechFactory(sdk: object) {
+      const candidate: { speechModel?: unknown; speech?: unknown } = sdk
+      const factory = candidate.speechModel ?? candidate.speech
+      if (typeof factory !== "function") return undefined
+      return factory as (modelId: string) => SpeechModelV3
+    }
+
+    /**
+     * Build the speech-synthesis model for `model`, mirroring `getLanguage`.
+     *
+     * Same contract and same reason for existing: the upstream SDK is constructed
+     * from credentials held in this service, so a caller gets synthesis without
+     * ever seeing the key. Cached separately from language models because the two
+     * keyspaces would otherwise collide on a provider that offers both under one
+     * id.
+     */
+    const getSpeech = Effect.fn("Provider.getSpeech")(function* (model: Model) {
+      if (isFreeApiSunset() && isFreeApiModel({ providerID: model.providerID, modelID: model.id })) {
+        throw new Error("Sleepy free API service has ended. Sign in or configure a third-party API.")
+      }
+      const s = yield* InstanceState.get(state)
+      const envs = yield* env.all()
+      const key = `${model.providerID}/${model.id}`
+      if (s.speech.has(key)) return s.speech.get(key)!
+
+      return yield* Effect.promise(async () => {
+        const sdk = await resolveSDK(model, s, envs)
+        const factory = speechFactory(sdk)
+        // Deliberately NOT a ModelNotFoundError: the model may well exist, and
+        // saying "not found" would send the caller looking for a typo. What is
+        // missing is the provider's capability — `@ai-sdk/openai-compatible`, the
+        // package behind every custom endpoint, ships no speech factory at all.
+        if (!factory)
+          throw new SpeechUnsupportedError({ modelID: model.id, providerID: model.providerID, npm: model.api.npm })
+
+        // No `modelLoaders` lookup here, unlike `getLanguage`: those loaders are
+        // registered to build LANGUAGE models and have the wrong return type.
+        try {
+          const speech = factory.call(sdk, model.api.id)
+          s.speech.set(key, speech)
+          return speech
+        } catch (e) {
+          if (e instanceof NoSuchModelError)
+            throw new ModelNotFoundError({ modelID: model.id, providerID: model.providerID }, { cause: e })
           throw e
         }
       })
@@ -1939,6 +2207,27 @@ const layer: Layer.Layer<
       return yield* resolveModelRef("lite", providerID)
     })
 
+    const getVisionModel = Effect.fn("Provider.getVisionModel")(function* (providerID?: ProviderID) {
+      const cfg = yield* config.get()
+      // Explicit vision_model literal wins. getModel raises ModelNotFoundError as
+      // a defect, so a misconfigured vision_model must not propagate — catch it and
+      // fall back to the smart default.
+      if (cfg.vision_model) {
+        const parsed = parseModel(cfg.vision_model)
+        const explicit = yield* getModel(parsed.providerID, parsed.modelID).pipe(
+          Effect.catchDefect(() => Effect.succeed(undefined)),
+        )
+        if (explicit && (!providerID || explicit.providerID === providerID)) return explicit
+      }
+      // Smart default: in-house preferred, then cheapest vision-capable model.
+      const providers = yield* list()
+      const vision = Object.values(providers)
+        .filter((info) => !providerID || info.id === providerID)
+        .flatMap((info) => Object.values(info.models))
+        .filter((m) => m.capabilities.input.image === true)
+      return sortVisionModels(vision)[0]
+    })
+
     const defaultModel = Effect.fn("Provider.defaultModel")(function* () {
       const cfg = yield* config.get()
       if (cfg.model) return parseModel(cfg.model)
@@ -1973,7 +2262,7 @@ const layer: Layer.Layer<
       }
     })
 
-    return Service.of({ list, getProvider, getModel, getLanguage, closest, getSmallModel, defaultModel, resolveModelRef })
+    return Service.of({ list, getProvider, getModel, getLanguage, getSpeech, closest, getSmallModel, getVisionModel, defaultModel, resolveModelRef })
   }),
 )
 
@@ -2005,12 +2294,72 @@ export function parseModel(model: string) {
   }
 }
 
+/**
+ * What kind of model this is, DERIVED from its declared modalities.
+ *
+ * `Model` carries no `type` field — everything is otherwise assumed to be a
+ * language model — but `capabilities.input`/`output` already distinguish them, fed
+ * either from models.dev or from the user's own per-model `modalities` config.
+ * Deriving beats adding a field: a model absent from models.dev (OpenAI's `tts-1`
+ * is) is already declarable today as
+ * `"modalities": { "input": ["text"], "output": ["audio"] }`.
+ *
+ * The two tie-breaks are what make this safe against real registry data:
+ *
+ *  - Audio AND text output is a live/multimodal chat model (Gemini live,
+ *    `lyria-3-pro`), not a synthesizer, so TEXT OUTPUT WINS.
+ *  - Audio input with TEXT INPUT TOO is a multimodal chat model that happens to
+ *    hear (`sleepy-v2.5` declares `input: [text, image, audio, video]`, every Gemini
+ *    does the same), not a transcriber. Only audio-in-without-text-in is ASR —
+ *    which is exactly how `whisper-large-v3` is declared: `input: ["audio"]`.
+ *
+ * Without the second guard every multimodal chat model in the registry would be
+ * classified as a transcription model and routed away from chat.
+ *
+ * Not derivable: embedding models. `text-embedding-3-small` reports
+ * `output: ["text"]`, indistinguishable from a chat model. Misusing one still
+ * fails at the provider.
+ */
+export type ModelKind = "language" | "speech" | "transcription"
+
+export function modelKind(model: Model): ModelKind {
+  const input = model.capabilities.input
+  const output = model.capabilities.output
+  if (output.audio && !output.text) return "speech"
+  if (input.audio && !input.text && output.text) return "transcription"
+  return "language"
+}
+
+export function isSpeechModel(model: Model) {
+  return modelKind(model) === "speech"
+}
+
+export function isTranscriptionModel(model: Model) {
+  return modelKind(model) === "transcription"
+}
+
 export const ModelNotFoundError = NamedError.create(
   "ProviderModelNotFoundError",
   z.object({
     providerID: ProviderID.zod,
     modelID: ModelID.zod,
     suggestions: z.array(z.string()).optional(),
+  }),
+)
+
+/**
+ * The model exists; the provider package behind it cannot synthesize speech.
+ *
+ * Separate from `ModelNotFoundError` so a caller is not told to go hunting for a
+ * typo. `npm` is carried because the answer is almost always "that package has no
+ * speech factory" rather than anything about the model.
+ */
+export const SpeechUnsupportedError = NamedError.create(
+  "ProviderSpeechUnsupportedError",
+  z.object({
+    providerID: ProviderID.zod,
+    modelID: ModelID.zod,
+    npm: z.string(),
   }),
 )
 

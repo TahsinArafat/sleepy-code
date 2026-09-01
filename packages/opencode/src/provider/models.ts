@@ -51,12 +51,21 @@ export const Model = z.object({
   reasoning: z.boolean(),
   temperature: z.boolean(),
   tool_call: z.boolean(),
+  /**
+   * Builds a voice from a natural-language description.
+   *
+   * Optional and defaulted because the upstream registry does not carry it — like
+   * `interleaved`, it is knowledge an operator supplies about their own deployment.
+   */
+  voice_design: z.boolean().optional().default(false),
+  /** Reproduces a voice from a reference sample. Same provenance as `voice_design`. */
+  voice_clone: z.boolean().optional().default(false),
   interleaved: z
     .union([
       z.literal(true),
       z
         .object({
-          field: z.enum(["reasoning_content", "reasoning_details"]),
+          field: z.enum(["reasoning", "reasoning_content", "reasoning_details"]),
         })
         .strict(),
     ])

@@ -1,7 +1,7 @@
 {
   "name": "@sleepy-ai/desktop",
   "private": true,
-  "version": "0.1.4",
+  "version": "0.1.13",
   "type": "module",
   "license": "MIT",
   "homepage": "https://opencode.ai",
@@ -34,7 +34,6 @@
     "marked": "^15"
   },
   "devDependencies": {
-    "@actions/artifact": "4.0.0",
     "@lydell/node-pty": "catalog:",
     "@sleepy-ai/app": "workspace:*",
     "@sleepy-ai/ui": "workspace:*",

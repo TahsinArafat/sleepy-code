@@ -15,12 +15,15 @@ import { useLanguage } from "@tui/context/language"
 import * as Model from "../util/model"
 import { PROVIDER_PRIORITY } from "@/util/provider-priority"
 import * as fuzzysort from "fuzzysort"
+import { createFreeApiSunsetSignal, freeApiModelNameKey, isFreeApiModel } from "@tui/util/free-api-sunset"
 
 const ADD_MODEL_SENTINEL = "__add_model__"
 
 export function useConnected() {
   const sync = useSync()
-  return createMemo(() => sync.data.provider.some((x) => x.id === "sleepy"))
+  return createMemo(() =>
+    sync.data.provider.some((x) => x.id !== "opencode" || Object.values(x.models).some((y) => y.cost?.input !== 0)),
+  )
 }
 
 export function DialogModel(props: { providerID?: string }) {
@@ -35,8 +38,11 @@ export function DialogModel(props: { providerID?: string }) {
   const connected = useConnected()
   const providers = createDialogProviderOptions()
   const t = useLanguage().t
+  const freeApiSunset = createFreeApiSunsetSignal()
   const modelName = (providerID: string, modelID: string) =>
-    Model.name(sync.data.provider, providerID, modelID)
+    isFreeApiModel({ providerID, modelID })
+      ? t(freeApiModelNameKey(freeApiSunset()))
+      : Model.name(sync.data.provider, providerID, modelID)
 
   const showExtra = createMemo(() => connected() && !props.providerID)
 
@@ -63,7 +69,8 @@ export function DialogModel(props: { providerID?: string }) {
             key: item,
             value: { providerID: provider.id, modelID: model.id },
             title: modelName(provider.id, model.id),
-            description: undefined as string | undefined,
+            // Hide provider name for sleepy-auto to avoid redundancy
+            description: item.modelID === "sleepy-auto" ? undefined : provider.name,
             category,
             disabled: provider.id === "opencode" && model.id.includes("-nano"),
             footer: model.cost?.input === 0 && provider.id === "opencode" ? "Free" : undefined,
@@ -83,34 +90,67 @@ export function DialogModel(props: { providerID?: string }) {
       "Recent",
     )
 
-    // sleepy provider pinned at top (after favorites/recents)
+    // sleepy-free and xiaomi provider pinned at top (after favorites/recents)
     const sleepyProvider = sync.data.provider.find((p) => p.id === "sleepy")
-    const pinnedCategory = sleepyProvider?.name ?? "Sleepy"
+    const xiaomiProvider = sync.data.provider.find((p) => p.id === "xiaomi")
+    const pinnedCategory = xiaomiProvider?.name ?? "Sleepy"
     // Show pinned section when not scoped to a specific provider
     const showPinned = connected() && !props.providerID
 
     const pinnedOptions = showPinned
       ? [
-          // sleepy provider models: smart, cheap, fast, high
-          ...(sleepyProvider
+          // sleepy-free model
+          ...(sleepyProvider && "sleepy-auto" in sleepyProvider.models && sleepyProvider.models["sleepy-auto"].status !== "deprecated" && (!showSections || !inShortcuts("sleepy", "sleepy-auto"))
+            ? [
+                {
+                  value: { providerID: "sleepy", modelID: "sleepy-auto" },
+                  title: modelName("sleepy", "sleepy-auto"),
+                  description: undefined as string | undefined,
+                  category: pinnedCategory,
+                  disabled: false,
+                  footer: undefined as "Free" | undefined,
+                  onSelect() {
+                    onSelect("sleepy", "sleepy-auto")
+                  },
+                },
+              ]
+            : []),
+          // xiaomi provider models
+          ...(xiaomiProvider
             ? [
                 ...pipe(
-                  sleepyProvider.models,
+                  xiaomiProvider.models,
                   entries(),
                   filter(([_, info]) => info.status !== "deprecated"),
                   map(([model, info]) => ({
-                    value: { providerID: sleepyProvider.id, modelID: model },
+                    value: { providerID: xiaomiProvider.id, modelID: model },
                     title: info.name ?? model,
                     description: undefined as string | undefined,
                     category: pinnedCategory,
                     disabled: false,
                     footer: undefined as "Free" | undefined,
                     onSelect() {
-                      onSelect(sleepyProvider.id, model)
+                      onSelect(xiaomiProvider.id, model)
                     },
                   })),
                   filter((x) => !showSections || !inShortcuts(x.value.providerID, x.value.modelID)),
                 ),
+                // "+ Add model" for config-sourced providers
+                ...(xiaomiProvider.source === "config"
+                  ? [
+                      {
+                        value: { providerID: xiaomiProvider.id, modelID: ADD_MODEL_SENTINEL },
+                        title: "+ Add model",
+                        description: undefined,
+                        category: pinnedCategory,
+                        disabled: false,
+                        footer: undefined as "Free" | undefined,
+                        onSelect() {
+                          void runAddModelWizard({ dialog, sdk, sync, toast, providerID: xiaomiProvider.id })
+                        },
+                      },
+                    ]
+                  : []),
               ]
             : []),
         ]
@@ -118,8 +158,8 @@ export function DialogModel(props: { providerID?: string }) {
 
     const providerOptions = pipe(
       sync.data.provider,
-      // Exclude sleepy/xiaomi from regular list only when pinned section is shown
-      filter((provider) => !showPinned || (provider.id !== "sleepy" && provider.id !== "xiaomi")),
+      // Exclude xiaomi/sleepy from regular list only when pinned section is shown
+      filter((provider) => !showPinned || (provider.id !== "xiaomi" && provider.id !== "sleepy")),
       sortBy(
         (provider) => provider.id !== "opencode",
         (provider) => PROVIDER_PRIORITY[provider.id] ?? 99,

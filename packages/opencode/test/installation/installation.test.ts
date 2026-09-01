@@ -157,12 +157,15 @@ describe("installation", () => {
       expect(result).toBe("1.7.0")
     })
 
-    test("resolves version from GitHub releases redirect for curl method", async () => {
+    test("resolves version from FDS for curl method", async () => {
       const layer = testLayer(
         () => jsonResponse({}),
         (cmd, args) => {
-          if (cmd === "curl" && args.includes("https://github.com/TahsinArafat/sleepy-ai/releases/latest"))
-            return "HTTP/2 302\r\nlocation: https://github.com/TahsinArafat/sleepy-ai/releases/tag/v0.1.1\r\n"
+          // Mock must track installation/index.ts: the fork's curl channel resolves the
+          // version from the GitHub releases/latest redirect (the install script's
+          // REPO="TahsinArafat/sleepy-code"), not upstream's Xiaomi FDS bucket.
+          if (cmd === "curl" && args.includes("https://github.com/TahsinArafat/sleepy-code/releases/latest"))
+            return "HTTP/2 302\r\nlocation: https://github.com/TahsinArafat/sleepy-code/releases/tag/v0.1.1\r\n"
           return ""
         },
       )
