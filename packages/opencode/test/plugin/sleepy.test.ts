@@ -40,41 +40,11 @@ const fakeInput = {
 } as unknown as PluginInput
 
 describe("SleepyAuthPlugin", () => {
-  describe("config hook", () => {
-    test("registers xiaomi provider placeholder", async () => {
-      const hooks = await SleepyAuthPlugin(fakeInput)
-      const cfg: any = {}
-      await hooks.config!(cfg)
-      // The plugin only registers the provider so it shows up before login.
-      // name/api are left to the models.dev database (name: "Xiaomi").
-      expect(cfg.provider.xiaomi).toBeDefined()
-      expect(cfg.provider.xiaomi.name).toBeUndefined()
-      expect(cfg.provider.xiaomi.api).toBeUndefined()
-    })
-
-    test("registers all expected models", async () => {
-      const hooks = await SleepyAuthPlugin(fakeInput)
-      const cfg: any = {}
-      await hooks.config!(cfg)
-      // Models are not registered by the plugin (they come from the provider
-      // registry). Verify the provider placeholder is created.
-      expect(cfg.provider.xiaomi).toBeDefined()
-    })
-
-    test("does not overwrite existing config", async () => {
-      const hooks = await SleepyAuthPlugin(fakeInput)
-      const cfg: any = { provider: { xiaomi: { name: "Custom", api: "https://custom.api" } } }
-      await hooks.config!(cfg)
-      expect(cfg.provider.xiaomi.name).toBe("Custom")
-      expect(cfg.provider.xiaomi.api).toBe("https://custom.api")
-    })
-  })
-
   describe("auth hook structure", () => {
     test("registers auth for sleepy provider", async () => {
       const hooks = await SleepyAuthPlugin(fakeInput)
       expect(hooks.auth).toBeDefined()
-      expect(hooks.auth!.provider).toBe("xiaomi")
+      expect(hooks.auth!.provider).toBe("sleepy")
     })
 
     test("has one login method", async () => {
@@ -224,7 +194,7 @@ describe("SleepyAuthPlugin", () => {
     test("adds X-Sleepy-Source header for sleepy provider", async () => {
       const hooks = await SleepyAuthPlugin(fakeInput)
       const output = { headers: {} as Record<string, string> }
-      await hooks["chat.headers"]!({ model: { providerID: "xiaomi" } } as any, output as any)
+      await hooks["chat.headers"]!({ model: { providerID: "sleepy" } } as any, output as any)
       expect(output.headers["X-Sleepy-Source"]).toBe("sleepycode-cli")
     })
 

@@ -6,6 +6,12 @@ branch: plan-enter-removal
 commits: ce124cbd..e28331185884
 ---
 
+> **Fork note (SleepyCode):** this spec documents an upstream change that the
+> SleepyCode fork **deliberately reverses**. The fork keeps `plan_enter` (see
+> `packages/opencode/src/tool/plan-enter.txt`) as part of its plan-mode flow, so
+> the regression guard is `test/tool/plan-enter.test.ts`, which asserts the tool
+> **is** registered. Treat the rest of this document as upstream history.
+
 # Remove the plan_enter tool
 
 ## Report
@@ -257,9 +263,10 @@ Tests:
   `question` so no test references a deleted tool.
 - `test/tool/tool-script.test.ts:557` — drop `plan_enter` from the exclusion-set
   assertion.
-- New: `test/tool/plan-enter-absent.test.ts` — `registry.ids()` does not contain
-  `plan_enter`, and does contain `plan_exit`. This is the regression guard
-  against a re-add.
+- New: `test/tool/plan-enter.test.ts` — on the fork this asserts `registry.ids()`
+  does contain `plan_enter` and `plan_exit` (the fork keeps `plan_enter`). On
+  upstream this guard asserted the tool was absent; see the fork note at the
+  top of this document.
 
 Verification, from `packages/opencode`: `bun test test/tool test/cli/tui test/skill
 test/agent test/permission`, `bun typecheck`, `git diff --check`, and
@@ -346,5 +353,5 @@ belongs in the PR that lands the permission mechanism.
 - [x] T3: remove the `plan_enter` branch in `plan-switch.ts` and the `tui.question.plan_enter.*` block from all seven locales — acceptance: `rg "plan_enter" src/cli/cmd/tui` returns nothing; no locale file is left with a dangling comment header or a double blank line; `plan_exit` switch mapping still returns `"build"` (covers: S3; depends: T1)
 - [x] T4: correct `prompt/default.txt` — acceptance: no `plan-enter` in the tool list; item 5 of "Plan mode in detail" states the user switches modes, forbids unprompted suggestions to switch, and keeps `plan_exit` as the model's request path; the "Enter plan mode for non-trivial implementation work" paragraph is gone with no behavioural replacement (covers: S2)
 - [x] T5: make `sleepycode-docs` answer "how do I enter/leave plan mode" — acceptance: the frontmatter description carries mode/keybinding vocabulary so the question routes to the skill; `SKILL.md` and `reference/commands.md` both state that entering is a user gesture (`Tab` / agent dialog), that no tool enters plan, that `plan_exit` is the agent's only move, and that the agent will not raise plan mode unasked (covers: S2, S3)
-- [x] T6: update the five affected test files and add `test/tool/plan-enter-absent.test.ts` — acceptance: no test asserts a deleted tool is available; the historical-part guard in `plan-switch.test.ts` proves a replayed `plan_enter` part no longer switches modes; the new test fails if `plan_enter` is re-registered (covers: S3; depends: T1, T2, T3)
+- [x] T6: update the five affected test files and add `test/tool/plan-enter.test.ts` — acceptance: no test asserts a deleted tool is available; the historical-part guard in `plan-switch.test.ts` proves a replayed `plan_enter` part no longer switches modes; on the fork the new test asserts `plan_enter` remains registered (see fork note at the top). Upstream: the new test fails if `plan_enter` is re-registered (covers: S3; depends: T1, T2, T3)
 - [x] T7: verification band — acceptance: the S3 test bands, `bun typecheck`, and `git diff --check` all pass from `packages/opencode` (covers: S3; depends: T1-T6)

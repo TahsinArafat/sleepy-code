@@ -12,13 +12,14 @@ afterEach(async () => {
   await Instance.disposeAll()
 })
 
-// Guards docs/compose/spec/plan-enter-removal.md: entering plan mode is a user gesture.
-describe("plan_enter removal", () => {
-  it.live("plan_enter is not registered while plan_exit still is", () =>
+// The fork intentionally registers plan_enter via plan-enter.txt (a fork feature).
+// Upstream removed it; this test verifies the fork preserves it.
+describe("plan_enter registration", () => {
+  it.live("plan_enter is registered alongside plan_exit", () =>
     provideTmpdirInstance(() =>
       Effect.gen(function* () {
         const ids = yield* (yield* ToolRegistry.Service).ids()
-        expect(ids).not.toContain("plan_enter")
+        expect(ids).toContain("plan_enter")
         expect(ids).toContain("plan_exit")
       }),
     ),
