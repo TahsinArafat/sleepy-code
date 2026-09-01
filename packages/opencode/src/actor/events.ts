@@ -40,6 +40,26 @@ export const ActorStuck = BusEvent.define(
   }),
 )
 
+// Emitted by the T40 stall watchdog when a background peer/subagent transitions
+// into `stalled` liveness (running/pending but nothing has landed for the actor's
+// slice past the stall window) and the one-shot parent notification is pushed.
+// Fires once per stall episode — re-arms only once activity lands again or the
+// child reaches terminal. Observability hook for tests + TUI.
+// `lastActivityTime` is the reference the verdict was actually computed from (the
+// last part write, or spawn time when nothing has landed yet), NOT last_turn_time:
+// a payload reporting a different quantity than its own predicate used is how this
+// signal came to be misread.
+export const ActorStalled = BusEvent.define(
+  "actor.stalled",
+  z.object({
+    sessionID: SessionID.zod,
+    actorID: z.string(),
+    description: z.string(),
+    lastActivityTime: z.number(),
+    stalledDuration: z.number(),
+  }),
+)
+
 export const WriterCachePerf = BusEvent.define(
   "writer.cache_perf",
   z.object({

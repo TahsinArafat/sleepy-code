@@ -169,7 +169,7 @@ export async function runCustomProviderWizard(opts: {
     return DialogPrompt.show(dialog, `${title} (${n}/${total})`, { placeholder, value })
   }
 
-  const providerIDRaw = await step(1, 6, "Provider id", "e.g. sleepyrouters")
+  const providerIDRaw = await step(1, 6, "Provider id", "e.g. openrouter")
   if (providerIDRaw === null) return
   const providerID = providerIDRaw.trim()
   if (!providerID) return
@@ -243,7 +243,7 @@ interface AutoMethodProps {
   title: string
   authorization: ProviderAuthAuthorization
 }
-function AutoMethod(props: AutoMethodProps) {
+export function AutoMethod(props: AutoMethodProps) {
   const { theme } = useTheme()
   const sdk = useSDK()
   const dialog = useDialog()

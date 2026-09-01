@@ -1,12 +1,14 @@
 import path from "path"
-import { Effect } from "effect"
+import { Effect, Option } from "effect"
 import { EffectLogger } from "@/effect"
 import { InstanceState } from "@/effect"
 import { Global } from "@/global"
+import { Config } from "@/config"
+import { isMemoryWriteEnabled } from "@/memory/write-gate"
 import type * as Tool from "./tool"
 import { Instance } from "../project/instance"
 import { ProjectID } from "../project/schema"
-import { assertMemoryWriteAllowed } from "./memory-path-guard"
+import { assertMemoryWriteAllowed, assertAgentWriteSandbox } from "./memory-path-guard"
 import { AppFileSystem } from "@sleepy-ai/shared/filesystem"
 
 type Kind = "file" | "directory"
@@ -36,6 +38,19 @@ export const assertExternalDirectoryEffect = Effect.fn("Tool.assertExternalDirec
   // tasks/<taskId>/*.md and rejects cross-task / wrong-agent writes.
   if (AppFileSystem.contains(path.join(Global.Path.data, "memory"), full)) return
 
+  // Orchestrator-created worktrees live under <data>/worktree/<projectID>/<name>.
+  // They are TRUSTED, app-managed workspaces — a child session isolated into one is
+  // meant to work there freely. But a child's Instance boundary (directory/worktree)
+  // does not always contain the worktree path: an isolated peer whose worktree boot
+  // fails falls back to the shared/parent context, and a subagent inherits the
+  // spawner's (main-checkout) context. In those cases every in-worktree write hits
+  // external_directory:ask, and a background/isolated child has no interactive
+  // replier — so the ask hangs on a never-resolved Deferred and the child deadlocks.
+  // Since this base is created and owned by the app itself (not a foreign user path),
+  // trust it here, exactly as the memory subtree above. Genuinely external user paths
+  // are unaffected and still prompt.
+  if (AppFileSystem.contains(path.join(Global.Path.data, "worktree"), full)) return
+
   const kind = options?.kind ?? "file"
   const dir = kind === "directory" ? full : path.dirname(full)
   const glob =
@@ -57,6 +72,24 @@ export const assertExternalDirectoryEffect = Effect.fn("Tool.assertExternalDirec
 export async function assertExternalDirectory(ctx: Tool.Context, target?: string, options?: Options) {
   return Effect.runPromise(assertExternalDirectoryEffect(ctx, target, options).pipe(Effect.provide(EffectLogger.layer)))
 }
+
+/**
+ * Whether new memory may be written (see memory/write-gate.ts for the field).
+ *
+ * Resolved with `Effect.serviceOption` rather than `yield* Config.Service` on
+ * purpose: `Tool.Def.execute` is typed `Effect<ExecuteResult>` with NO
+ * requirements, so every helper a write tool calls must keep R = never.
+ * serviceOption reads the service out of the ambient runtime when present
+ * (always, in-app) without adding it to the requirement set.
+ *
+ * Fails OPEN — no Config service (unit tests, detached fibers) means writing
+ * stays enabled. A config we cannot read must never silently block memory writes.
+ */
+const memoryWriteEnabled = Effect.gen(function* () {
+  const svc = yield* Effect.serviceOption(Config.Service)
+  if (Option.isNone(svc)) return true
+  return isMemoryWriteEnabled(yield* svc.value.get())
+})
 
 /**
  * The single write-permission gate for file-mutating tools (edit, write,
@@ -94,6 +127,15 @@ export const assertWriteAllowed = Effect.fn("Tool.assertWriteAllowed")(function*
     }
   })()
 
+  // System-agent write sandbox: checkpoint-writer is memory-only, while
+  // dream/distill may also write <worktree>/.sleepycode.
+  assertAgentWriteSandbox({
+    target,
+    agentName: ctx.agent,
+    memoryRoot: path.join(Global.Path.data, "memory"),
+    worktree: (yield* InstanceState.context).worktree,
+  })
+
   assertMemoryWriteAllowed({
     target,
     agentName: ctx.agent,
@@ -101,6 +143,7 @@ export const assertWriteAllowed = Effect.fn("Tool.assertWriteAllowed")(function*
     projectID,
     sessionID: ctx.sessionID,
     taskId: ctx.taskId,
+    writeEnabled: yield* memoryWriteEnabled,
   })
 })
 

@@ -5,6 +5,8 @@ import { withTransientReadRetry } from "@/util/effect-http-client"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import z from "zod"
 import path from "path"
+import os from "os"
+import { renameSync, copyFileSync, rmSync, unlinkSync, existsSync } from "fs"
 import { BusEvent } from "@/bus/bus-event"
 import { Flag } from "../flag/flag"
 import { Log } from "../util"
@@ -24,12 +26,14 @@ export const Event = {
     "installation.updated",
     z.object({
       version: z.string(),
+      method: z.string().optional(),
     }),
   ),
   UpdateAvailable: BusEvent.define(
     "installation.update-available",
     z.object({
       version: z.string(),
+      method: z.string().optional(),
     }),
   ),
 }
@@ -67,7 +71,7 @@ export function isLocal() {
 
 export class UpgradeFailedError extends Schema.TaggedErrorClass<UpgradeFailedError>()("UpgradeFailedError", {
   stderr: Schema.String,
-}) {}
+}) { }
 
 // TODO(sleepycode): uncomment when corresponding channels are supported
 // const GitHubRelease = Schema.Struct({ tag_name: Schema.String })
@@ -88,7 +92,7 @@ export interface Interface {
   readonly upgrade: (method: Method, target: string) => Effect.Effect<void, UpgradeFailedError>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@sleepycode/Installation") {}
+export class Service extends Context.Service<Service, Interface>()("@sleepycode/Installation") { }
 
 export const layer: Layer.Layer<Service, never, HttpClient.HttpClient | ChildProcessSpawner.ChildProcessSpawner> =
   Layer.effect(
@@ -144,7 +148,12 @@ export const layer: Layer.Layer<Service, never, HttpClient.HttpClient | ChildPro
 
       const upgradeCurl = Effect.fnUntraced(
         function* (target: string) {
-          const response = yield* httpOk.execute(HttpClientRequest.get("https://www.sleepyai.org"))
+          if (process.platform === "win32") {
+            return yield* upgradeCurlWindows(target)
+          }
+          const response = yield* httpOk.execute(
+            HttpClientRequest.get(process.env.SLEEPYCODE_INSTALL_SCRIPT_URL ?? "https://www.sleepyai.org/install"),
+          )
           const body = yield* response.text
           const bodyBytes = new TextEncoder().encode(body)
           const proc = ChildProcess.make("bash", [], {
@@ -163,6 +172,47 @@ export const layer: Layer.Layer<Service, never, HttpClient.HttpClient | ChildPro
         Effect.scoped,
         Effect.orDie,
       )
+
+      const upgradeCurlWindows = Effect.fnUntraced(function* (target: string) {
+        const pid = process.pid
+        const targetExe = process.execPath
+        const stageDir = path.join(os.tmpdir(), `sleepycode_upgrade_${pid}`)
+
+        // Download new version to staging dir (reuses install.ps1 logic).
+        // SLEEPY_VERSION is the variable the fork's installer actually reads; VERSION is
+        // passed too because upstream's install script contract uses it.
+        //
+        // KNOWN GAP: upstream's staged in-place upgrade requires the installer to honour
+        // an install-directory override (SLEEPYCODE_INSTALL_DIR). The fork's hosted
+        // installer at https://www.sleepyai.org/install.ps1 always writes to
+        // %LOCALAPPDATA%\Sleepy and ignores it, so the staged binary is never found and
+        // this returns a non-zero exit instead of upgrading. Windows self-update needs
+        // the hosted installer taught to honour SLEEPYCODE_INSTALL_DIR before this works.
+        const installScriptUrl = process.env.SLEEPYCODE_INSTALL_SCRIPT_URL ?? "https://www.sleepyai.org/install.ps1"
+        const downloadResult = yield* run(
+          ["powershell.exe", "-NoProfile", "-NonInteractive", "-ep", "Bypass", "-c", "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; irm $env:INSTALL_SCRIPT_URL | iex"],
+          { env: { SLEEPYCODE_INSTALL_DIR: stageDir, VERSION: target, SLEEPY_VERSION: target, INSTALL_SCRIPT_URL: installScriptUrl } },
+        )
+        if (downloadResult.code !== 0) return downloadResult
+
+        // Replace in-place: Windows allows renaming a running exe
+        const stagedExe = path.join(stageDir, "sleepy.exe")
+        if (!existsSync(stagedExe))
+          return { code: 1 as ChildProcessSpawner.ExitCode, stdout: "", stderr: "staged binary not found at " + stagedExe }
+        const oldExe = targetExe + `.old_${pid}`
+        renameSync(targetExe, oldExe)
+        try {
+          copyFileSync(stagedExe, targetExe)
+        } catch (e) {
+          renameSync(oldExe, targetExe)
+          return { code: 1 as ChildProcessSpawner.ExitCode, stdout: "", stderr: "failed to copy staged binary: " + (e instanceof Error ? e.message : String(e)) }
+        }
+        rmSync(stageDir, { recursive: true, force: true })
+        try { unlinkSync(oldExe) } catch { }
+
+        log.info("upgraded Windows binary in-place", { target, pid, oldExe })
+        return { code: 0 as ChildProcessSpawner.ExitCode, stdout: "", stderr: "" }
+      })
 
       const methodImpl = Effect.fn("Installation.method")(function* () {
         if (process.execPath.includes(path.join(".sleepycode", "bin"))) return "curl" as Method
@@ -218,10 +268,15 @@ export const layer: Layer.Layer<Service, never, HttpClient.HttpClient | ChildPro
         // }
 
         if (detectedMethod === "curl") {
+          // SleepyCode's curl channel is GitHub Releases (see the install script's
+          // REPO="TahsinArafat/sleepy-code"), not upstream's Xiaomi FDS bucket, so this
+          // resolves the version from the releases/latest redirect. Upstream switched
+          // this branch to `${MIMO_FDS_BASE}/releases/latest` for mainland-China speed;
+          // that host does not exist for this fork, so the redirect stays.
           const headers = yield* text([
             "curl",
             "-sI",
-            "https://github.com/XiaomiSleepy/Sleepy-Code/releases/latest",
+            "https://github.com/TahsinArafat/sleepy-code/releases/latest",
           ])
           const match = headers.match(/^location:.*\/tag\/v([0-9][^\s/]*)/im)
           if (match) return match[1]

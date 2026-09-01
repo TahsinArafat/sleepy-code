@@ -17,16 +17,54 @@ import type { SessionID } from "./schema"
 import { SessionRetry } from "./retry"
 import { SessionStatus } from "./status"
 import { SessionSummary } from "./summary"
+import { ProviderError } from "@/provider"
 import type { Provider } from "@/provider"
 import { Question } from "@/question"
 import { errorMessage } from "@/util/error"
 import { isRecoverableError } from "@/tool/recoverable"
+import { getToolResultAttachments, getToolResultMetadata } from "@/tool/result-error"
 import { Log } from "@/util"
 import { isRecord } from "@/util/record"
 import { createTextNgramMonitor, type TextNgramMonitor } from "./prompt/text-ngram-detection"
+import { Flag } from "@/flag/flag"
+import { monitor as tryBestMonitor, type TryBestIncident } from "./try-best-detector"
 
 const DOOM_LOOP_THRESHOLD = 3
 const log = Log.create({ service: "session.processor" })
+
+function isToolExecutionResult(output: unknown): output is {
+  title: string
+  metadata: Record<string, any>
+  output: string
+  attachments?: MessageV2.FilePart[]
+} {
+  return (
+    isRecord(output) &&
+    typeof output.title === "string" &&
+    isRecord(output.metadata) &&
+    typeof output.output === "string"
+  )
+}
+
+function displayToolOutput(output: unknown) {
+  if (typeof output === "string") return output
+  return JSON.stringify(output, null, 2) ?? String(output)
+}
+
+function jsonToolOutput(output: unknown): MessageV2.ToolStateCompleted["providerOutput"] {
+  const serialized = JSON.stringify(output)
+  return serialized === undefined ? null : JSON.parse(serialized)
+}
+
+function describeTryBest(incident: TryBestIncident) {
+  if (incident.reason === "edit_repeat") {
+    return `A near-identical edit to ${incident.evidence.path ?? "the same file"} repeated ${incident.evidence.count} times.`
+  }
+  if (incident.reason === "bash_retry") {
+    return `The same failing command was retried ${incident.evidence.count} times without an intervening successful edit.`
+  }
+  return `${incident.evidence.count} consecutive ${incident.evidence.action ?? "same-kind"} actions made no observable progress.`
+}
 
 export type Result = "overflow" | "stop" | "continue" | "text-repeat"
 
@@ -92,12 +130,8 @@ export interface Handle {
   ) => Effect.Effect<MessageV2.ToolPart | undefined>
   readonly completeToolCall: (
     toolCallID: string,
-    output: {
-      title: string
-      metadata: Record<string, any>
-      output: string
-      attachments?: MessageV2.FilePart[]
-    },
+    output: unknown,
+    providerMetadata?: Record<string, any>,
   ) => Effect.Effect<void>
   readonly process: (streamInput: LLM.StreamInput) => Effect.Effect<Result>
   /**
@@ -148,6 +182,8 @@ interface ProcessorContext extends Input {
   stepPartIds: PartID[]
   textNgramMonitor: TextNgramMonitor | undefined
   textNgramRepeat: boolean
+  textPartPersisted: boolean
+  retrySafe: boolean
 }
 
 type StreamEvent = Event
@@ -204,6 +240,8 @@ export const layer: Layer.Layer<
         stepPartIds: [],
         textNgramMonitor: undefined,
         textNgramRepeat: false,
+        textPartPersisted: false,
+        retrySafe: true,
       }
       let aborted = false
       // Only the main agent owns session-level status. Subagents (explore,
@@ -218,7 +256,57 @@ export const layer: Layer.Layer<
         MessageV2.fromError(e, {
           providerID: input.model.providerID,
           aborted,
+          allow404Retry: ProviderError.allowsModelNotFoundRetry(input.model),
         })
+
+      const tryBestConfig = (yield* config.get()).experimental?.try_best
+      const tryBest = Flag.SLEEPYCODE_ENABLE_TRY_BEST_HANDOFF
+        ? tryBestMonitor(input.sessionID, input.assistantMessage.agentID, tryBestConfig)
+        : undefined
+
+      const detectTryBest = Effect.fn("SessionProcessor.detectTryBest")(function* (part: MessageV2.ToolPart) {
+        if (ctx.blocked) return
+        const incident = tryBest?.consume(part)
+        if (!incident) return
+        tryBest?.reset()
+        ctx.blocked = true
+        const detail = describeTryBest(incident)
+        yield* session.updatePart({
+          id: PartID.ascending(),
+          messageID: ctx.assistantMessage.id,
+          sessionID: ctx.sessionID,
+          type: "text",
+          text: `Try-best loop detected; this turn was paused. ${detail}`,
+          synthetic: true,
+          metadata: {
+            origin: {
+              kind: "try_best",
+              providerID: input.model.providerID,
+              modelID: input.model.id,
+              incident,
+            },
+          },
+          time: { start: Date.now(), end: Date.now() },
+        })
+        yield* bus.publish(Session.Event.TryBestDetected, {
+          sessionID: ctx.sessionID,
+          agentID: ctx.assistantMessage.agentID,
+          providerID: input.model.providerID,
+          modelID: input.model.id,
+          ...incident,
+        })
+        yield* bus
+          .publish(Metrics.TryBestDetected, {
+            sessionID: ctx.sessionID,
+            reason: incident.reason,
+            provider: input.model.providerID,
+            model_id: input.model.id,
+            count: incident.evidence.count,
+            similarity: incident.evidence.similarity,
+            action: incident.evidence.action,
+          })
+          .pipe(Effect.ignore)
+      })
 
       const settleToolCall = Effect.fn("SessionProcessor.settleToolCall")(function* (toolCallID: string) {
         const done = ctx.toolcalls[toolCallID]?.done
@@ -259,27 +347,28 @@ export const layer: Layer.Layer<
 
       const completeToolCall = Effect.fn("SessionProcessor.completeToolCall")(function* (
         toolCallID: string,
-        output: {
-          title: string
-          metadata: Record<string, any>
-          output: string
-          attachments?: MessageV2.FilePart[]
-        },
+        output: unknown,
+        providerMetadata?: Record<string, any>,
       ) {
         const match = yield* readToolCall(toolCallID)
         if (!match || match.part.state.status !== "running") return
-        yield* session.updatePart({
+        const result = isToolExecutionResult(output) ? output : undefined
+        const structured = !result && match.part.metadata?.providerExecuted
+        const part = yield* session.updatePart({
           ...match.part,
           state: {
             status: "completed",
             input: match.part.state.input,
-            output: output.output,
-            metadata: output.metadata,
-            title: output.title,
+            output: result?.output ?? displayToolOutput(output),
+            ...(structured ? { providerOutput: jsonToolOutput(output) } : {}),
+            ...(providerMetadata ? { providerMetadata } : {}),
+            metadata: result?.metadata ?? {},
+            title: result?.title ?? "",
             time: { start: match.part.state.time.start, end: Date.now() },
-            attachments: output.attachments,
+            attachments: result?.attachments,
           },
         })
+        yield* detectTryBest(part)
         yield* settleToolCall(toolCallID)
       })
 
@@ -290,18 +379,29 @@ export const layer: Layer.Layer<
         // id) carry a marker the TUI reads to render them muted instead of as a red
         // error block. The full actionable message still flows to the model.
         const recoverable = isRecoverableError(error)
-        yield* session.updatePart({
+        const metadata = {
+          ...match.part.state.metadata,
+          ...getToolResultMetadata(error),
+          ...(recoverable ? { recoverable: true } : {}),
+        }
+        const attachments = getToolResultAttachments(error)?.flatMap((attachment) => {
+          const parsed = MessageV2.FilePart.safeParse(attachment)
+          return parsed.success ? [parsed.data] : []
+        })
+        const part = yield* session.updatePart({
           ...match.part,
           state: {
             status: "error",
             input: match.part.state.input,
             error: errorMessage(error),
-            ...(recoverable ? { metadata: { ...match.part.state.metadata, recoverable: true } } : {}),
+            ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+            ...(attachments && attachments.length > 0 ? { attachments } : {}),
             time: { start: match.part.state.time.start, end: Date.now() },
           },
         })
+        yield* detectTryBest(part)
         if (error instanceof Permission.RejectedError || error instanceof Question.RejectedError) {
-          ctx.blocked = ctx.shouldBreak
+          ctx.blocked = ctx.blocked || ctx.shouldBreak
         }
         yield* settleToolCall(toolCallID)
         return true
@@ -394,6 +494,9 @@ export const layer: Layer.Layer<
             if (ctx.assistantMessage.summary) {
               throw new Error(`Tool call not allowed while generating summary: ${value.toolName}`)
             }
+            // A tool call may already have caused an external side effect before
+            // the provider stream fails. Replaying the whole model step is unsafe.
+            ctx.retrySafe = false
             yield* updateToolCall(value.toolCallId, (match) => ({
               ...match,
               tool: value.toolName,
@@ -439,7 +542,7 @@ export const layer: Layer.Layer<
           }
 
           case "tool-result": {
-            yield* completeToolCall(value.toolCallId, value.output)
+            yield* completeToolCall(value.toolCallId, value.output, value.providerMetadata)
             return
           }
 
@@ -523,8 +626,7 @@ export const layer: Layer.Layer<
               .publish(Metrics.ModelCall, {
                 sessionID: ctx.sessionID,
                 finish_reason: value.finishReason,
-                ttft_ms:
-                  ctx.firstTokenAt && ctx.stepStartedAt ? ctx.firstTokenAt - ctx.stepStartedAt : undefined,
+                ttft_ms: ctx.firstTokenAt && ctx.stepStartedAt ? ctx.firstTokenAt - ctx.stepStartedAt : undefined,
                 latency_ms: ctx.stepStartedAt ? Date.now() - ctx.stepStartedAt : 0,
                 cached_read_tokens: usage.tokens.cache.read,
                 model_id: ctx.model.id,
@@ -558,13 +660,18 @@ export const layer: Layer.Layer<
               time: { start: Date.now() },
               metadata: value.providerMetadata,
             }
-            yield* session.updatePart(ctx.currentText)
-            ctx.stepPartIds.push(ctx.currentText.id)
+            ctx.textPartPersisted = false
             return
 
           case "text-delta":
             if (!ctx.firstTokenAt) ctx.firstTokenAt = Date.now()
             if (!ctx.currentText) return
+            if (!value.text) return
+            if (!ctx.textPartPersisted) {
+              ctx.textPartPersisted = true
+              yield* session.updatePart(ctx.currentText)
+              ctx.stepPartIds.push(ctx.currentText.id)
+            }
             ctx.currentText.text += value.text
             checkTextNgram(value.text)
             if (value.providerMetadata) ctx.currentText.metadata = value.providerMetadata
@@ -595,7 +702,9 @@ export const layer: Layer.Layer<
               ctx.currentText.time = { start: ctx.currentText.time?.start ?? end, end }
             }
             if (value.providerMetadata) ctx.currentText.metadata = value.providerMetadata
-            yield* session.updatePart(ctx.currentText)
+            if (ctx.currentText.text) {
+              yield* session.updatePart(ctx.currentText)
+            }
             ctx.currentText = undefined
             return
 
@@ -625,9 +734,11 @@ export const layer: Layer.Layer<
         }
 
         if (ctx.currentText) {
-          const end = Date.now()
-          ctx.currentText.time = { start: ctx.currentText.time?.start ?? end, end }
-          yield* session.updatePart(ctx.currentText)
+          if (ctx.currentText.text) {
+            const end = Date.now()
+            ctx.currentText.time = { start: ctx.currentText.time?.start ?? end, end }
+            yield* session.updatePart(ctx.currentText)
+          }
           ctx.currentText = undefined
         }
 
@@ -649,22 +760,34 @@ export const layer: Layer.Layer<
         for (const toolCallID of Object.keys(ctx.toolcalls)) {
           const match = yield* readToolCall(toolCallID)
           if (!match) continue
-          const part = match.part
-          const end = Date.now()
-          const metadata = "metadata" in part.state && isRecord(part.state.metadata) ? part.state.metadata : {}
           yield* session.updatePart({
-            ...part,
-            state: {
-              ...part.state,
-              status: "error",
-              error: "Tool execution aborted",
-              metadata: { ...metadata, interrupted: true },
-              time: { start: "time" in part.state ? part.state.time.start : end, end },
-            },
+            ...match.part,
+            state: MessageV2.abortedToolState(match.part.state),
           })
         }
         ctx.toolcalls = {}
-        ctx.assistantMessage.time.completed = Date.now()
+        // Second pass, DB-driven. The loop above can only see calls this process
+        // still holds in `ctx.toolcalls`, so a call whose registration lost the race
+        // with teardown, or that arrived after the map was cleared, or whose
+        // `readToolCall` lookup missed, keeps its persisted `running` status forever
+        // — the transcript then shows a tool call that will never finish. Every tool
+        // part of THIS assistant message belongs to the turn being torn down here,
+        // so any part still `pending`/`running` is unfinalized by definition.
+        // Idempotent: the pass above already rewrote the tracked ones.
+        for (const part of yield* Effect.sync(() => MessageV2.parts(ctx.assistantMessage.id))) {
+          if (part.type !== "tool") continue
+          if (part.state.status !== "pending" && part.state.status !== "running") continue
+          yield* session.updatePart({
+            ...part,
+            state: MessageV2.abortedToolState(part.state),
+          })
+        }
+        // 有 error = 没完成 = 留在 /recovery 候选集里。不管错误类型(瞬态/终态/用户中止),
+        // 只要消息带 error,就不写 completed,让 resume 端点能找到它。
+        // 正常完成(无 error)才标记 completed。
+        if (!ctx.assistantMessage.error) {
+          ctx.assistantMessage.time.completed = Date.now()
+        }
         yield* session.updateMessage(ctx.assistantMessage)
       })
 
@@ -687,7 +810,9 @@ export const layer: Layer.Layer<
       const process = Effect.fn("SessionProcessor.process")(function* (streamInput: LLM.StreamInput) {
         slog.info("process")
         ctx.needsOverflowHandling = false
-        ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
+        const cfg = yield* config.get()
+        ctx.shouldBreak = cfg.experimental?.continue_loop_on_deny !== true
+        const retryConfig = SessionRetry.resolve(cfg, streamInput.model.providerID)
 
         return yield* Effect.gen(function* () {
           yield* Effect.gen(function* () {
@@ -695,13 +820,14 @@ export const layer: Layer.Layer<
             ctx.reasoningMap = {}
             ctx.stepPartIds = []
             ctx.toolcalls = {}
+            ctx.retrySafe = true
             ctx.textNgramRepeat = false
             ctx.textNgramMonitor = createTextNgramMonitor()
             const stream = llm.stream(streamInput)
 
             yield* stream.pipe(
               Stream.tap((event) => handleEvent(event)),
-              Stream.takeUntil(() => ctx.needsOverflowHandling || ctx.textNgramRepeat),
+              Stream.takeUntil(() => ctx.needsOverflowHandling || ctx.textNgramRepeat || ctx.blocked),
               Stream.runDrain,
             )
           }).pipe(
@@ -719,6 +845,7 @@ export const layer: Layer.Layer<
             ),
             Effect.tapError(() =>
               Effect.gen(function* () {
+                if (!ctx.retrySafe) return
                 for (const partId of ctx.stepPartIds) {
                   yield* session.removePart({
                     sessionID: ctx.sessionID,
@@ -732,15 +859,44 @@ export const layer: Layer.Layer<
             Effect.retry(
               SessionRetry.policy({
                 parse,
+                phase: "stream",
+                budget: (decision) => SessionRetry.budgetFor(retryConfig, decision),
+                jitterRatio: retryConfig.jitterRatio,
+                replaySafe: () => ctx.retrySafe,
+                silentRetry: (error) => isMain && SessionRetry.isGptServerOverloadedError(error),
+                onTerminal: (decision) =>
+                  isMain && decision.uiMessage
+                    ? status.set(ctx.sessionID, { type: "notice", message: decision.uiMessage })
+                    : Effect.void,
                 set: (info) =>
-                  isMain
-                    ? status.set(ctx.sessionID, {
+                  Effect.gen(function* () {
+                    let attempt = info.attempt
+                    if (isMain) {
+                      attempt = yield* status.setRetry(ctx.sessionID, {
                         type: "retry",
                         attempt: info.attempt,
+                        phaseAttempt: info.attempt,
                         message: info.message,
                         next: info.next,
+                        phase: info.phase,
+                        scope: info.scope,
                       })
-                    : Effect.void,
+                    }
+                    yield* bus
+                      .publish(Session.Event.RetryAttempt, {
+                        sessionID: ctx.sessionID,
+                        messageID: ctx.assistantMessage.id,
+                        attempt,
+                        phaseAttempt: info.attempt,
+                        maxAttempts: info.maxAttempts,
+                        phase: info.phase,
+                        kind: info.kind,
+                        scope: info.scope,
+                        reason: info.message,
+                        nextDelayMs: Math.max(0, info.next - Date.now()),
+                      })
+                      .pipe(Effect.ignore)
+                  }),
               }),
             ),
             Effect.catch(halt),
@@ -829,7 +985,7 @@ export const layer: Layer.Layer<
             }
 
             for (const call of input.toolCalls) {
-              if (ctx.needsOverflowHandling) break
+              if (ctx.needsOverflowHandling || ctx.blocked) break
               yield* handleEvent({
                 type: "tool-input-start",
                 id: call.toolCallId,
@@ -904,7 +1060,10 @@ export const layer: Layer.Layer<
             // a supplementary ModelCall metric, but NOT to message.tokens (set
             // by the finish-step above from the winner only) so context
             // estimators stay honest.
-            if (input.overhead && (input.overhead.cost > 0 || input.overhead.tokensIn > 0 || input.overhead.tokensOut > 0)) {
+            if (
+              input.overhead &&
+              (input.overhead.cost > 0 || input.overhead.tokensIn > 0 || input.overhead.tokensOut > 0)
+            ) {
               ctx.assistantMessage.cost += input.overhead.cost
               yield* session.updateMessage(ctx.assistantMessage)
               if (ctx.agentMetrics) {

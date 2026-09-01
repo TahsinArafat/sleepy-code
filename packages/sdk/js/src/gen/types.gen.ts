@@ -62,6 +62,8 @@ export type UserMessage = {
     modelID: string
   }
   system?: string
+  systemMode?: "append" | "replace-agent"
+  harness?: "auto" | "codex" | "default"
   tools?: {
     [key: string]: boolean
   }
@@ -287,6 +289,7 @@ export type ToolStateError = {
     start: number
     end: number
   }
+  attachments?: Array<FilePart>
 }
 
 export type ToolState = ToolStatePending | ToolStateRunning | ToolStateCompleted | ToolStateError
@@ -544,6 +547,11 @@ export type Session = {
     created: number
     updated: number
     compacting?: number
+  }
+  prompt?: {
+    system?: string
+    systemMode?: "append" | "replace-agent"
+    harness: "auto" | "codex" | "default"
   }
   revert?: {
     messageID: string
@@ -2585,6 +2593,8 @@ export type SessionPromptData = {
     agent?: string
     noReply?: boolean
     system?: string
+    systemMode?: "append" | "replace-agent"
+    harness?: "auto" | "codex" | "default"
     tools?: {
       [key: string]: boolean
     }
@@ -2680,6 +2690,8 @@ export type SessionPromptAsyncData = {
     agent?: string
     noReply?: boolean
     system?: string
+    systemMode?: "append" | "replace-agent"
+    harness?: "auto" | "codex" | "default"
     tools?: {
       [key: string]: boolean
     }
@@ -2726,6 +2738,10 @@ export type SessionCommandData = {
     model?: string
     arguments: string
     command: string
+    variant?: string
+    system?: string
+    systemMode?: "append" | "replace-agent"
+    harness?: "auto" | "codex" | "default"
   }
   path: {
     /**

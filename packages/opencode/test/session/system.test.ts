@@ -1,16 +1,378 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { $ } from "bun"
+import os from "os"
 import path from "path"
 import { Effect } from "effect"
 import { Agent } from "../../src/agent/agent"
 import { Instance } from "../../src/project/instance"
+import { ModelID, ProviderID } from "../../src/provider/schema"
 import { SystemPrompt } from "../../src/session/system"
 import { provideInstance, tmpdir } from "../fixture/fixture"
+import { ProviderTest } from "../fake/provider"
 
 function load<A>(dir: string, fn: (svc: Agent.Interface) => Effect.Effect<A>) {
   return Effect.runPromise(provideInstance(dir)(Agent.Service.use(fn)).pipe(Effect.provide(Agent.defaultLayer)))
 }
 
+const dynamicSystemPrompt = process.env.SLEEPYCODE_ENABLE_DYNAMIC_SYSTEM_PROMPT
+const codexMode = process.env.SLEEPYCODE_CODEX_MODE
+
+beforeEach(() => {
+  process.env.SLEEPYCODE_ENABLE_DYNAMIC_SYSTEM_PROMPT = "true"
+  delete process.env.SLEEPYCODE_CODEX_MODE
+})
+
+afterEach(() => {
+  if (dynamicSystemPrompt === undefined) delete process.env.SLEEPYCODE_ENABLE_DYNAMIC_SYSTEM_PROMPT
+  else process.env.SLEEPYCODE_ENABLE_DYNAMIC_SYSTEM_PROMPT = dynamicSystemPrompt
+  if (codexMode === undefined) delete process.env.SLEEPYCODE_CODEX_MODE
+  else process.env.SLEEPYCODE_CODEX_MODE = codexMode
+})
+
 describe("session.system", () => {
+  test("does not render dynamic environment information by default", async () => {
+    delete process.env.SLEEPYCODE_ENABLE_DYNAMIC_SYSTEM_PROMPT
+    await using tmp = await tmpdir({ git: true })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const prompt = await Effect.runPromise(
+          Effect.gen(function* () {
+            return yield* (yield* SystemPrompt.Service).environment(ProviderTest.model(), Date.now())
+          }).pipe(Effect.provide(SystemPrompt.defaultLayer)),
+        )
+
+        expect(prompt).toEqual([])
+      },
+    })
+  })
+
+  test("Anthropic template does not contain machine-specific snapshots", () => {
+    const prompt = SystemPrompt.provider(
+      ProviderTest.model({
+        id: ModelID.make("claude-sonnet-4-6"),
+        providerID: ProviderID.make("anthropic"),
+        api: { id: "claude-sonnet-4-6" } as never,
+      }),
+    )[0]
+
+    expect(prompt).not.toContain("/Users/mi/Desktop/MCracker")
+    expect(prompt).not.toContain("feat/wiki-seal-cot-recovery")
+    expect(prompt).not.toContain("# Environment")
+    expect(prompt).not.toContain("gitStatus:")
+  })
+
+  test("the explicit harness selects the prompt for Sleepy regardless of API transport", () => {
+    const gpt = ProviderTest.model({ id: ModelID.make("gpt-5.2"), api: { id: "gpt-5.2" } as never })
+    expect(SystemPrompt.provider(gpt, "default")[0]).toContain("You are Codex")
+    expect(SystemPrompt.provider(gpt, "default")[0]).toContain("tools.apply_patch")
+
+    const sleepy = ProviderTest.model({ id: ModelID.make("sleepy-v2.6"), api: { id: "sleepy-v2.6" } as never })
+    expect(SystemPrompt.provider(sleepy, "codex")[0]).toContain("You are Codex")
+    expect(SystemPrompt.provider(sleepy, "codex")[0]).toContain("tools.apply_patch")
+    expect(SystemPrompt.provider(sleepy, "default")[0]).not.toContain("You are Codex")
+    expect(SystemPrompt.provider(sleepy, "default")[0]).not.toContain("tools.apply_patch")
+
+    const responses = ProviderTest.model({
+      id: ModelID.make("sleepy-v2.6-ptc"),
+      api: { id: "sleepy-v2.6-ptc" } as never,
+    })
+    expect(SystemPrompt.provider(responses, "codex")[0]).toContain("You are Codex")
+    expect(SystemPrompt.provider(responses, "default")[0]).not.toContain("You are Codex")
+  })
+
+  test("renders machine and repository environment only for Claude models", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await $`git branch -M prompt-test`.cwd(tmp.path).quiet()
+    await $`git config init.defaultBranch prompt-test`.cwd(tmp.path).quiet()
+    await Bun.write(path.join(tmp.path, "dirty.txt"), "dirty\n")
+    const now = Date.UTC(2026, 6, 30)
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const prompts = await Effect.runPromise(
+          Effect.gen(function* () {
+            const system = yield* SystemPrompt.Service
+            return yield* Effect.all([
+              system.environment(
+                ProviderTest.model({
+                  id: ModelID.make("claude-sonnet-4-6"),
+                  providerID: ProviderID.make("anthropic"),
+                  name: "Claude Sonnet 4.6",
+                  api: { id: "claude-sonnet-4-6-20260730" } as never,
+                }),
+                now,
+              ),
+              system.environment(ProviderTest.model(), now),
+            ])
+          }).pipe(Effect.provide(SystemPrompt.defaultLayer)),
+        )
+        const claude = prompts[0].join("\n")
+        const gpt = prompts[1].join("\n")
+
+        expect(claude).toContain("# Environment")
+        expect(claude).toContain(` - Primary working directory: ${tmp.path}`)
+        expect(claude).toContain(` - Platform: ${process.platform}`)
+        expect(claude).toContain(` - OS Version: ${os.type()} ${os.release()}`)
+        expect(claude).toContain("The exact model ID is anthropic/claude-sonnet-4-6-20260730")
+        expect(claude).toContain("Current branch: prompt-test")
+        expect(claude).toContain("Main branch (you will usually use this for PRs): prompt-test")
+        expect(claude).toContain("Git user: Test")
+        expect(claude).toContain("?? dirty.txt")
+        expect(claude).toContain("root commit")
+        expect(gpt).not.toContain("gitStatus:")
+        expect(gpt).not.toContain("Current branch:")
+        expect(gpt).not.toContain("Git user:")
+      },
+    })
+  })
+
+  test("uses the selected system template to decide whether to render the Claude environment", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const now = Date.UTC(2026, 6, 30)
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const prompts = await Effect.runPromise(
+          Effect.gen(function* () {
+            const system = yield* SystemPrompt.Service
+            return yield* Effect.all([
+              system.environment(
+                ProviderTest.model({
+                  id: ModelID.make("gpt-fast"),
+                  api: { id: "claude-sonnet-4-6" } as never,
+                }),
+                now,
+              ),
+              system.environment(
+                ProviderTest.model({
+                  id: ModelID.make("custom-model"),
+                  api: { id: "claude-sonnet-4-6" } as never,
+                }),
+                now,
+              ),
+              system.environment(
+                ProviderTest.model({
+                  id: ModelID.make("custom-model"),
+                  api: { id: "claude-sonnet-4-6" } as never,
+                }),
+                now,
+                "codex",
+              ),
+            ])
+          }).pipe(Effect.provide(SystemPrompt.defaultLayer)),
+        )
+
+        expect(prompts[0].join("\n")).not.toContain("gitStatus:")
+        expect(prompts[1].join("\n")).toContain("gitStatus:")
+        expect(prompts[2].join("\n")).not.toContain("gitStatus:")
+      },
+    })
+  })
+
+  test("keeps the Claude repository snapshot stable for a session", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const now = Date.UTC(2026, 6, 30)
+    const model = ProviderTest.model({
+      id: ModelID.make("claude-sonnet-4-6"),
+      providerID: ProviderID.make("anthropic"),
+      api: { id: "claude-sonnet-4-6" } as never,
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const render = () =>
+          Effect.runPromise(
+            Effect.gen(function* () {
+              return yield* (yield* SystemPrompt.Service).environment(model, now)
+            }).pipe(Effect.provide(SystemPrompt.defaultLayer)),
+          )
+        const first = await render()
+        await Bun.write(path.join(tmp.path, "created-after-render.txt"), "later\n")
+        const second = await render()
+
+        expect(second).toEqual(first)
+        expect(second.join("\n")).not.toContain("created-after-render.txt")
+      },
+    })
+  })
+
+  test("GPT prompt aligns exec and parallel-call guidance", () => {
+    const prompt = SystemPrompt.provider(ProviderTest.model())[0]
+
+    expect(prompt).toContain("Parallelize only tool calls that are independent")
+    expect(prompt).toContain("keep dependencies sequential")
+    expect(prompt).toContain("including a single small call")
+    expect(prompt).toContain("tools.<name>(...)")
+    expect(prompt).toContain('tools.skill({ name: "<skill-name>" })')
+    expect(prompt).toContain("return result.output")
+    expect(prompt).toContain("never call an unavailable top-level `skill`")
+    expect(prompt).not.toContain("When possible, prefer parallelization over sequential tool calls")
+  })
+
+  test("uses the GPT prompt for GPT models and the normal prompt for Sleepy models", () => {
+    const gpt = SystemPrompt.provider(ProviderTest.model({ id: ModelID.make("gpt-5.4") }))[0]
+    const normal = SystemPrompt.provider(ProviderTest.model({ id: ModelID.make("model-default") }))[0]
+    const prompts = ["sleepy-v2.5", "sleepy-v2.5-pro", "sleepy-v2.5-pro-ultraspeed", "mimo-v2-pro", "sleepy-v2.6"].map(
+      (id) =>
+        SystemPrompt.provider(
+          ProviderTest.model({
+            id: ModelID.make(id),
+          }),
+        )[0],
+    )
+
+    expect(SystemPrompt.provider(ProviderTest.model({ id: ModelID.make("gpt-5.4-codex") }))[0]).toBe(gpt)
+    expect(prompts).toEqual([normal, normal, normal, normal, normal])
+    expect(SystemPrompt.provider(ProviderTest.model({ id: ModelID.make("sleepy-v2.6-ptc") }))[0]).toBe(normal)
+  })
+
+  test("Codex mode forces the GPT prompt for every model", () => {
+    const gpt = SystemPrompt.provider(ProviderTest.model({ id: ModelID.make("gpt-5.4") }))[0]
+    process.env.SLEEPYCODE_CODEX_MODE = "true"
+    const prompt = SystemPrompt.provider(
+      ProviderTest.model({
+        id: ModelID.make("claude-sonnet-4-6"),
+        providerID: ProviderID.make("anthropic"),
+      }),
+    )[0]
+
+    expect(prompt).toBe(gpt)
+    expect(SystemPrompt.provider(ProviderTest.model({ id: ModelID.make("sleepy-v2.6") }))[0]).toBe(gpt)
+    expect(SystemPrompt.provider(ProviderTest.model({ id: ModelID.make("sleepy-v2.6-ptc") }))[0]).toBe(gpt)
+  })
+
+  test("disabled Codex mode forces the default prompt for GPT models", () => {
+    const normal = SystemPrompt.provider(ProviderTest.model({ id: ModelID.make("model-default") }))[0]
+    process.env.SLEEPYCODE_CODEX_MODE = "false"
+
+    expect(SystemPrompt.provider(ProviderTest.model({ id: ModelID.make("gpt-5.4") }))[0]).toBe(normal)
+    expect(
+      SystemPrompt.provider(
+        ProviderTest.model({ id: ModelID.make("deployment-primary"), api: { id: "gpt-5.4" } as never }),
+      )[0],
+    ).toBe(normal)
+  })
+
+  test("allows the resolved session mode to override the process harness mode", () => {
+    const model = ProviderTest.model({
+      id: ModelID.make("claude-sonnet-4-6"),
+      providerID: ProviderID.make("anthropic"),
+    })
+    const gpt = SystemPrompt.provider(ProviderTest.model({ id: ModelID.make("gpt-5.4") }))[0]
+
+    expect(SystemPrompt.provider(model, "codex")[0]).toBe(gpt)
+    process.env.SLEEPYCODE_CODEX_MODE = "true"
+    expect(SystemPrompt.provider(model, "default")[0]).not.toBe(gpt)
+  })
+
+  test("uses the same prompted subagent system across models", () => {
+    const subagent = {
+      name: "general",
+      mode: "subagent" as const,
+      prompt: "You are a full-capability general-purpose subagent.",
+      permission: [],
+      options: {},
+    }
+    const gpt = SystemPrompt.agent(
+      subagent,
+      ProviderTest.model({ id: ModelID.make("gpt-5.4"), api: { id: "deployment-primary" } as never }),
+    )
+    const claude = SystemPrompt.agent(
+      subagent,
+      ProviderTest.model({ id: ModelID.make("claude-sonnet-4-6"), api: { id: "claude-sonnet-4-6" } as never }),
+    )
+
+    expect(gpt).toEqual([subagent.prompt])
+    expect(claude).toEqual(gpt)
+  })
+
+  test("prefers the catalog model ID when the API deployment ID is opaque", () => {
+    const prompt = SystemPrompt.provider(
+      ProviderTest.model({
+        id: ModelID.make("gpt-5.4"),
+        api: { id: "deployment-primary" } as never,
+      }),
+    )[0]
+
+    expect(prompt).toBe(SystemPrompt.provider(ProviderTest.model({ id: ModelID.make("gpt-5.4") }))[0])
+  })
+
+  test("does not inject vision capability guidance for GPT, Claude, or Gemini models", async () => {
+    await using tmp = await tmpdir({ git: true })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const prompts = await Effect.runPromise(
+          Effect.gen(function* () {
+            const system = yield* SystemPrompt.Service
+            return yield* Effect.all([
+              system.environment(
+                ProviderTest.model({ id: ModelID.make("gpt-5.4"), api: { id: "gpt-5.4" } as never }),
+                Date.now(),
+              ),
+              system.environment(
+                ProviderTest.model({
+                  id: ModelID.make("claude-sonnet-4-6"),
+                  providerID: ProviderID.make("anthropic"),
+                  api: { id: "claude-sonnet-4-6" } as never,
+                }),
+                Date.now(),
+              ),
+              system.environment(
+                ProviderTest.model({
+                  id: ModelID.make("gemini-2.5-pro"),
+                  providerID: ProviderID.make("google"),
+                  api: { id: "gemini-2.5-pro" } as never,
+                }),
+                Date.now(),
+              ),
+            ])
+          }).pipe(Effect.provide(SystemPrompt.defaultLayer)),
+        )
+
+        expect(prompts[0].join("\n")).not.toContain("<vision-capability>")
+        expect(prompts[1].join("\n")).not.toContain("<vision-capability>")
+        expect(prompts[2].join("\n")).not.toContain("<vision-capability>")
+      },
+    })
+  })
+
+  test("skill catalog does not include invocation reminders", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const home = process.env.HOME
+    const userProfile = process.env.USERPROFILE
+    process.env.HOME = tmp.path
+    process.env.USERPROFILE = tmp.path
+
+    try {
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const build = await load(tmp.path, (svc) => svc.get("build"))
+          const prompt = await Effect.runPromise(
+            Effect.gen(function* () {
+              return yield* (yield* SystemPrompt.Service).skills(build!)
+            }).pipe(Effect.provide(SystemPrompt.defaultLayer)),
+          )
+
+          expect(prompt).toContain("Skills available in this session:")
+          expect(prompt).not.toContain("first user query")
+          expect(prompt).not.toContain("skill_search")
+          expect(prompt).not.toContain("Use the skill tool")
+        },
+      })
+    } finally {
+      process.env.HOME = home
+      process.env.USERPROFILE = userProfile
+    }
+  })
+
   test("skills output is sorted by name and stable across calls", async () => {
     await using tmp = await tmpdir({
       git: true,
@@ -69,4 +431,5 @@ description: ${description}
       process.env.USERPROFILE = userProfile
     }
   })
+
 })
