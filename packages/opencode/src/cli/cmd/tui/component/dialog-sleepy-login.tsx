@@ -88,6 +88,8 @@ function SleepyDeviceFlow() {
         const configPath = path.join(Global.Path.config, "gateway.json")
         await writeConfig(configPath, {
           access_token: tokenData.access_token,
+          refresh_token: tokenData.refresh_token,
+          expires_at: Date.now() + (tokenData.expires_in ?? 3600) * 1000,
           endpoint: tokenData.endpoint,
           tier: tokenData.tier,
           email: tokenData.email,

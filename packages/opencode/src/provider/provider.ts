@@ -1331,8 +1331,15 @@ const layer: Layer.Layer<
                   }),
                 )
               } else {
-                yield* Effect.promise(() => fsNode.unlink(sleepyConfigPath).catch(() => {}))
-                token = null
+                // Refresh failed. Do NOT delete gateway.json — that would silently
+                // log the user out and remove the sleepy provider (and its model
+                // list) on the next startup. Fall back to the existing access
+                // token: the models API still serves it, so the model picker keeps
+                // working; a genuinely dead token surfaces as a 401 at request
+                // time, which is far less destructive than wiping credentials.
+                log.warn("sleepy token refresh failed — falling back to existing access token", {
+                  dashboardUrl,
+                })
               }
             }
 

@@ -2611,7 +2611,12 @@ test("plugin config enabled and disabled providers are honored", async () => {
 
 const SLEEPY_CONFIG_PATH = path.join(Global.Path.config, "gateway.json")
 
-async function writeSleepyConfig(config: { endpoint: string; token: string }) {
+async function writeSleepyConfig(config: {
+  endpoint: string
+  token: string
+  refresh_token?: string
+  expires_at?: number
+}) {
   await writeFile(SLEEPY_CONFIG_PATH, JSON.stringify(config, null, 2))
 }
 
@@ -2649,6 +2654,37 @@ test("sleepy provider absent when config.json has no credentials", async () => {
       fn: async () => {
         const providers = await list()
         expect(providers[ProviderID.make("sleepy")]).toBeUndefined()
+      },
+    })
+  } finally {
+    await removeSleepyConfig()
+  }
+})
+
+// Regression: refresh failure must NOT delete gateway.json. The provider
+// falls back to the existing access token so the model list doesn't vanish
+// on the next startup. Writes a config with an expired token + past
+// expires_at, runs an instance (triggering the refresh attempt, which fails
+// with no real server), and verifies the config file survives.
+test("sleepy provider config survives refresh failure", async () => {
+  await writeSleepyConfig({
+    endpoint: "https://www.sleepyai.org",
+    token: "test-expired-token",
+    refresh_token: "test-invalid-refresh",
+    expires_at: Date.now() - 3600_000,
+  })
+  try {
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(path.join(dir, "sleepycode.json"), JSON.stringify({ $schema: "https://opencode.ai/config.json" }))
+      },
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        // File should still exist (not deleted by refresh failure)
+        const exists = await Bun.file(SLEEPY_CONFIG_PATH).exists()
+        expect(exists).toBe(true)
       },
     })
   } finally {
