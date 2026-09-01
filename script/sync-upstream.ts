@@ -535,18 +535,49 @@ async function cmdMerge() {
     console.log(dirty)
     process.exit(1)
   }
-  await gitText(["checkout", "-B", branch, fork]).catch(async () => {
-    await git(["checkout", "-B", branch, fork])
-  })
+  // `checkout -B` force-resets the branch to F''. That is safe only if the existing tip
+  // is already an ancestor of F'' (i.e. F'' was built from it). Otherwise a previous
+  // sync's conflict resolutions on this branch would be silently discarded.
+  const existing = await gitText(["rev-parse", "--verify", "-q", `refs/heads/${branch}`])
+    .then((s) => s.trim())
+    .catch(() => null)
+  if (existing && existing !== fork) {
+    const contained = await gitText(["merge-base", "--is-ancestor", existing, fork])
+      .then(() => true)
+      .catch(() => false)
+    if (!contained)
+      throw new Error(
+        `branch ${branch} has commits (${existing.slice(0, 8)}) that are not ancestors of ${fork.slice(0, 8)}; ` +
+        `rebuilding it here would discard them. Re-run \`build\` with this branch checked out as the fork side, ` +
+        `or pass a fresh branch name.`,
+      )
+  }
+  await git(["checkout", "-B", branch, fork])
   console.log(`on ${branch} at ${fork.slice(0, 8)}; merging ${up.slice(0, 8)}`)
-  const p = Bun.spawn(["git", "merge", "--no-ff", "--no-commit", "-X", "none", up], {
+  // No `-X` option: `none` is not a valid recursive strategy option, and git aborts
+  // with "fatal: unknown strategy option: -Xnone". We want plain 3-way recursive.
+  const p = Bun.spawn(["git", "merge", "--no-ff", "--no-commit", up], {
     stdout: "pipe",
     stderr: "pipe",
   })
-  console.log(await new Response(p.stdout).text())
-  console.error(await new Response(p.stderr).text())
-  await p.exited
+  const out = await new Response(p.stdout).text()
+  const err = await new Response(p.stderr).text()
+  const code = await p.exited
+  if (out.trim()) console.log(out.trim())
+  if (err.trim()) console.error(err.trim())
+
   const unmerged = (await gitText(["diff", "--name-only", "--diff-filter=U"])).trim().split("\n").filter(Boolean)
+  const merging = await gitText(["rev-parse", "-q", "--verify", "MERGE_HEAD"]).then(() => true).catch(() => false)
+  // A non-zero exit is normal for a conflicted merge, so it cannot be the only signal.
+  // But if git refused to start the merge at all, `unmerged` is empty and the old code
+  // printed "0 file(s) need resolution" - indistinguishable from a clean merge. That
+  // false-clean report is how a broken option silently produced an empty sync.
+  if (code !== 0 && !merging && unmerged.length === 0)
+    throw new Error(`git merge exited ${code} without starting a merge - nothing was merged.`)
+  if (!merging && unmerged.length === 0) {
+    console.log(`\nmerge applied cleanly (no conflicts); commit with: git commit -m "chore: sync upstream"`)
+    return
+  }
   console.log(`\n${unmerged.length} file(s) need resolution:`)
   for (const u of unmerged) console.log(`  ${u}`)
 }
