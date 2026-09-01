@@ -237,6 +237,13 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         if (sleepy && "sleepy-auto" in sleepy.models) {
           return { providerID: "sleepy", modelID: "sleepy-auto" }
         }
+        // The gateway's model list is dynamic (dashboard API); when the
+        // sleepy-auto alias is absent, fall back to the provider's own first
+        // non-deprecated model so a logged-in user still defaults to sleepy.
+        if (sleepy) {
+          const firstSleepy = Object.entries(sleepy.models).find(([, info]) => info.status !== "deprecated")
+          if (firstSleepy) return { providerID: "sleepy", modelID: firstSleepy[0] }
+        }
 
         const provider = sync.data.provider[0]
         if (!provider) return undefined

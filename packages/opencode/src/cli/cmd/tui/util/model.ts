@@ -66,6 +66,36 @@ export function contextWindow(config: Config | undefined, model: Model | undefin
   return result.hard === 0 || result.usable === 0 ? undefined : result
 }
 
+/**
+ * Pinned sleepy model selections for the unscoped model picker.
+ *
+ * The gateway injects the sleepy provider's models dynamically from the
+ * dashboard API (ids like "auto:free", "mimo-2.5-pro"), so the literal
+ * "sleepy-auto" alias only exists on accounts where the gateway publishes it.
+ * When present it is pinned alone (upstream's free-tier shortcut). When absent
+ * ALL sleepy models are pinned — the picker also excludes the sleepy provider
+ * from its regular list while the pinned section shows, so pinning only a
+ * non-existent alias would leave zero sleepy models visible.
+ *
+ * Returns the pinned sleepy model ids in list order (selections only; the
+ * dialog maps them to options). Empty when the provider is missing or every
+ * model is deprecated.
+ */
+export function pinnedSleepyModels(
+  sleepy: Provider | undefined,
+): { providerID: "sleepy"; modelID: string }[] {
+  if (!sleepy) return []
+  if (
+    "sleepy-auto" in sleepy.models &&
+    sleepy.models["sleepy-auto"]?.status !== "deprecated"
+  ) {
+    return [{ providerID: "sleepy", modelID: "sleepy-auto" }]
+  }
+  return Object.entries(sleepy.models)
+    .filter(([, info]) => info.status !== "deprecated")
+    .map(([modelID]) => ({ providerID: "sleepy" as const, modelID }))
+}
+
 /** Window shape from `contextWindow` / the server's overflow arithmetic. */
 export type ContextWindow = ReturnType<typeof overflowWindow>
 
