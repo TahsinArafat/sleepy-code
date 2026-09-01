@@ -52,6 +52,13 @@ import { rebrand, audit, shouldSkipContent, mapPath, MAP } from "./lib/branding"
 const UPSTREAM_REMOTE = "upstream"
 const ORIGIN_REMOTE = "origin"
 const REFS = "refs/sleepy-sync"
+/**
+ * Fork side of the merge. Defaults to HEAD rather than origin/main: the sync branch
+ * carries pre-merge fixes (branding gaps, tooling) that must be part of the merge
+ * input, or they would be silently dropped from the result. Override with
+ * SLEEPY_SYNC_FORK=<ref> to measure a different fork state.
+ */
+const FORK_REF = process.env.SLEEPY_SYNC_FORK ?? "HEAD"
 
 const args = process.argv.slice(2)
 const cmd = args[0] ?? "help"
@@ -228,7 +235,18 @@ async function buildRewritten(
 
   const msgBuf = Buffer.from(message, "utf8")
   // fast-import grammar (verified empirically):
-  //   commit <ref> / committer / data <n> / <msg> / from / merge* / M lines
+  //   commit <ref> / committer / data <n> / <msg> / from / merge* / deleteall? / M lines
+  //
+  // `deleteall` is LOAD-BEARING. Without it the M lines are applied as a delta ON TOP OF
+  // the `from` parent's tree, so every synthetic commit becomes a UNION of parent tree and
+  // intended tree. Observed damage before this was fixed:
+  //   - B' carried 4709 paths for a 4696-path merge-base: both `.mimocode/*` AND its
+  //     `.sleepycode/*` rename, plus both `bin/mimo` and `bin/sleepy`.
+  //   - U' carried 5411 paths for a 5360-path upstream/main, resurrecting the 34 files
+  //     upstream deleted since the merge-base (STATS.md, 17x sst-env.d.ts,
+  //     src/tool/change-directory.ts, src/task/gate-state.ts, ...).
+  // Either way the merge would silently un-delete upstream removals and `dry-run` would
+  // report conflicts against trees that are not the ones being merged.
   const commit = [
     `commit ${branchRef}`,
     `committer ${committer()}`,
@@ -236,6 +254,7 @@ async function buildRewritten(
     message,
     `from ${parents[0]}`,
     ...parents.slice(1).map((p) => `merge ${p}`),
+    "deleteall",
     ...lines,
     "",
   ].join("\n")
@@ -267,7 +286,8 @@ async function need(ref: string) {
 }
 
 async function cmdBuild() {
-  const base = await resolveRef(`${ORIGIN_REMOTE}/main`)
+  const base = await resolveRef(FORK_REF)
+  console.log(`fork side: ${FORK_REF} -> ${base.slice(0, 8)}`)
   const mergeBase = (await gitText(["merge-base", base, `${UPSTREAM_REMOTE}/main`])).trim()
   console.log(`merge-base: ${mergeBase.slice(0, 8)}`)
   console.log(`upstream:   ${(await resolveRef(`${UPSTREAM_REMOTE}/main`)).slice(0, 8)}`)
@@ -327,7 +347,7 @@ async function conflictReport(forkRef: string, upRef: string) {
 async function cmdDryRun() {
   const fork = await need(`${REFS}/fork`)
   const up = await need(`${REFS}/upstream`)
-  const naive = await conflictReport(`${ORIGIN_REMOTE}/main`, `${UPSTREAM_REMOTE}/main`)
+  const naive = await conflictReport(FORK_REF, `${UPSTREAM_REMOTE}/main`)
   const projected = await conflictReport(fork, up)
 
   console.log(`naive merge (origin/main + upstream/main):     ${naive.conflicts.length} conflicts`)
@@ -340,7 +360,7 @@ async function cmdDryRun() {
 }
 
 async function cmdStats() {
-  const base = await resolveRef(`${ORIGIN_REMOTE}/main`)
+  const base = await resolveRef(FORK_REF)
   const mergeBase = (await gitText(["merge-base", base, `${UPSTREAM_REMOTE}/main`])).trim()
   const ours = new Set((await gitText(["diff", "--name-only", mergeBase, base])).trim().split("\n"))
   const theirs = new Set(
@@ -394,7 +414,7 @@ async function cmdStats() {
  * surface. If `unsound` grows after a branding edit, the MAP lost information.
  */
 async function cmdVerify() {
-  const base = await resolveRef(`${ORIGIN_REMOTE}/main`)
+  const base = await resolveRef(FORK_REF)
   const mergeBase = (await gitText(["merge-base", base, `${UPSTREAM_REMOTE}/main`])).trim()
   const bt = await listTree(mergeBase)
   const ft = await listTree(base)

@@ -198,7 +198,14 @@ export const PATH_MAP: ReadonlyArray<readonly [mimo: string, sleepy: string]> = 
     "packages/opencode/src/cli/cmd/tui/component/dialog-mimo-login.tsx",
     "packages/opencode/src/cli/cmd/tui/component/dialog-sleepy-login.tsx",
   ],
-  [".mimocode", ".sleepycode"],
+  // NOTE: the repo-level `.mimocode/` config dir is deliberately NOT renamed. The fork
+  // never moved it - all 9 files are still tracked under `.mimocode/` (verify with
+  // `git ls-tree -r --name-only HEAD | grep '^\.mimocode'`). An earlier version of this
+  // list claimed `.mimocode` -> `.sleepycode`, which made B'/U' project those paths into
+  // a directory the fork does not have: upstream edits to `.mimocode/tui.json` etc. were
+  // then silently dropped from the merge, and `verify` skipped them as "renamed by fork",
+  // hiding them from the soundness measurement. Do not re-add it without actually
+  // renaming the directory in the fork first.
 ]
 
 /** Files whose content must never be rebranded: lockfiles, binaries, vendored fixtures. */
