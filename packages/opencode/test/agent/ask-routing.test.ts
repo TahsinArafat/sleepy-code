@@ -23,96 +23,82 @@ describe("invalid-output policy", () => {
 })
 
 describe("decideAskRouting", () => {
-  test("system agent (by actor) -> non-interactive, no forward", () => {
+  test("system agent (by actor) -> non-interactive without inheritance", () => {
     const r = decideAskRouting({
       askActor: { agent: "checkpoint-writer", background: true, mode: "subagent" },
       sessionParentID: "ses_parent",
+      sessionID: "ses_main",
       agentName: "checkpoint-writer",
     })
-    expect(r.interactive).toBe(false)
-    expect(r.forward).toBeUndefined()
+    expect(r).toEqual({ interactive: false })
   })
 
   test("system agent (by name, no actor row) -> non-interactive", () => {
     const r = decideAskRouting({ sessionParentID: undefined, agentName: "dream" })
-    expect(r.interactive).toBe(false)
-    expect(r.forward).toBeUndefined()
+    expect(r).toEqual({ interactive: false })
   })
 
-  test("orchestrator peer (background + mode:peer + parent) -> forward", () => {
+  test("background peer WITH parent -> non-interactive + inherit parent session", () => {
     const r = decideAskRouting({
       askActor: { agent: "build", background: true, mode: "peer", parentActorID: "main" },
-      sessionParentID: "ses_orchestrator",
+      sessionParentID: "ses_parent",
+      sessionID: "ses_peer",
       agentName: "build",
     })
-    expect(r.interactive).toBe(true)
-    expect(r.forward).toEqual({ parentSessionID: "ses_orchestrator" })
+    expect(r).toEqual({ interactive: false, inherit: { parentSessionID: "ses_parent" } })
   })
 
-  test("background subagent WITH parent (mode:subagent) -> non-interactive + inherit parent session", () => {
+  test("background subagent WITH parent -> interactive + inherit parent session", () => {
     const r = decideAskRouting({
       askActor: { agent: "general", background: true, mode: "subagent" },
       sessionParentID: "ses_parent",
       sessionID: "ses_child",
       agentName: "general",
     })
-    expect(r.interactive).toBe(false)
-    expect(r.forward).toBeUndefined()
-    expect(r.inherit).toEqual({ parentSessionID: "ses_parent" })
+    expect(r).toEqual({ interactive: true, inherit: { parentSessionID: "ses_parent" } })
   })
 
-  test("same-session background subagent (root session, no parentID) -> inherit current session", () => {
-    // Actor spawn/run subagents share the parent session. Grants are
-    // published under the current session id, not session.parentID.
+  test("same-session background subagent -> interactive + inherit current session", () => {
     const r = decideAskRouting({
       askActor: { agent: "general", background: true, mode: "subagent" },
       sessionParentID: undefined,
       sessionID: "ses_main",
       agentName: "general",
     })
-    expect(r.interactive).toBe(false)
-    expect(r.forward).toBeUndefined()
-    expect(r.inherit).toEqual({ parentSessionID: "ses_main" })
+    expect(r).toEqual({ interactive: true, inherit: { parentSessionID: "ses_main" } })
   })
 
-  test("background subagent with neither parent id nor sessionID -> non-interactive, no inherit (auto-deny)", () => {
+  test("background subagent without session ids -> interactive, no inherit", () => {
     const r = decideAskRouting({
       askActor: { agent: "general", background: true, mode: "subagent" },
       sessionParentID: undefined,
       agentName: "general",
     })
-    expect(r.interactive).toBe(false)
-    expect(r.forward).toBeUndefined()
-    expect(r.inherit).toBeUndefined()
+    expect(r).toEqual({ interactive: true })
   })
 
-  test("normal foreground (no actor, not system) -> interactive, no forward", () => {
+  test("normal foreground -> interactive", () => {
     const r = decideAskRouting({ sessionParentID: undefined, agentName: "build" })
-    expect(r.interactive).toBe(true)
-    expect(r.forward).toBeUndefined()
+    expect(r).toEqual({ interactive: true })
   })
 
-  test("peer WITHOUT a parent session -> not forwarded (falls to background auto-deny)", () => {
+  test("foreground actor -> interactive + inherit current session", () => {
+    const r = decideAskRouting({
+      askActor: { agent: "general", background: false, mode: "subagent" },
+      sessionParentID: undefined,
+      sessionID: "ses_main",
+      agentName: "general",
+    })
+    expect(r).toEqual({ interactive: true, inherit: { parentSessionID: "ses_main" } })
+  })
+
+  test("peer WITHOUT a parent session -> non-interactive, no self-inherit", () => {
     const r = decideAskRouting({
       askActor: { agent: "build", background: true, mode: "peer" },
       sessionParentID: undefined,
       sessionID: "ses_peer",
       agentName: "build",
     })
-    expect(r.interactive).toBe(false)
-    expect(r.forward).toBeUndefined()
-    // sessionID fallback is subagent-only; a peer must not inherit its own session.
-    expect(r.inherit).toBeUndefined()
-  })
-
-  test("orchestrator disabled (flag off) -> peer does NOT forward, auto-denies", () => {
-    const r = decideAskRouting({
-      askActor: { agent: "build", background: true, mode: "peer", parentActorID: "main" },
-      sessionParentID: "ses_orchestrator",
-      agentName: "build",
-      orchestratorEnabled: false,
-    })
-    expect(r.interactive).toBe(false)
-    expect(r.forward).toBeUndefined()
+    expect(r).toEqual({ interactive: false })
   })
 })

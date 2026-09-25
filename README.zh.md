@@ -14,9 +14,25 @@
   <a href="https://www.sleepyai.org">官网</a> | <a href="https://www.sleepyai.org/blog">博客</a>
 </p>
 
+SleepyCode 是一个终端原生的 AI 编程助手。它能读写代码、执行命令、管理 Git，通过持久化记忆系统，在多次会话间保持对你项目的深度理解，并自我进化。
+
 ---
 
-SleepyCode 是一个终端原生的 AI 编程助手。它能读写代码、执行命令、管理 Git，通过持久化记忆系统，在多次会话间保持对你项目的深度理解，并自我进化。
+<p align="center"><strong>Sleepy 桌面端内测邀请</strong>：<a href="https://sleepy.xiaomimimo.com/desktop/invite/">立即申请国内邀测</a></p>
+
+## Xiaomi Sleepy Desktop 开放邀测
+
+<p align="center"><img src="assets/readme/sleepy-desktop-cn.jpg" alt="Xiaomi Sleepy Desktop 中文界面：会话与研究报告预览" width="900"></p>
+
+Xiaomi Sleepy Desktop 面向真实工作场景打造，一个会话即可完成办公、设计、编程和全模态创作；多个会话可自动分工、协作与通信。桌面端以 **Sleepy Code 作为核心引擎**，将终端原生的智能能力延伸到桌面工作流。
+
+- **「Smart」调度**：自动评估任务类型与成本，动态选择模型、框架与工具，复杂任务由多个 Agent 并行推进。
+- **从生成结果到持续迭代**：支持拖入多格式文件，成果覆盖 PPT、网页、3D、App 等；会话内实时预览和操作，选中局部即可精准修改，并支持版本回退。
+- **让长任务成本可控**：标准与旗舰模型自动路由，局部编辑只修改需要的部分；同会话缓存命中率最高 99%，跨会话最高 95%。
+- **浏览器操控**：自主打开网页、检索和提取信息、填写表单，生成网页后自动检查关键交互。
+- **电脑操控（仅限海外版）**：读屏并操作键鼠，跨应用执行；Record & Replay 录制一次后，可用自然语言复用。
+
+通过邀测审核后，可限时限量体验新一代小米模型 **Sleepy-X-Pro-Preview** 和 **Sleepy-X-Flash-Preview**。
 
 支持接入各家主流 LLM 厂商 API。
 
@@ -187,7 +203,7 @@ sleepy attach http://127.0.0.1:4096
 
 Compose 是 SleepyCode 的 specs-driven 结构化开发流程，编排从 spec 到交付的完整开发生命周期。
 
-推荐用法是在 **build** agent 中使用 **`/compose-next`** 技能：一份独立完整的契约，覆盖 grill → spec → workspace → implement → verify → review → finalize → finish，功能文档落在 `docs/compose/spec/<feature>.md`。它面向前沿模型（Fable/Sol 级）设计——这类模型已内化大部分流程，用一份紧凑契约效果最好。
+推荐用法是在 **build** agent 中使用 **`/compose-next`** 技能：一份独立完整的契约，覆盖 grill → workspace → spec → implement → verify → review → finalize → finish，功能文档落在 workspace root 下的 `docs/compose/spec/<feature>.md`。它面向前沿模型（Fable/Sol 级）设计——这类模型已内化大部分流程，用一份紧凑契约效果最好。
 
 Legacy 路径是专用的 **compose agent**（按 `Tab` 切换），它编排规划、执行、代码审查、TDD、调试、验证、合并等十四个内置技能——这套分步技能课程对较弱模型依然适用。
 
@@ -222,10 +238,7 @@ SleepyCode 打包了以下内置技能：
 | `compose-next` | 推荐的 spec→ship 功能交付工作流；仅在用户明确授意时调用 |
 | `data-analytics` | 通过数据质量、KPI、仪表盘、报告、Notebook 和市场规模测算等工作流分析产品与业务数据 |
 | `deep-research` | 使用并行子智能体和内置 Web 工具生成带引用的多源深度调研报告 |
-| `design-blueprint` | 动手做视觉前先出设计蓝图（DESIGN.md + 决策轨迹）|
 | `docx-official` | 生成、读取和转换 Word (.docx) 文件 |
-| `evolve` | 全面自我修改——改写 Agent 的任意层面：工具、行为钩子、知识、工作流，乃至界面本身 |
-| `frontend-design` | UI 开发的视觉设计指导 |
 | `html-to-video-pipeline` | 通过无头浏览器 + ffmpeg 将 HTML 渲染为 MP4 |
 | `learn-everything` | 将文档、URL 或主题转化为包含练习、反馈和进度追踪的自适应课程 |
 | `loop` | 按固定周期调度循环提示 |
@@ -242,10 +255,10 @@ SleepyCode 打包了以下内置技能：
 
 `claude-code` 和 `codex` 仅在系统分别安装了 `claude` 和 `codex` 可执行文件时提供。其他技能也可能需要其说明中列出的任务专用工具。
 
-**覆盖内置技能：** 在项目（`.sleepycode/skills/<name>/SKILL.md`）或个人技能目录（`~/.claude/skills/`、`~/.opencode/skills/` 等）中创建同名技能即可。扫描顺序中后发现的用户技能会覆盖同名的内置技能。
+**覆盖内置技能：** 在项目的 `.sleepycode/skills/<name>/SKILL.md`，或个人技能目录（例如 `~/.config/sleepycode/skills/<name>/SKILL.md`）里放同名技能即可。项目 `.agents/skills/` 与 `~/.agents/skills/` 这两处开放标准目录同样会扫到。扫描顺序靠后的用户技能会覆盖同名内置技能。
 
 <details>
-<summary><strong>通过环境变量禁用内置技能</strong></summary>
+<summary><strong>通过环境变量配置技能</strong></summary>
 
 | 变量 | 效果 |
 |------|------|
@@ -253,7 +266,18 @@ SleepyCode 打包了以下内置技能：
 | `SLEEPYCODE_DISABLE_OFFICIAL_SKILLS=true` | 仅禁用办公/媒体类技能：`docx-official`、`pdf-official`、`pptx-official`、`xlsx-official`、`html-to-video-pipeline` |
 | `SLEEPYCODE_DISABLE_SLASH_SKILLS=true` | 从 TUI 的 `/` 自动补全中隐藏 Skill，但不禁用它们 |
 
-前两个选项会将对应技能从 Agent 可用技能列表中完全移除——不会出现在上下文中，也无法被调用。`SLEEPYCODE_DISABLE_SLASH_SKILLS` 仅影响 TUI 自动补全，Skill 对 Agent 仍然可用。
+**外部技能根**（默认加载面 = `.sleepycode` + 开放标准 `.agents`）：
+
+| Env | 默认 | 作用 |
+| --- | --- | --- |
+| `SLEEPYCODE_DISABLE_AGENTS_SKILLS=true` | 不设 = 开 | 关闭 `~/.agents/skills` 与项目 `.agents/skills` |
+| `SLEEPYCODE_ENABLE_CLAUDE_CODE_SKILLS=true` | 不设 = 关 | 打开 `.claude/skills` |
+| `SLEEPYCODE_ENABLE_CODEX_SKILLS=true` | 不设 = 关 | 打开 `.codex/skills`（仅用户 skill；Codex `skills/.system` 永不加载） |
+| `SLEEPYCODE_ENABLE_OPENCODE_SKILLS=true` | 不设 = 关 | 打开 `.opencode/skills` |
+
+外部扫描不匹配 `skills/` 下的点目录段。
+
+`SLEEPYCODE_DISABLE_BUILTIN_SKILLS` 与 `SLEEPYCODE_DISABLE_OFFICIAL_SKILLS` 会将对应技能从 Agent 可用技能列表中完全移除——不会出现在上下文中，也无法被调用。`SLEEPYCODE_DISABLE_SLASH_SKILLS` 仅影响 TUI 自动补全，Skill 对 Agent 仍然可用。
 
 </details>
 

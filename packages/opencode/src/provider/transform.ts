@@ -8,9 +8,12 @@ import { iife } from "@/util/iife"
 import { Flag } from "@/flag/flag"
 import {
   compressImage,
+  canonicalImageMime,
   DEFAULT_MAX_IMAGE_BYTES,
   DEFAULT_MAX_IMAGE_DIMENSION,
   imageDimensions,
+  ImageInputError,
+  prepareImage,
   supportsImageDimensions,
 } from "./image"
 
@@ -827,10 +830,41 @@ function providerImageDimensionCap(model: Provider.Model): number {
   return providerImageCap(model) === Infinity ? Infinity : DEFAULT_MAX_IMAGE_DIMENSION
 }
 
-// Two responsibilities:
-// 1. Count cap (maxImages): drop the oldest excess *user* prompt images,
-//    including image-typed `file` parts produced by synthetic tool attachments.
-// 2. Byte/dimension caps: for EVERY image the provider would measure — user
+function payloadBytes(payload: ImagePayload) {
+  return payload.kind === "bytes"
+    ? Buffer.from(payload.bytes.buffer, payload.bytes.byteOffset, payload.bytes.byteLength)
+    : Buffer.from(payload.base64, "base64")
+}
+
+function serializePrepared(payload: ImagePayload, mime: string, bytes: Buffer) {
+  if (payload.kind === "data-url") return `data:${mime};base64,${bytes.toString("base64")}`
+  if (payload.kind === "bytes") return new Uint8Array(bytes)
+  return bytes.toString("base64")
+}
+
+function preparedImage(bytes: Buffer, mime: string | undefined, model: Provider.Model) {
+  try {
+    return { ok: true as const, value: prepareImage(bytes, mime, model) }
+  } catch (error) {
+    if (ImageInputError.isInstance(error)) return { ok: false as const, text: error.data.message }
+    throw error
+  }
+}
+
+function imageWithinCaps(mime: string, bytes: Buffer, maxSize: number, maxDimension: number) {
+  if (bytes.byteLength > maxSize) return false
+  if (!supportsImageDimensions(mime) || maxDimension === Infinity) return true
+  const dimensions = imageDimensions(mime, bytes)
+  return Boolean(dimensions && Math.max(dimensions.width, dimensions.height) <= maxDimension)
+}
+
+// Unified image exit, run on every send:
+// 1. Sniff the real MIME, verify vendor-supported bytes, and transcode
+//    vendor-unsupported but decodable formats (BMP → PNG). Corrupt images
+//    become ImageInputError text and are never forwarded to the provider.
+// 2. Count cap (maxImages): drop the oldest excess images across user parts
+//    and native tool-result content, preserving tool call/result associations.
+// 3. Byte/dimension caps: for EVERY image the provider would measure — user
 //    `image`/image-`file` parts AND tool-result `media`/`image-data`/`file-data`
 //    parts on tool/assistant messages — recompress oversized ones under both
 //    limits, or strip them to a text placeholder.
@@ -849,24 +883,6 @@ function limitImages(msgs: ModelMessage[], model: Provider.Model): ModelMessage[
   const maxSize = Flag.SLEEPYCODE_MAX_PROMPT_IMAGE_SIZE ?? providerImageCap(model)
   const maxDimension = providerImageDimensionCap(model)
 
-  // Zero-allocation fast path: with no image-count cap and no size cap there is
-  // nothing to drop or shrink, so return the messages untouched instead of
-  // rebuilding every tool-result content object on each send.
-  if (maxImages === undefined && maxSize === Infinity && maxDimension === Infinity) return msgs
-
-  const total = msgs.reduce(
-    (sum, msg) =>
-      msg.role === "user" && Array.isArray(msg.content)
-        ? sum +
-        msg.content.filter(
-          (part) => part.type === "image" || (part.type === "file" && part.mediaType.startsWith("image/")),
-        ).length
-        : sum,
-    0,
-  )
-  // Drop the oldest excess images so the most recent ones reach the model.
-  let toDrop = maxImages === undefined ? 0 : Math.max(0, total - maxImages)
-
   // The provider content shape for tool-result output values is untyped in the
   // AI SDK, so we narrow the one variant we act on: base64 image bytes carried
   // as `media` / `image-data` / `file-data`. Anything else is passed through.
@@ -882,21 +898,52 @@ function limitImages(msgs: ModelMessage[], model: Provider.Model): ModelMessage[
     )
   }
 
-  // Enforce byte and dimension caps on one tool-result content entry.
-  const capToolMedia = (entry: unknown) => {
-    if (!isImageMediaEntry(entry)) return entry
-    const size = base64ByteSize(entry.data)
-    const bytes = Buffer.from(entry.data, "base64")
-    const dimensions = imageDimensions(entry.mediaType, bytes)
-    if (
-      size <= maxSize &&
-      (!supportsImageDimensions(entry.mediaType) ||
-        (dimensions && Math.max(dimensions.width, dimensions.height) <= maxDimension))
+  const isToolImage = (entry: unknown) =>
+    isImageMediaEntry(entry) ||
+    (typeof entry === "object" && entry !== null && "type" in entry && entry.type === "image-url")
+
+  const total = msgs.reduce((sum, msg) => {
+    if (!Array.isArray(msg.content)) return sum
+    if (msg.role === "user")
+      return (
+        sum +
+        msg.content.filter(
+          (part) => part.type === "image" || (part.type === "file" && part.mediaType.startsWith("image/")),
+        ).length
+      )
+    if (msg.role !== "tool" && msg.role !== "assistant") return sum
+    return (
+      sum +
+      msg.content.reduce((count, part) => {
+        if (part.type !== "tool-result" || !part.output || part.output.type !== "content" || !Array.isArray(part.output.value)) return count
+        return count + part.output.value.filter(isToolImage).length
+      }, 0)
     )
-      return entry
-    const shrunk = compressImage(entry.mediaType, bytes, maxSize, maxDimension)
+  }, 0)
+  let toDrop = maxImages === undefined ? 0 : Math.max(0, total - maxImages)
+  const omitted = () => ({
+    type: "text" as const,
+    text: `[Image omitted: exceeds the configured limit of ${maxImages} prompt image(s).]`,
+  })
+
+  const capToolMedia = (entry: unknown) => {
+    if (isToolImage(entry) && toDrop > 0) {
+      toDrop--
+      return omitted()
+    }
+    if (!isImageMediaEntry(entry)) return entry
+    const bytes = Buffer.from(entry.data, "base64")
+    const prepared = preparedImage(bytes, entry.mediaType, model)
+    if (!prepared.ok) return { type: "text" as const, text: prepared.text }
+    const mime = prepared.value.mime
+    const out = prepared.value.bytes
+    if (imageWithinCaps(mime, out, maxSize, maxDimension)) {
+      if (mime === canonicalImageMime(entry.mediaType) && out.equals(bytes)) return entry
+      return { ...entry, data: out.toString("base64"), mediaType: mime }
+    }
+    const shrunk = compressImage(mime, out, maxSize, maxDimension)
     if (shrunk) return { ...entry, data: shrunk.data, mediaType: shrunk.mediaType }
-    return { type: "text" as const, text: OVERSIZE_PLACEHOLDER(size) }
+    return { type: "text" as const, text: OVERSIZE_PLACEHOLDER(out.byteLength) }
   }
 
   return msgs.map((msg) => {
@@ -922,42 +969,33 @@ function limitImages(msgs: ModelMessage[], model: Provider.Model): ModelMessage[
       if (part.type !== "image" && !isImageFile) return part
       if (toDrop > 0) {
         toDrop--
-        return {
-          type: "text" as const,
-          text: `[Image omitted: exceeds the configured limit of ${maxImages} prompt image(s).]`,
-        }
+        return omitted()
       }
-      const payload = imagePayload(
-        part.type === "image" ? part.image : part.data,
-        part.mediaType,
-      )
+      const payload = imagePayload(part.type === "image" ? part.image : part.data, part.mediaType)
       if (!payload) return part
-      if (payload.mime?.startsWith("image/")) {
-        const bytes =
-          payload.kind === "bytes"
-            ? Buffer.from(payload.bytes.buffer, payload.bytes.byteOffset, payload.bytes.byteLength)
-            : Buffer.from(payload.base64, "base64")
-        const dimensions = imageDimensions(payload.mime, bytes)
-        if (
-          payload.size <= maxSize &&
-          (!supportsImageDimensions(payload.mime) ||
-            (dimensions && Math.max(dimensions.width, dimensions.height) <= maxDimension))
-        )
-          return part
-        const shrunk = compressImage(payload.mime, bytes, maxSize, maxDimension)
-        if (shrunk) {
-          const data =
-            payload.kind === "data-url"
-              ? `data:${shrunk.mediaType};base64,${shrunk.data}`
-              : payload.kind === "bytes"
-                ? new Uint8Array(Buffer.from(shrunk.data, "base64"))
-                : shrunk.data
-          return part.type === "image"
-            ? { ...part, image: data, mediaType: shrunk.mediaType }
-            : { ...part, data, mediaType: shrunk.mediaType }
-        }
+      const bytes = payloadBytes(payload)
+      const prepared = preparedImage(bytes, payload.mime, model)
+      if (!prepared.ok) return { type: "text" as const, text: prepared.text }
+      const mime = prepared.value.mime
+      const out = prepared.value.bytes
+      if (imageWithinCaps(mime, out, maxSize, maxDimension)) {
+        if (mime === canonicalImageMime(payload.mime ?? "") && out.equals(bytes)) return part
+        const data = serializePrepared(payload, mime, out)
+        return part.type === "image" ? { ...part, image: data, mediaType: mime } : { ...part, data, mediaType: mime }
       }
-      return { type: "text" as const, text: OVERSIZE_PLACEHOLDER(payload.size) }
+      const shrunk = compressImage(mime, out, maxSize, maxDimension)
+      if (shrunk) {
+        const data =
+          payload.kind === "data-url"
+            ? `data:${shrunk.mediaType};base64,${shrunk.data}`
+            : payload.kind === "bytes"
+              ? new Uint8Array(Buffer.from(shrunk.data, "base64"))
+              : shrunk.data
+        return part.type === "image"
+          ? { ...part, image: data, mediaType: shrunk.mediaType }
+          : { ...part, data, mediaType: shrunk.mediaType }
+      }
+      return { type: "text" as const, text: OVERSIZE_PLACEHOLDER(out.byteLength) }
     })
     return { ...msg, content }
   })

@@ -53,8 +53,6 @@ export const dict = {
     "Empieza un mensaje con {highlight}!{/highlight} para ejecutar comandos del shell directamente (p. ej., {highlight}!ls -la{/highlight})",
   "tui.tips.tab_agent":
     "Pulsa {highlight}Tab{/highlight} o {highlight}Shift+Tab{/highlight} para alternar entre los agentes Build, Plan y Compose",
-  "tui.tips.tab_agent_orchestrator":
-    "Pulsa {highlight}Tab{/highlight} o {highlight}Shift+Tab{/highlight} para alternar entre los agentes Build, Plan, Compose y Orchestrator",
   "tui.tips.theme_mode":
     "Ejecuta {highlight}/dark{/highlight} para el modo oscuro o {highlight}/light{/highlight} para el modo claro",
   "tui.tips.doc": "Ejecuta {highlight}/doc{/highlight} para abrir la documentación de usuario",
@@ -161,8 +159,6 @@ export const dict = {
   "tui.tips.custom_formatter":
     "Define comandos de formateo personalizados por extensión de archivo en la configuración",
   "tui.tips.lsp": "SleepyCode usa servidores LSP para análisis inteligente de código",
-  "tui.tips.custom_tool":
-    "Crea archivos {highlight}.ts{/highlight} en {highlight}.sleepycode/tools/{/highlight} para definir nuevas herramientas LLM",
   "tui.tips.tool_scripts":
     "Las definiciones de herramientas pueden invocar scripts en Python, Go, etc.",
   "tui.tips.plugins":
@@ -285,8 +281,6 @@ export const dict = {
   "tui.skill.pdf-official.description": "Crear, editar, transformar y leer archivos PDF",
   "tui.skill.pptx-official.description": "Crear, editar y leer presentaciones de Microsoft PowerPoint (.pptx)",
   "tui.skill.sleepycode.description": "Autodocumentación de funciones, configuración y comandos de SleepyCode",
-  "tui.skill.evolve.description": "Reescribe cualquier capa de ti mismo — herramientas, hooks, conocimiento, workflows, incluso la UI",
-  "tui.skill.frontend-design.description": "Guía para un diseño visual de UI distintivo e intencional",
   "tui.skill.loop.description": "Programar un prompt para ejecutarse en un intervalo recurrente",
   "tui.skill.html-to-video-pipeline.description": "El arma definitiva para vídeos cortos — crea vídeos cortos con HTML",
   "tui.skill.arxiv.description": "Busca, cita, descarga y sigue artículos de arXiv",
@@ -296,8 +290,6 @@ export const dict = {
   "tui.skill.codex.description": "Ejecuta Codex CLI de forma autónoma en scripts, CI, Docker y Kubernetes",
   "tui.skill.claude-code.description": "Delega tareas de programación a Claude Code CLI",
   "tui.skill.grok-build.description": "Opera Grok Build desde la línea de comandos",
-  "tui.skill.design-blueprint.description":
-    "Producir un plano de diseño (DESIGN.md + Decision Trace) antes de crear cualquier mockup",
   "tui.skill.super-research.description":
     "Investigación autónoma — experimentos, encuestas, análisis cuantitativo, benchmarks, RCA, ablación, reproducción y redacción de artículos",
   "tui.skill.deep-research.description":
@@ -546,16 +538,16 @@ export const dict = {
   "tui.command.voice.toggle.title_off": "Entrada de voz: desactivada — clic para activar",
   "tui.voice.enabled": "Entrada de voz activada (chino/inglés) — clic en [Voice] para grabar",
   "tui.voice.disabled": "Entrada de voz deshabilitada",
-  "tui.voice.send.enabled": "Envío por voz habilitado — di「发送」o \"send it\" para enviar",
+  "tui.voice.send.enabled": "Envío por voz habilitado — en control de voz, di「发送」o \"send it\" para enviar",
   "tui.voice.send.disabled": "Envío por voz deshabilitado",
   "tui.command.voice.send.title": "Alternar envío por voz",
   "tui.command.voice.send.title_on": "Envío por voz: activado — clic para desactivar",
   "tui.command.voice.send.title_off": "Envío por voz: desactivado — clic para activar",
-  "tui.voice.control.enabled": "Control de voz habilitado — usa modelo multimodal para edición inteligente (más lento)",
-  "tui.voice.control.disabled": "Control de voz deshabilitado — usa transcripción ASR rápida",
-  "tui.command.voice.control.title": "Alternar control de voz (multimodal)",
-  "tui.command.voice.control.title_on": "Control de voz: activado (multimodal) — clic para desactivar",
-  "tui.command.voice.control.title_off": "Control de voz: desactivado (ASR rápido) — clic para activar",
+  "tui.voice.control.enabled": "Edición inteligente activada — comprende la intención de edición; necesita algo de tiempo",
+  "tui.voice.control.disabled": "Cambiado a Entrada rápida — sin comprensión de intención; más rápida y mejor con dialectos o ruido",
+  "tui.command.voice.control.title": "Alternar edición inteligente / entrada rápida",
+  "tui.command.voice.control.title_on": "Edición inteligente: ON — clic para entrada rápida",
+  "tui.command.voice.control.title_off": "Entrada rápida: ON — clic para edición inteligente",
   "tui.voice.error.no_auth": "Usa /connect para conectar tu cuenta Sleepy, o configura voice.asr_model para otro proveedor",
   "tui.voice.error.no_auth_provider": "El proveedor de voz \"{{provider}}\" no está autenticado, revisa su apiKey",
   "tui.voice.error.provider_not_found": "Proveedor \"{{provider}}\" no disponible — /connect para autenticarte, o declara models en la config para endpoints personalizados",
@@ -565,8 +557,9 @@ export const dict = {
   "tui.voice.error.no_recorder": "No se encontró herramienta de grabación, instala sox",
   "tui.voice.error.too_short": "Grabación demasiado corta",
   "tui.voice.error.network": "La transcripción falló, verifica tu red",
+  "tui.voice.error.protocol": "La respuesta de control de voz no es una llamada voice_input válida",
+  "tui.voice.error.stale": "El texto cambió mientras se escuchaba — edición de voz omitida",
   "tui.voice.error.empty_send": "No hay contenido para enviar",
-  "tui.voice.error.unknown_agent": "Agente \"{{name}}\" no encontrado",
   "tui.command.prompt.stash.title": "Guardar prompt",
   "tui.command.prompt.stash.pop.title": "Recuperar prompt",
   "tui.command.prompt.stash.list.title": "Lista de prompts guardados",

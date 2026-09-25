@@ -10,8 +10,7 @@ import { Session } from "../../src/session"
 import { SessionCheckpoint } from "../../src/session/checkpoint"
 import { Database, and, eq } from "../../src/storage"
 import { MessageID, type SessionID } from "../../src/session/schema"
-import { ActorTool, parseActorScript } from "../../src/tool/actor"
-import { shellWrap } from "../../src/tool/shell-wrap"
+import { ActorTool } from "../../src/tool/actor"
 import { ActorRegistry } from "../../src/actor/registry"
 import { TaskRegistry } from "../../src/task/registry"
 import { ActorWaiter } from "../../src/actor/waiter"
@@ -32,24 +31,9 @@ import { testEffect } from "../lib/effect"
 // This file closes that gap at the only entry point that takes both `content`
 // and `type` from the model: the `actor` tool's `send` action.
 //
-// The decisive case is `via the real shellWrap route` below. Driving
-// `def.execute` directly is NOT a substitute: it presupposes the very question
-// (does the shell route reach the wrap-decorated execute?). The real composition
-// is `shellWrap(Tool.init(actor))` — registry.ts wires `actor: Tool.init(actor)`
-// (the wrap-decorated def, see tool.ts `define` → `wrap`) into `s.builtin`,
-// `all()`/`available()` only filter that array, and registry.ts then applies
-// `shellWrap` to that same object. So `shell-wrap.ts`'s `def.execute(parsed)` is
-// the wrap-decorated execute, and `wrap()` runs `toolInfo.parameters.parse(args)`
-// on the shell-parsed op. A shell-mode op IS re-validated.
-//
-// Consequence, established by a revert probe on this file (drop the
-// parseActorScript guard in src/tool/actor.ts and re-run): the shell route still
-// enqueues nothing, because `content: z.string().min(1)` fails closed. The
-// parse-level guard is therefore a message-quality improvement (a specific,
-// teachable error instead of a generic zod dump), NOT the layer that makes a
-// blank body unreachable. An empty `actor_notification` body was never reachable
-// through the tool, so the render.ts/drain fixes in this PR close a LATENT
-// defence gap rather than a live producer.
+// The JSON-schema route is covered below: parameters.parse rejects an empty
+// body before execute can write any inbox row. An empty `actor_notification`
+// body is unreachable through the tool.
 
 afterEach(async () => {
   await Instance.disposeAll()
@@ -122,44 +106,6 @@ const rowsFor = (sessionID: SessionID, actorID: string) =>
   )
 
 describe("empty actor_notification body: reachability", () => {
-  it.live(
-    'the shell-parsed `actor send <id> ""` is rejected by parseActorScript',
-    provideTmpdirInstance(() =>
-      Effect.gen(function* () {
-        const exit = yield* Effect.exit(parseActorScript('actor send main "" --type actor_notification'))
-        expect(exit._tag).toBe("Failure")
-      }),
-    ),
-  )
-
-  // DECISIVE CASE. Exercises the production composition end-to-end:
-  // shellWrap(wrap-decorated actor def).execute({ script }). No inbox row may be
-  // written for a blank body. Revert the parseActorScript guard and this still
-  // passes — which is what proves zod, not the parse guard, is load-bearing.
-  it.live(
-    'via the real shellWrap route, `actor send <id> ""` enqueues nothing',
-    provideTmpdirInstance(() =>
-      Effect.gen(function* () {
-        const sessions = yield* Session.Service
-        const chat = yield* sessions.create({ title: "chat" })
-        const actorID = yield* registerActor(chat.id)
-
-        const def = yield* Effect.flatMap(ActorTool, (tool) => tool.init())
-        const shell = shellWrap({ ...def, id: "actor" })
-
-        const exit = yield* Effect.exit(
-          shell.execute({ script: `actor send ${actorID} ""` }, ctxFor(chat.id) as never),
-        )
-        // shell-wrap converts a per-command failure into a *successful* result
-        // carrying an error report, so assert on the observable side effect
-        // rather than the exit tag: nothing may be enqueued.
-        expect(yield* rowsFor(chat.id, actorID)).toHaveLength(0)
-        if (exit._tag === "Success") {
-          expect(exit.value.output).not.toContain("inboxID")
-        }
-      }),
-    ),
-  )
 
   it.live(
     "the operation-level zod min(1) rejects an empty body inside def.execute",
@@ -171,7 +117,7 @@ describe("empty actor_notification body: reachability", () => {
 
         const def = yield* Effect.flatMap(ActorTool, (tool) => tool.init())
 
-        // Hand def.execute the exact op a shell-parsed call would produce.
+        // Hand def.execute the exact op a JSON call would produce.
         // wrap()'s parameters.parse must reject it.
         const exit = yield* Effect.exit(
           def.execute(
@@ -186,7 +132,7 @@ describe("empty actor_notification body: reachability", () => {
   )
 
   it.live(
-    "a non-empty body still goes through the shell route, so the guards are not over-broad",
+    "a non-empty body is enqueued through the JSON route",
     provideTmpdirInstance(() =>
       Effect.gen(function* () {
         const sessions = yield* Session.Service
@@ -194,10 +140,9 @@ describe("empty actor_notification body: reachability", () => {
         const actorID = yield* registerActor(chat.id)
 
         const def = yield* Effect.flatMap(ActorTool, (tool) => tool.init())
-        const shell = shellWrap({ ...def, id: "actor" })
-        const result = yield* shell.execute(
-          { script: `actor send ${actorID} "real body"` },
-          ctxFor(chat.id) as never,
+        const result = yield* def.execute(
+          { operation: { action: "send", to_actor_id: actorID, content: "real body", type: "actor_notification" } },
+          ctxFor(chat.id),
         )
         expect(result.output).toContain("inboxID")
         expect(yield* rowsFor(chat.id, actorID)).toHaveLength(1)

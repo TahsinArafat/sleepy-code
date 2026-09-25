@@ -56,17 +56,69 @@ const attachment = (mime: string) => ({
 })
 
 describe("session tool attachment routing", () => {
+  test("keeps Responses images native only for resolved adapters with content support", () => {
+    for (const npm of ["@ai-sdk/openai", "@ai-sdk/azure", "@ai-sdk/github-copilot"]) {
+      const model = makeModel({ npm, image: true, pdf: true })
+      for (const mime of ["image/png", "application/pdf"]) {
+        expect(
+          routeToolAttachment({
+            model,
+            attachment: attachment(mime),
+            allowNative: true,
+            languageProvider: "test.responses",
+          }),
+        ).toBe("native")
+        for (const languageProvider of [undefined, "test.chat"]) {
+          expect(routeToolAttachment({ model, attachment: attachment(mime), allowNative: true, languageProvider })).toBe(
+            "synthetic",
+          )
+        }
+      }
+    }
+    for (const npm of ["@ai-sdk/openai-compatible"]) {
+      const model = makeModel({ npm, image: true })
+      expect(
+        routeToolAttachment({
+          model,
+          attachment: attachment("image/png"),
+          allowNative: true,
+          languageProvider: "test.responses",
+        }),
+      ).toBe("synthetic")
+    }
+  })
+
   test("uses only OpenAI-compatible input formats that the adapter accepts", () => {
     const model = makeModel({
       npm: "@ai-sdk/openai-compatible",
       image: true,
       audio: true,
+      video: true,
       pdf: true,
     })
 
     expect(routeToolAttachment({ model, attachment: attachment("image/png"), allowNative: true })).toBe("synthetic")
     expect(routeToolAttachment({ model, attachment: attachment("audio/wav"), allowNative: true })).toBe("synthetic")
-    expect(routeToolAttachment({ model, attachment: attachment("audio/ogg"), allowNative: true })).toBe("placeholder")
+    expect(routeToolAttachment({ model, attachment: attachment("audio/ogg"), allowNative: true })).toBe("synthetic")
+    expect(routeToolAttachment({ model, attachment: attachment("audio/x-flac"), allowNative: true })).toBe("synthetic")
+    expect(routeToolAttachment({ model, attachment: attachment("audio/aac"), allowNative: true })).toBe("placeholder")
+    expect(routeToolAttachment({ model, attachment: attachment("video/mp4"), allowNative: true })).toBe("synthetic")
+    expect(routeToolAttachment({ model, attachment: attachment("video/quicktime"), allowNative: true })).toBe(
+      "synthetic",
+    )
+    // The patch would serialize any video/* as video_url, but the Sleepy video
+    // API only takes mp4/mov/avi/wmv, so the rest never leave as attachments.
+    expect(routeToolAttachment({ model, attachment: attachment("video/webm"), allowNative: true })).toBe("placeholder")
+    expect(routeToolAttachment({ model, attachment: attachment("video/x-matroska"), allowNative: true })).toBe(
+      "placeholder",
+    )
+    expect(
+      routeToolAttachment({
+        model,
+        attachment: { mime: "video/mp4", url: "https://example.com/clip.mp4", filename: "clip.mp4" },
+        allowNative: true,
+      }),
+    ).toBe("placeholder")
     expect(routeToolAttachment({ model, attachment: attachment("application/octet-stream"), allowNative: true })).toBe(
       "placeholder",
     )

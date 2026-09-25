@@ -12,7 +12,7 @@ import { Auth } from "../auth"
 import { Env } from "../env"
 import { applyEdits, modify } from "jsonc-parser"
 import { Instance, type InstanceContext } from "../project/instance"
-import { InstallationLocal, InstallationVersion } from "@/installation/version"
+import { PluginSdkNpmVersion } from "@/installation/version"
 import { existsSync } from "fs"
 import { GlobalBus } from "@/bus/global"
 import { Event } from "../server/event"
@@ -30,7 +30,6 @@ import { ConfigCommand } from "./command"
 import { ConfigCompose } from "./compose"
 import { ConfigFormatter } from "./formatter"
 import { SLEEPYCODE_GITIGNORE_ENTRIES } from "./gitignore"
-import { ConfigHistory } from "./history"
 import { ConfigLayout } from "./layout"
 import { ConfigLSP } from "./lsp"
 import { ConfigManaged } from "./managed"
@@ -62,6 +61,10 @@ function mergeConfigConcatArrays(target: Info, source: Info): Info {
 function normalizeLoadedConfig(data: unknown, source: string) {
   if (!isRecord(data)) return data
   const copy = { ...data }
+  // History indexing is uniform; ignore settings written by older releases.
+  delete copy.history
+  // Ignore the removed worktree policy in existing files and host-injected config.
+  delete copy.auto_worktree
   const hadLegacy = "theme" in copy || "keybinds" in copy || "tui" in copy
   if (!hadLegacy) return copy
   delete copy.theme
@@ -122,10 +125,6 @@ const InfoSchema = Schema.Struct({
   snapshot: Schema.optional(Schema.Boolean).annotate({
     description:
       "Enable or disable snapshot tracking. When false, filesystem snapshots are not recorded and undoing or reverting will not undo/redo file changes. Defaults to true.",
-  }),
-  auto_worktree: Schema.optional(Schema.Boolean).annotate({
-    description:
-      "Enable the once-per-session Auto-Worktree Notice when a primary root session mutates a git main worktree. Defaults to false (notice is off). When true, inject the existing soft-hint system-reminder; when false or omitted, inject nothing. Scope is the notice only — conflict detection and experimental worktree auto-create are not gated by this flag.",
   }),
   // User-facing plugin config is stored as Specs; provenance gets attached later while configs are merged.
   plugin: Schema.optional(Schema.mutable(Schema.Array(ConfigPlugin.Spec))),
@@ -229,22 +228,6 @@ const InfoSchema = Schema.Struct({
   layout: Schema.optional(ConfigLayout.Layout).annotate({ description: "@deprecated Always uses stretch layout." }),
   permission: Schema.optional(PermissionRef),
   tools: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
-  tool: Schema.optional(
-    Schema.Struct({
-      invocation_style: Schema.optional(Schema.Literals(["json", "shell"])).annotate({
-        description:
-          "Default invocation style for all tools. 'json' (default) exposes the original Zod schema; 'shell' exposes a single `script` parameter and uses the tool's shell.parse mapping.",
-      }),
-      invocation_style_by_tool: Schema.optional(
-        Schema.Record(Schema.String, Schema.Literals(["json", "shell"])),
-      ).annotate({
-        description:
-          "Per-tool override of invocation_style. Keys are tool IDs. A tool without a `shell` field falls back to JSON regardless of this setting.",
-      }),
-    }),
-  ).annotate({
-    description: "Tool invocation style configuration (JSON vs shell-style).",
-  }),
   enterprise: Schema.optional(
     Schema.Struct({
       url: Schema.optional(Schema.String).annotate({ description: "Enterprise URL" }),
@@ -365,9 +348,6 @@ const InfoSchema = Schema.Struct({
       }),
     }),
   ),
-  history: Schema.optional(ConfigHistory.Info).annotate({
-    description: "Trajectory (conversation history) FTS index configuration.",
-  }),
   dream: Schema.optional(
     Schema.Struct({
       auto: Schema.optional(Schema.Boolean).annotate({
@@ -444,6 +424,14 @@ const InfoSchema = Schema.Struct({
           }),
         }),
       ).annotate({ description: "Loop-streak request-layer recovery (experimental)." }),
+      uncommitted_hint: Schema.optional(
+        Schema.Struct({
+          enabled: Schema.optional(Schema.Boolean).annotate({
+            description:
+              "After a completed user-source main turn, if the session workspace has uncommitted git changes, inject a soft hint (may repeat on later dirty user turns; hook turns never re-inject; does not force a commit). Default off.",
+          }),
+        }),
+      ).annotate({ description: "Turn-end uncommitted-changes soft hint (experimental)." }),
       mcp_timeout: Schema.optional(PositiveInt).annotate({
         description: "Timeout in milliseconds for model context protocol (MCP) requests",
       }),
@@ -875,7 +863,7 @@ export const layer = Layer.effect(
               add: [
                 {
                   name: "@sleepy-ai/plugin",
-                  version: InstallationLocal ? undefined : InstallationVersion,
+                  version: PluginSdkNpmVersion,
                 },
               ],
             })
@@ -1021,6 +1009,16 @@ export const layer = Layer.effect(
           result.compaction = { ...result.compaction, prune: false }
         }
 
+        // Preserve explicit lite (even unresolvable refs); small_model is a
+        // compatibility alias only when lite is absent. Host defaults come last
+        // and underneath effective user configuration, never via CONFIG_CONTENT.
+        if (result.model_groups?.lite === undefined && result.small_model !== undefined) {
+          result.model_groups = { ...result.model_groups, lite: result.small_model }
+        }
+        if (process.env.SLEEPYCODE_CONFIG_DEFAULTS) {
+          const defaults = yield* loadConfig(process.env.SLEEPYCODE_CONFIG_DEFAULTS, { dir: ctx.directory, source: "SLEEPYCODE_CONFIG_DEFAULTS" })
+          result = mergeConfigConcatArrays(defaults, result)
+        }
         return {
           config: result,
           directories,
@@ -1092,13 +1090,13 @@ export const layer = Layer.effect(
 
       let next: Info
       if (!file.endsWith(".jsonc")) {
-        const existing = ConfigParse.schema(Info, ConfigParse.jsonc(before, file), file)
+        const existing = ConfigParse.schema(Info, normalizeLoadedConfig(ConfigParse.jsonc(before, file), file), file)
         const merged = mergeDeep(writable(existing), writable(config))
         yield* fs.writeFileString(file, JSON.stringify(merged, null, 2)).pipe(Effect.orDie)
         next = merged
       } else {
         const updated = patchJsonc(before, writable(config))
-        next = ConfigParse.schema(Info, ConfigParse.jsonc(updated, file), file)
+        next = ConfigParse.schema(Info, normalizeLoadedConfig(ConfigParse.jsonc(updated, file), file), file)
         yield* fs.writeFileString(file, updated).pipe(Effect.orDie)
       }
 

@@ -18,70 +18,6 @@ export type EventGlobalDisposed = {
   }
 }
 
-export type EventTuiPromptAppend = {
-  type: "tui.prompt.append"
-  properties: {
-    text: string
-  }
-}
-
-export type EventTuiCommandExecute = {
-  type: "tui.command.execute"
-  properties: {
-    command:
-      | "session.list"
-      | "session.new"
-      | "session.share"
-      | "session.interrupt"
-      | "session.compact"
-      | "session.page.up"
-      | "session.page.down"
-      | "session.line.up"
-      | "session.line.down"
-      | "session.half.page.up"
-      | "session.half.page.down"
-      | "session.first"
-      | "session.last"
-      | "prompt.clear"
-      | "prompt.submit"
-      | "agent.cycle"
-      | string
-  }
-}
-
-export type EventTuiToastShow = {
-  type: "tui.toast.show"
-  properties: {
-    title?: string
-    message: string
-    variant: "info" | "success" | "warning" | "error"
-    /**
-     * Duration in milliseconds
-     */
-    duration?: number
-  }
-}
-
-export type EventTuiSessionSelect = {
-  type: "tui.session.select"
-  properties: {
-    /**
-     * Session ID to navigate to
-     */
-    sessionID: string
-  }
-}
-
-export type EventTuiInstructionsLoaded = {
-  type: "tui.instructions.loaded"
-  properties: {
-    /**
-     * Display labels of loaded instruction files: worktree-relative path, ~-path, or absolute
-     */
-    files: Array<string>
-  }
-}
-
 export type EventTuiSessionExpired = {
   type: "tui.session.expired"
   properties: {
@@ -199,6 +135,70 @@ export type EventTaskUpdated = {
       cleanup_after?: number
     }
     kind: "started" | "unstarted" | "blocked" | "unblocked" | "done" | "abandoned" | "renamed"
+  }
+}
+
+export type EventTuiPromptAppend = {
+  type: "tui.prompt.append"
+  properties: {
+    text: string
+  }
+}
+
+export type EventTuiCommandExecute = {
+  type: "tui.command.execute"
+  properties: {
+    command:
+      | "session.list"
+      | "session.new"
+      | "session.share"
+      | "session.interrupt"
+      | "session.compact"
+      | "session.page.up"
+      | "session.page.down"
+      | "session.line.up"
+      | "session.line.down"
+      | "session.half.page.up"
+      | "session.half.page.down"
+      | "session.first"
+      | "session.last"
+      | "prompt.clear"
+      | "prompt.submit"
+      | "agent.cycle"
+      | string
+  }
+}
+
+export type EventTuiToastShow = {
+  type: "tui.toast.show"
+  properties: {
+    title?: string
+    message: string
+    variant: "info" | "success" | "warning" | "error"
+    /**
+     * Duration in milliseconds
+     */
+    duration?: number
+  }
+}
+
+export type EventTuiSessionSelect = {
+  type: "tui.session.select"
+  properties: {
+    /**
+     * Session ID to navigate to
+     */
+    sessionID: string
+  }
+}
+
+export type EventTuiInstructionsLoaded = {
+  type: "tui.instructions.loaded"
+  properties: {
+    /**
+     * Display labels of loaded instruction files: worktree-relative path, ~-path, or absolute
+     */
+    files: Array<string>
   }
 }
 
@@ -987,12 +987,18 @@ export type OutputFormatJsonSchema = {
 
 export type OutputFormat = OutputFormatText | OutputFormatJsonSchema
 
-export type Provenance = {
+export type HookProvenance = {
   hookPhase: "pre" | "post"
   hookIteration: number
   pluginNames: Array<string>
   hookIDs: Array<string>
 }
+
+export type MachineProvenance = {
+  machine: string
+}
+
+export type Provenance = HookProvenance | MachineProvenance
 
 export type UserMessage = {
   id: string
@@ -1066,6 +1072,13 @@ export type AssistantMessage = {
     }
   }
   structured?: unknown
+  actorResult?: {
+    finalText?: string
+    structured?: unknown
+    reportedStatus?: "success" | "partial" | "failed" | "blocked"
+    reportedSummary?: string
+    warnings?: Array<string>
+  }
   variant?: string
   finish?: string
 }
@@ -1428,6 +1441,8 @@ export type Session = {
     url: string
   }
   title: string
+  titleSource: "fallback" | "generated" | "user"
+  titleRevision: number
   version: string
   time: {
     created: number
@@ -1449,16 +1464,16 @@ export type Session = {
   }
 }
 
-export type EventSessionCreated = {
-  type: "session.created"
+export type EventSessionUpdated = {
+  type: "session.updated"
   properties: {
     sessionID: string
     info: Session
   }
 }
 
-export type EventSessionUpdated = {
-  type: "session.updated"
+export type EventSessionCreated = {
+  type: "session.created"
   properties: {
     sessionID: string
     info: Session
@@ -1523,26 +1538,15 @@ export type SyncEventMessagePartRemoved = {
   }
 }
 
-export type SyncEventSessionCreated = {
-  type: "sync"
-  name: "session.created.1"
-  id: string
-  seq: number
-  aggregateID: "sessionID"
-  data: {
-    sessionID: string
-    info: Session
-  }
-}
-
 export type SyncEventSessionUpdated = {
   type: "sync"
-  name: "session.updated.1"
+  name: "session.updated.2"
   id: string
   seq: number
   aggregateID: "sessionID"
   data: {
     sessionID: string
+    previousRevision?: number
     info: {
       id: string | null
       slug: string | null
@@ -1562,6 +1566,8 @@ export type SyncEventSessionUpdated = {
         url: string | null
       }
       title: string | null
+      titleSource: "fallback" | "generated" | "user" | null
+      titleRevision: number | null
       version: string | null
       time?: {
         created: number | null
@@ -1585,6 +1591,18 @@ export type SyncEventSessionUpdated = {
   }
 }
 
+export type SyncEventSessionCreated = {
+  type: "sync"
+  name: "session.created.1"
+  id: string
+  seq: number
+  aggregateID: "sessionID"
+  data: {
+    sessionID: string
+    info: Session
+  }
+}
+
 export type SyncEventSessionDeleted = {
   type: "sync"
   name: "session.deleted.1"
@@ -1604,12 +1622,6 @@ export type GlobalEvent = {
   payload:
     | EventServerConnected
     | EventGlobalDisposed
-    | EventTuiPromptAppend
-    | EventTuiCommandExecute
-    | EventTuiToastShow
-    | EventTuiSessionSelect
-    | EventTuiInstructionsLoaded
-    | EventTuiSessionExpired
     | EventActorRegistered
     | EventActorStatus
     | EventActorStuck
@@ -1618,6 +1630,12 @@ export type GlobalEvent = {
     | EventInboxArrived
     | EventTaskCreated
     | EventTaskUpdated
+    | EventTuiPromptAppend
+    | EventTuiCommandExecute
+    | EventTuiToastShow
+    | EventTuiSessionSelect
+    | EventTuiInstructionsLoaded
+    | EventTuiSessionExpired
     | EventMetricsModelCall
     | EventMetricsToolCall
     | EventMetricsAgentRequest
@@ -1677,15 +1695,15 @@ export type GlobalEvent = {
     | EventMessageRemoved
     | EventMessagePartUpdated
     | EventMessagePartRemoved
-    | EventSessionCreated
     | EventSessionUpdated
+    | EventSessionCreated
     | EventSessionDeleted
     | SyncEventMessageUpdated
     | SyncEventMessageRemoved
     | SyncEventMessagePartUpdated
     | SyncEventMessagePartRemoved
-    | SyncEventSessionCreated
     | SyncEventSessionUpdated
+    | SyncEventSessionCreated
     | SyncEventSessionDeleted
 }
 
@@ -2058,8 +2076,6 @@ export type ProviderConfig = {
       reasoning?: boolean
       temperature?: boolean
       tool_call?: boolean
-      voice_design?: boolean
-      voice_clone?: boolean
       interleaved?:
         | true
         | {
@@ -2260,10 +2276,6 @@ export type Config = {
    * Enable or disable snapshot tracking. When false, filesystem snapshots are not recorded and undoing or reverting will not undo/redo file changes. Defaults to true.
    */
   snapshot?: boolean
-  /**
-   * Enable the once-per-session Auto-Worktree Notice when a primary root session mutates a git main worktree. Defaults to false (notice is off). When true, inject the existing soft-hint system-reminder; when false or omitted, inject nothing. Scope is the notice only — conflict detection and experimental worktree auto-create are not gated by this flag.
-   */
-  auto_worktree?: boolean
   plugin?: Array<
     | string
     | [
@@ -2576,21 +2588,6 @@ export type Config = {
   tools?: {
     [key: string]: boolean
   }
-  /**
-   * Tool invocation style configuration (JSON vs shell-style).
-   */
-  tool?: {
-    /**
-     * Default invocation style for all tools. 'json' (default) exposes the original Zod schema; 'shell' exposes a single `script` parameter and uses the tool's shell.parse mapping.
-     */
-    invocation_style?: "json" | "shell"
-    /**
-     * Per-tool override of invocation_style. Keys are tool IDs. A tool without a `shell` field falls back to JSON regardless of this setting.
-     */
-    invocation_style_by_tool?: {
-      [key: string]: "json" | "shell"
-    }
-  }
   enterprise?: {
     /**
      * Enterprise URL
@@ -2721,15 +2718,6 @@ export type Config = {
      */
     cc_index?: boolean
   }
-  /**
-   * Trajectory (conversation history) FTS index configuration.
-   */
-  history?: {
-    /**
-     * Which part kinds the history FTS index should cover. Defaults to text (user/assistant) + tool input + tool errors. Add 'reasoning' or 'tool_output' to grow recall at the cost of database size. Note: enabling 'tool_output' reclassifies completed tools from kind='tool_input' to kind='tool_output' (input remains searchable in the body, but kind:['tool_input'] filter will then only match pending/error tools).
-     */
-    kinds?: Array<"user_text" | "assistant_text" | "tool_input" | "tool_error" | "reasoning" | "tool_output">
-  }
   dream?: {
     /**
      * Auto-trigger dream memory consolidation on new session start. Default: false.
@@ -2818,6 +2806,15 @@ export type Config = {
        * Max assistant messages cropped from the trailing streak (default 64).
        */
       max_span?: number
+    }
+    /**
+     * Turn-end uncommitted-changes soft hint (experimental).
+     */
+    uncommitted_hint?: {
+      /**
+       * After a completed user-source main turn, if the session workspace has uncommitted git changes, inject a soft hint (may repeat on later dirty user turns; hook turns never re-inject; does not force a commit). Default off.
+       */
+      enabled?: boolean
     }
     /**
      * Timeout in milliseconds for model context protocol (MCP) requests
@@ -2925,8 +2922,6 @@ export type Model = {
     reasoning: boolean
     attachment: boolean
     toolcall: boolean
-    voiceDesign?: boolean
-    voiceClone?: boolean
     input: {
       text: boolean
       audio: boolean
@@ -3062,6 +3057,8 @@ export type GlobalSession = {
     url: string
   }
   title: string
+  titleSource: "fallback" | "generated" | "user"
+  titleRevision: number
   version: string
   time: {
     created: number
@@ -3090,6 +3087,13 @@ export type McpResource = {
   description?: string
   mimeType?: string
   client: string
+}
+
+export type TitleSnapshot = {
+  sessionID: string
+  title: string
+  titleSource: "fallback" | "generated" | "user"
+  titleRevision: number
 }
 
 export type ConflictError = {
@@ -3235,12 +3239,6 @@ export type File = {
 export type Event =
   | EventServerConnected
   | EventGlobalDisposed
-  | EventTuiPromptAppend
-  | EventTuiCommandExecute
-  | EventTuiToastShow
-  | EventTuiSessionSelect
-  | EventTuiInstructionsLoaded
-  | EventTuiSessionExpired
   | EventActorRegistered
   | EventActorStatus
   | EventActorStuck
@@ -3249,6 +3247,12 @@ export type Event =
   | EventInboxArrived
   | EventTaskCreated
   | EventTaskUpdated
+  | EventTuiPromptAppend
+  | EventTuiCommandExecute
+  | EventTuiToastShow
+  | EventTuiSessionSelect
+  | EventTuiInstructionsLoaded
+  | EventTuiSessionExpired
   | EventMetricsModelCall
   | EventMetricsToolCall
   | EventMetricsAgentRequest
@@ -3308,8 +3312,8 @@ export type Event =
   | EventMessageRemoved
   | EventMessagePartUpdated
   | EventMessagePartRemoved
-  | EventSessionCreated
   | EventSessionUpdated
+  | EventSessionCreated
   | EventSessionDeleted
 
 export type McpStatusConnected = {
@@ -4499,34 +4503,6 @@ export type WorktreeResetResponses = {
 
 export type WorktreeResetResponse = WorktreeResetResponses[keyof WorktreeResetResponses]
 
-export type WorktreeAutoData = {
-  body?: never
-  path?: never
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/experimental/worktree/auto"
-}
-
-export type WorktreeAutoErrors = {
-  /**
-   * Bad request
-   */
-  400: BadRequestError
-}
-
-export type WorktreeAutoError = WorktreeAutoErrors[keyof WorktreeAutoErrors]
-
-export type WorktreeAutoResponses = {
-  /**
-   * Worktree info or null
-   */
-  200: Worktree | null
-}
-
-export type WorktreeAutoResponse = WorktreeAutoResponses[keyof WorktreeAutoResponses]
-
 export type ExperimentalTitleGenerateData = {
   body: {
     text?: string
@@ -4543,6 +4519,10 @@ export type ExperimentalTitleGenerateData = {
         }
     >
     locale?: string
+    model?: {
+      providerID: string
+      modelID: string
+    }
   }
   path?: never
   query?: {
@@ -4816,6 +4796,7 @@ export type SessionGetResponse = SessionGetResponses[keyof SessionGetResponses]
 export type SessionUpdateData = {
   body?: {
     title?: string
+    expectedRevision?: number
     permission?: PermissionRuleset
     time?: {
       archived?: number
@@ -4840,6 +4821,15 @@ export type SessionUpdateErrors = {
    * Not found
    */
   404: NotFoundError
+  /**
+   * Title changed by another writer
+   */
+  409: {
+    name: "TitleConflictError"
+    data: {
+      current: TitleSnapshot
+    }
+  }
 }
 
 export type SessionUpdateError = SessionUpdateErrors[keyof SessionUpdateErrors]
@@ -5011,6 +5001,7 @@ export type SessionInitResponse = SessionInitResponses[keyof SessionInitResponse
 export type SessionForkData = {
   body?: {
     messageID?: string
+    title?: string
   }
   path: {
     sessionID: string
@@ -5319,7 +5310,7 @@ export type SessionPromptData = {
      */
     systemMode?: "append" | "replace-agent"
     /**
-     * Harness mode selected by the session's first user query. Later values are ignored. GPT models always use the Codex harness. For other models, auto preserves model/process inference and explicit default forces the native tool schema.
+     * Harness mode selected by the session's first user query. Later values are ignored. Auto preserves model/process inference and explicit default forces the native tool schema for non-GPT models. SLEEPYCODE_CODEX_MODE=false forces the default harness for every model, including GPT.
      */
     harness?: "auto" | "codex" | "default"
     variant?: string
@@ -5539,11 +5530,19 @@ export type SessionRecoveryResponses = {
   /**
    * Recovery candidates
    */
-  200: Array<{
-    assistantMessageID: string
-    parentMessageID: string
-    created: number
-  }>
+  200: Array<
+    | {
+        kind: "assistant"
+        assistantMessageID: string
+        parentMessageID: string
+        created: number
+      }
+    | {
+        kind: "parent-user"
+        userMessageID: string
+        created: number
+      }
+  >
 }
 
 export type SessionRecoveryResponse = SessionRecoveryResponses[keyof SessionRecoveryResponses]
@@ -5560,6 +5559,8 @@ export type SessionResumeData = {
     agentID?: string
     task_id?: string
     titleLocale?: string
+    modelProviderID?: string
+    modelID?: string
   }
   url: "/session/{sessionID}/turn/{assistantMessageID}/resume"
 }
@@ -5582,6 +5583,49 @@ export type SessionResumeErrors = {
 export type SessionResumeError = SessionResumeErrors[keyof SessionResumeErrors]
 
 export type SessionResumeResponses = {
+  /**
+   * Resume accepted
+   */
+  202: unknown
+}
+
+export type SessionResumeUserData = {
+  body?: {
+    userMessageID?: string
+  }
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+    agentID?: string
+    task_id?: string
+    titleLocale?: string
+    modelProviderID?: string
+    modelID?: string
+  }
+  url: "/session/{sessionID}/resume"
+}
+
+export type SessionResumeUserErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+  /**
+   * Conflict — session resource is busy
+   */
+  409: ConflictError
+}
+
+export type SessionResumeUserError = SessionResumeUserErrors[keyof SessionResumeUserErrors]
+
+export type SessionResumeUserResponses = {
   /**
    * Resume accepted
    */
@@ -5628,7 +5672,7 @@ export type SessionPromptAsyncData = {
      */
     systemMode?: "append" | "replace-agent"
     /**
-     * Harness mode selected by the session's first user query. Later values are ignored. GPT models always use the Codex harness. For other models, auto preserves model/process inference and explicit default forces the native tool schema.
+     * Harness mode selected by the session's first user query. Later values are ignored. Auto preserves model/process inference and explicit default forces the native tool schema for non-GPT models. SLEEPYCODE_CODEX_MODE=false forces the default harness for every model, including GPT.
      */
     harness?: "auto" | "codex" | "default"
     variant?: string
@@ -5671,6 +5715,8 @@ export type SessionCommandData = {
     messageID?: string
     agent?: string
     model?: string
+    source?: "user" | "spawn" | "hook"
+    provenance?: Provenance
     arguments: string
     command: string
     /**
@@ -5687,17 +5733,33 @@ export type SessionCommandData = {
      */
     systemMode?: "append" | "replace-agent"
     /**
-     * Harness mode selected by the session's first user command. Later values are ignored. GPT models always use the Codex harness. For other models, auto preserves model/process inference and explicit default forces the native tool schema.
+     * Harness mode selected by the session's first user command. Later values are ignored. Auto preserves model/process inference and explicit default forces the native tool schema for non-GPT models. SLEEPYCODE_CODEX_MODE=false forces the default harness for every model, including GPT.
      */
     harness?: "auto" | "codex" | "default"
-    parts?: Array<{
-      id?: string
-      type: "file"
-      mime: string
-      filename?: string
-      url: string
-      source?: FilePartSource
-    }>
+    parts?: Array<
+      | {
+          id?: string
+          type: "text"
+          text: string
+          synthetic?: boolean
+          ignored?: boolean
+          time?: {
+            start: number
+            end?: number
+          }
+          metadata?: {
+            [key: string]: unknown
+          }
+        }
+      | {
+          id?: string
+          type: "file"
+          mime: string
+          filename?: string
+          url: string
+          source?: FilePartSource
+        }
+    >
   }
   path: {
     sessionID: string

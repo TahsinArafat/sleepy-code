@@ -126,7 +126,7 @@ Today, `skill_search` remains visible to GPT and Claude, but the system prompt a
 - `view_image` exposure and its runtime image-capability check are not fully aligned;
 - `files.readText` relies on a path jail and does not perform the normal `read` permission ask;
 - QuickJS does not provide OS-level isolation for Bash;
-- GPT profile cases for `exec`, the Bash description, `skill_search`, and `multiedit` are currently skipped in [`registry-invocation-style.test.ts`](../../packages/opencode/test/tool/registry-invocation-style.test.ts#L17).
+- GPT profile cases for `exec`, the Bash description, `skill_search`, and `multiedit` are currently skipped in [`registry-toolset.test.ts`](../../packages/opencode/test/tool/registry-toolset.test.ts#L17).
 
 ## Key Source Files
 

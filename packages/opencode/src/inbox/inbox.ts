@@ -111,6 +111,12 @@ export interface SendInput {
   senderActorID?: string
   content: string
   type?: string
+  /**
+   * Persist the row and publish InboxArrived, but do not fork an auto-wake loop.
+   * Used by session-level abort so cancel terminal notifications cannot restart
+   * the execution group that stop just killed. Default true.
+   */
+  wake?: boolean
 }
 
 export interface SendResult {
@@ -119,7 +125,14 @@ export interface SendResult {
 
 export interface Interface {
   readonly send: (input: SendInput) => Effect.Effect<SendResult, InboxReceiverNotFound>
-  readonly drain: (sessionID: SessionID, actorID: string) => Effect.Effect<number>
+  readonly drain: (
+    sessionID: SessionID,
+    actorID: string,
+    // Called just before committing (synthetic user message + inbox DELETE).
+    // When it returns true the drain aborts without consuming, so a cancel
+    // that lands mid-drain cannot drop queued wake content.
+    isCancelled?: () => boolean,
+  ) => Effect.Effect<number>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Inbox") {}
@@ -174,9 +187,12 @@ export const layer: Layer.Layer<
 
       // Fork-and-forget wake (B2). Sender returns after fork is scheduled;
       // wake fiber lives in the service scope, so sender lifecycle does
-      // not affect delivery.
+      // not affect delivery. `wake: false` keeps the durable row without
+      // scheduling a new turn (session abort / process-group kill).
       const promptRef = sessionPromptRef.current
-      if (promptRef) {
+      if (input.wake === false) {
+        // Row already persisted; skip auto-dispatch on purpose.
+      } else if (promptRef) {
         yield* promptRef
           .loop({
             sessionID: input.receiverSessionID,
@@ -185,6 +201,11 @@ export const layer: Layer.Layer<
             // through SessionPrompt.prompt (no flag) so forkWork.notify remains
             // the sole notifier for turn 1 — no double-notify.
             notifyParentOnComplete: true,
+            inboxWake: true,
+            // Inbox wakes are internal machine scheduling (actor notifications / queued
+            // actor traffic). They must NOT be labeled user — real user turns enter via
+            // prompt()/Desktop/TUI/HTTP/command which default source to "user".
+            source: "spawn",
           })
           .pipe(Effect.ignore, Effect.forkIn(scope))
       } else {
@@ -201,6 +222,7 @@ export const layer: Layer.Layer<
     const drain = Effect.fn("Inbox.drain")(function* (
       sessionID: SessionID,
       actorID: string,
+      isCancelled?: () => boolean,
     ) {
       // Cheap indexed SELECT first — if inbox is empty, bail immediately.
       // Common case: every iteration discovers nothing to drain.
@@ -286,12 +308,30 @@ export const layer: Layer.Layer<
         return 0
       }
 
+      // Abort before any mutation when the execution was cancelled mid-drain.
+      // Leaving rows durable means the next non-cancelled wake still consumes
+      // them; writing a synthetic user message and then interrupting the turn
+      // would strand the wake in the transcript with no assistant delivery.
+      if (isCancelled?.()) {
+        log.info("inbox.drain: cancelled before commit — leaving rows durable", {
+          sessionID,
+          actorID,
+          pending: rendered.length,
+        })
+        return 0
+      }
+
       // Non-transactional crash window: updateMessage + updatePart commit
       // before the inbox DELETE. A crash between them re-renders the same
       // rows on next drain — LLM sees duplicated notifications. Tolerable;
       // a transactional fix would require threading tx through
       // sessions.updateMessage/updatePart, which crosses three abstraction
       // layers.
+      //
+      // Cancel that lands after the first isCancelled check but before the
+      // inbox DELETE is handled by re-checking around the writes and rolling
+      // the synthetic message back (removeMessage) so Inbox rows stay the
+      // durable source of truth.
       const msgID = MessageID.ascending()
       const now = Date.now()
       yield* sessions.updateMessage({
@@ -304,6 +344,16 @@ export const layer: Layer.Layer<
         model: seed.model,
       })
       for (const entry of rendered) {
+        if (isCancelled?.()) {
+          yield* sessions.removeMessage({ sessionID, messageID: msgID }).pipe(Effect.ignore)
+          log.info("inbox.drain: cancelled mid-commit — rolled back synthetic message, rows durable", {
+            sessionID,
+            actorID,
+            messageID: msgID,
+            pending: rendered.length,
+          })
+          return 0
+        }
         yield* sessions.updatePart({
           id: PartID.ascending(),
           messageID: msgID,
@@ -313,14 +363,29 @@ export const layer: Layer.Layer<
           text: entry.text,
         })
       }
-      yield* Effect.sync(() =>
+      // Last cancel check and the inbox DELETE share one Effect.sync so a
+      // cancel cannot land between them. If cancelled we skip the DELETE and
+      // roll the synthetic message back below; rows stay durable.
+      const cancelledAtDelete = yield* Effect.sync(() => {
+        if (isCancelled?.()) return true
         Database.use((db) =>
           db
             .delete(InboxTable)
             .where(inArray(InboxTable.id, rows.map((r) => r.id)))
             .run(),
-        ),
-      )
+        )
+        return false
+      })
+      if (cancelledAtDelete) {
+        yield* sessions.removeMessage({ sessionID, messageID: msgID }).pipe(Effect.ignore)
+        log.info("inbox.drain: cancelled before inbox delete — rolled back synthetic message, rows durable", {
+          sessionID,
+          actorID,
+          messageID: msgID,
+          pending: rendered.length,
+        })
+        return 0
+      }
 
       return rendered.length
     })

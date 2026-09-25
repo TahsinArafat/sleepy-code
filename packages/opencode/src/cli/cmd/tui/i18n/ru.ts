@@ -52,8 +52,6 @@ export const dict = {
     "Начните сообщение с {highlight}!{/highlight}, чтобы выполнить shell-команду напрямую (например, {highlight}!ls -la{/highlight})",
   "tui.tips.tab_agent":
     "Нажмите {highlight}Tab{/highlight} или {highlight}Shift+Tab{/highlight}, чтобы переключаться между агентами Build, Plan и Compose",
-  "tui.tips.tab_agent_orchestrator":
-    "Нажмите {highlight}Tab{/highlight} или {highlight}Shift+Tab{/highlight}, чтобы переключаться между агентами Build, Plan, Compose и Orchestrator",
   "tui.tips.theme_mode":
     "Выполните {highlight}/dark{/highlight} для тёмного режима или {highlight}/light{/highlight} для светлого",
   "tui.tips.doc": "Выполните {highlight}/doc{/highlight}, чтобы открыть пользовательскую документацию",
@@ -162,8 +160,6 @@ export const dict = {
   "tui.tips.custom_formatter":
     "Определяйте собственные команды форматирования по расширениям файлов в конфиге",
   "tui.tips.lsp": "SleepyCode использует LSP-серверы для интеллектуального анализа кода",
-  "tui.tips.custom_tool":
-    "Создавайте файлы {highlight}.ts{/highlight} в {highlight}.sleepycode/tools/{/highlight}, чтобы определить новые LLM-инструменты",
   "tui.tips.tool_scripts":
     "Определения инструментов могут вызывать скрипты на Python, Go и других языках",
   "tui.tips.plugins":
@@ -287,8 +283,6 @@ export const dict = {
   "tui.skill.pdf-official.description": "Создание, редактирование, преобразование и чтение PDF-файлов",
   "tui.skill.pptx-official.description": "Создание, редактирование и чтение презентаций Microsoft PowerPoint (.pptx)",
   "tui.skill.sleepycode.description": "Самодокументация функций, конфигурации и команд SleepyCode",
-  "tui.skill.evolve.description": "Перепишите любой свой слой — инструменты, hooks, знания, workflows и даже UI",
-  "tui.skill.frontend-design.description": "Руководство по выразительному, осмысленному визуальному дизайну UI",
   "tui.skill.loop.description": "Запланировать запуск промпта с периодичностью",
   "tui.skill.html-to-video-pipeline.description": "Магический инструмент для коротких видео — создавайте короткие видео с помощью HTML",
   "tui.skill.arxiv.description": "Поиск, цитирование, загрузка и отслеживание статей arXiv",
@@ -298,8 +292,6 @@ export const dict = {
   "tui.skill.codex.description": "Автономный запуск Codex CLI в скриптах, CI, Docker и Kubernetes",
   "tui.skill.claude-code.description": "Делегирование задач программирования Claude Code CLI",
   "tui.skill.grok-build.description": "Работа с Grok Build из командной строки",
-  "tui.skill.design-blueprint.description":
-    "Создать проектную спецификацию (DESIGN.md + Decision Trace) до макетов",
   "tui.skill.super-research.description":
     "Автономные исследования — эксперименты, обзоры, количественный анализ, бенчмарки, RCA, абляция, воспроизведение и написание статей",
   "tui.skill.deep-research.description":
@@ -549,13 +541,13 @@ export const dict = {
   "tui.command.voice.toggle.title_off": "Голосовой ввод: отключён — нажмите для включения",
   "tui.voice.enabled": "Голосовой ввод включён (китайский/английский) — нажмите [Voice] для записи",
   "tui.voice.disabled": "Голосовой ввод отключён",
-  "tui.voice.send.enabled": "Голосовая отправка включена — скажите「发送」или \"send it\"",
+  "tui.voice.send.enabled": "Голосовая отправка включена — в голосовом управлении скажите「发送」или \"send it\" для отправки",
   "tui.voice.send.disabled": "Голосовая отправка отключена",
-  "tui.voice.control.enabled": "Голосовое управление включено — интеллектуальное редактирование с мультимодальной моделью (медленнее)",
-  "tui.voice.control.disabled": "Голосовое управление отключено — используется быстрая ASR транскрипция",
-  "tui.command.voice.control.title": "Переключить голосовое управление (мультимодальное)",
-  "tui.command.voice.control.title_on": "Голосовое управление: включено (мультимодальное) — нажмите для отключения",
-  "tui.command.voice.control.title_off": "Голосовое управление: отключено (быстрый ASR) — нажмите для включения",
+  "tui.voice.control.enabled": "Умное редактирование включено — понимает намерение редактирования; требуется время на обдумывание",
+  "tui.voice.control.disabled": "Переключено на быстрый ввод — без понимания намерения; быстрее и точнее в диалектах и шуме",
+  "tui.command.voice.control.title": "Переключить умное редактирование / быстрый ввод",
+  "tui.command.voice.control.title_on": "Умное редактирование: вкл — нажмите для быстрого ввода",
+  "tui.command.voice.control.title_off": "Быстрый ввод: вкл — нажмите для умного редактирования",
   "tui.voice.error.no_auth": "Используйте /connect для подключения к Sleepy или настройте voice.asr_model для другого провайдера",
   "tui.voice.error.no_auth_provider": "Голосовой провайдер \"{{provider}}\" не авторизован, проверьте его apiKey",
   "tui.voice.error.provider_not_found": "Провайдер \"{{provider}}\" недоступен — /connect для аутентификации, или объявите models в конфигурации для пользовательских эндпоинтов",
@@ -565,6 +557,8 @@ export const dict = {
   "tui.voice.error.no_recorder": "Инструмент записи не найден, установите sox",
   "tui.voice.error.too_short": "Запись слишком короткая",
   "tui.voice.error.network": "Ошибка транскрипции, проверьте сеть",
+  "tui.voice.error.protocol": "Ответ голосового управления не является корректным вызовом voice_input",
+  "tui.voice.error.stale": "Текст изменился во время прослушивания — голосовое редактирование пропущено",
   "tui.command.prompt.stash.title": "Сохранить ввод во временное хранилище",
   "tui.command.prompt.stash.pop.title": "Восстановить из хранилища",
   "tui.command.prompt.stash.list.title": "Список временных запросов",

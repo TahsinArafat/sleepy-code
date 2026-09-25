@@ -47,7 +47,10 @@ import { LoginCommand } from "./cli/cmd/login"
 import { InitCommand } from "./cli/cmd/init"
 import { DoctorCommand } from "./cli/cmd/doctor"
 
+import { ModelsDev } from "./provider/models"
+
 const processMetadata = ensureProcessMetadata("main")
+ModelsDev.startRefresh()
 
 process.on("unhandledRejection", (e) => {
   Log.Default.error("rejection", {

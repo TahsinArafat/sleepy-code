@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test"
-import { APICallError, RetryError } from "ai"
+import { APICallError, RetryError, generateText } from "ai"
+import { createAzure } from "@ai-sdk/azure"
+import { createOpenAI } from "@ai-sdk/openai"
 import { convertToLanguageModelPrompt } from "ai/internal"
 import { MessageV2 } from "../../src/session/message-v2"
 import { ProviderTransform } from "../../src/provider"
@@ -131,7 +133,19 @@ function basePart(messageID: string, id: string) {
 }
 
 describe("session.message-v2.toModelMessage", () => {
-  test("suppresses legacy user-side skill catalogs", async () => {
+  test("local binary and structured text references become paths instead of uploads", async () => {
+    for (const mime of ["application/x-apple-diskimage", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/octet-stream", "text/csv", "application/json"]) {
+      const messages = await MessageV2.toModelMessages([{ info: userInfo("local-file"), parts: [{ ...basePart("local-file", "binary"), type: "file", filename: "fixture file", mime, url: "file:///fixture/local%20file" }] }], model)
+      expect(messages).toEqual([{ role: "user", content: [{ type: "text", text: "[Attached local file: /fixture/local file]" }] }])
+    }
+  })
+  test("native media file parts retain their payload representation", async () => {
+    for (const mime of ["audio/wav", "video/mp4", "application/pdf"]) {
+      const messages = await MessageV2.toModelMessages([{ info: userInfo("media-file"), parts: [{ ...basePart("media-file", "media"), type: "file", filename: "media", mime, url: "file:///fixture/media" }] }], model)
+      expect(messages).toEqual([{ role: "user", content: [{ type: "file", data: "file:///fixture/media", filename: "media", mediaType: mime }] }])
+    }
+  })
+  test("suppresses legacy user-side skill catalogs",  async () => {
     const input: MessageV2.WithParts[] = [
       {
         info: userInfo("m-skills-first"),
@@ -458,6 +472,126 @@ describe("session.message-v2.toModelMessage", () => {
     ])
   })
 
+  test.each([
+    ["openai", false],
+    ["openai", true],
+    ["azure", false],
+    ["azure", true],
+  ] as const)("sends 51 historical screenshots inside %s Responses tool outputs (store=%s)", async (adapter, store) => {
+    const mediaModel = withInputCapabilities({ image: true })
+    mediaModel.api = { ...mediaModel.api, npm: adapter === "azure" ? "@ai-sdk/azure" : "@ai-sdk/openai" }
+    const input: MessageV2.WithParts[] = [
+      {
+        info: userInfo("m-user"),
+        parts: [
+          { ...basePart("m-user", "u1"), type: "text", text: "Inspect screenshots" },
+          { ...basePart("m-user", "u2"), type: "file", mime: "image/png", url: `data:image/png;base64,${pngBase64}` },
+        ],
+      },
+      ...Array.from(
+        { length: 51 },
+        (_, i): MessageV2.WithParts => ({
+          info: assistantInfo(`m-assistant-${i}`, "m-user"),
+          parts: [
+            {
+              ...basePart(`m-assistant-${i}`, `tool-${i}`),
+              type: "tool",
+              callID: `call-${i}`,
+              tool: "screenshot",
+              metadata: { openai: { itemId: `fc-${i}` } },
+              state: {
+                status: "completed",
+                input: {},
+                output: `Screenshot ${i}`,
+                title: "Screenshot",
+                metadata: {},
+                time: { start: 0, end: 1 },
+                attachments: [
+                  {
+                    ...basePart(`m-assistant-${i}`, `image-${i}`),
+                    type: "file",
+                    mime: "image/png",
+                    url: `data:image/png;base64,${pngBase64}`,
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      ),
+    ]
+    const requests: Array<{
+      store?: boolean
+      input: Array<{ type?: string; role?: string; call_id?: string; output?: unknown; content?: unknown }>
+    }> = []
+    const sdk = (adapter === "azure" ? createAzure : createOpenAI)({
+      resourceName: "test",
+      apiKey: "test-key",
+      fetch: Object.assign(
+        async (_url: RequestInfo | URL, init?: RequestInit) => {
+          requests.push(JSON.parse(String(init?.body)))
+          return Response.json({
+            id: "resp-test",
+            created_at: 1,
+            model: "test-model",
+            output: [],
+            usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+          })
+        },
+        { preconnect: fetch.preconnect },
+      ),
+    })
+    const language = sdk.responses("test-model")
+    const messages = await MessageV2.toModelMessages(input, mediaModel, { languageProvider: language.provider })
+    expect(messages.filter((message) => message.role === "user")).toHaveLength(1)
+    await generateText({
+      model: language,
+      messages: ProviderTransform.message(messages, mediaModel, {}),
+      providerOptions: { openai: { store } },
+      maxRetries: 0,
+    })
+    const sent = requests[0]!.input
+    expect(requests[0]!.store).toBe(store)
+    const outputs = sent.filter((item) => item.type === "function_call_output")
+    expect(outputs).toHaveLength(51)
+    for (const [i, output] of outputs.entries()) {
+      expect(output.call_id).toBe(`call-${i}`)
+      expect(output.output).toEqual([
+        { type: "input_text", text: `Screenshot ${i}` },
+        { type: "input_image", image_url: `data:image/png;base64,${pngBase64}` },
+      ])
+      expect(sent.some((item) => item.type === "function_call" && item.call_id === output.call_id)).toBe(true)
+    }
+    expect(sent.filter((item) => item.role === "user")).toHaveLength(1)
+    expect(JSON.stringify(sent.find((item) => item.role === "user"))).toContain("input_image")
+    expect(JSON.stringify(sent)).not.toContain(MessageV2.SYNTHETIC_ATTACHMENT_PROMPT)
+
+    const replay = await MessageV2.toModelMessages(input, mediaModel, {
+      languageProvider: sdk.chat("test-model").provider,
+    })
+    expect(replay.filter((message) => message.role === "user")).toHaveLength(52)
+    const stripped = await MessageV2.toModelMessages(input, mediaModel, {
+      languageProvider: language.provider,
+      stripMedia: true,
+    })
+    expect(JSON.stringify(stripped)).not.toContain(pngBase64)
+
+    const failed = structuredClone(input.slice(0, 2))
+    const part = failed[1]!.parts[0]!
+    if (part.type !== "tool" || part.state.status !== "completed") throw new Error("Expected completed fixture")
+    part.state = {
+      status: "error",
+      input: {},
+      error: "Screenshot interrupted",
+      time: { start: 0, end: 1 },
+      attachments: part.state.attachments,
+    }
+    const errorMessages = await MessageV2.toModelMessages(failed, mediaModel, { languageProvider: language.provider })
+    expect(errorMessages.filter((message) => message.role === "user")).toHaveLength(1)
+    expect(JSON.stringify(errorMessages)).toContain("Tool failed: Screenshot interrupted")
+    expect(JSON.stringify(errorMessages.find((message) => message.role === "tool"))).toContain(pngBase64)
+  })
+
   test("routes supported and unsupported tool-result files for OpenAI-compatible Chat models", async () => {
     const userID = "m-user"
     const assistantID = "m-assistant"
@@ -777,9 +911,9 @@ describe("session.message-v2.toModelMessage", () => {
                 {
                   ...basePart(assistantID, "file-3"),
                   type: "file",
-                  mime: "audio/ogg",
-                  filename: "unsupported.ogg",
-                  url: "data:audio/ogg;base64,T2dnUw==",
+                  mime: "audio/aac",
+                  filename: "unsupported.aac",
+                  url: "data:audio/aac;base64,//FQgA==",
                 },
                 {
                   ...basePart(assistantID, "file-4"),
@@ -846,7 +980,7 @@ describe("session.message-v2.toModelMessage", () => {
           },
           {
             type: "text",
-            text: '[Tool attachment "unsupported.ogg" (audio/ogg) was retained but cannot be safely sent to this model/provider.]',
+            text: '[Tool attachment "unsupported.aac" (audio/aac) was retained but cannot be safely sent to this model/provider.]',
           },
           {
             type: "text",
@@ -876,7 +1010,14 @@ describe("session.message-v2.toModelMessage", () => {
         },
       },
     )
-    const oversized = Buffer.alloc(6_000_000, 0x42).toString("base64")
+    const oversizedBytes = Buffer.alloc(6_000_000, 0x42)
+    oversizedBytes.write("RIFF", 0, "ascii")
+    oversizedBytes.writeUInt32LE(5_999_992, 4)
+    oversizedBytes.write("WEBP", 8, "ascii")
+    oversizedBytes.write("VP8X", 12, "ascii")
+    oversizedBytes.writeUIntLE(99, 24, 3)
+    oversizedBytes.writeUIntLE(99, 27, 3)
+    const oversized = oversizedBytes.toString("base64")
     const userID = "m-user-oversized-error"
     const assistantID = "m-assistant-oversized-error"
     const input: MessageV2.WithParts[] = [
@@ -1479,6 +1620,17 @@ describe("session.message-v2.fromError", () => {
     })
   })
 
+  test("plain string errors keep raw text without JSON quote wrapping", () => {
+    // 回归:JSON.stringify("Internal Server Error") 曾多包一层引号,
+    // 让 SessionRetry/desktop isOpaqueError 精确匹配失效。
+    const result = MessageV2.fromError("Internal Server Error", { providerID })
+    expect(result).toStrictEqual({
+      name: "UnknownError",
+      data: { message: "Internal Server Error" },
+    })
+    expect((result as { data: { message: string } }).data.message).not.toMatch(/^".*"$/)
+  })
+
   test("serializes tagged errors with their message", () => {
     const result = MessageV2.fromError(new Question.RejectedError(), { providerID })
 
@@ -1559,6 +1711,25 @@ describe("session.message-v2.fromError", () => {
     for (const message of ["Authorization required", "Access denied"]) {
       const error = new MessageV2.APIError({ message, statusCode: 403, isRetryable: false }).toObject()
       expect(MessageV2.isAuthError(error)).toBe(true)
+    }
+  })
+
+  test("malformed output-length tags cannot bypass schema validation", () => {
+    for (const raw of [{ name: "MessageOutputLengthError" }, { name: "MessageOutputLengthError", data: null }]) {
+      for (const normalize of [MessageV2.fromLiveError, MessageV2.fromError]) {
+        expect(() => normalize(raw, { providerID })).not.toThrow()
+        const result = normalize(raw, { providerID })
+        expect(result.name).toBe("UnknownError")
+        expect(MessageV2.Assistant.shape.error.safeParse(result).success).toBe(true)
+      }
+    }
+  })
+
+  test("valid output-length instances and serialized objects retain their classification", () => {
+    const error = new MessageV2.OutputLengthError({})
+    for (const raw of [error, error.toObject()]) {
+      expect(MessageV2.fromLiveError(raw, { providerID })).toEqual(error.toObject())
+      expect(MessageV2.fromError(raw, { providerID })).toEqual(error.toObject())
     }
   })
 

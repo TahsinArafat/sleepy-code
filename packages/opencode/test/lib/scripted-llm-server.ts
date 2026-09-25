@@ -22,8 +22,11 @@ export interface LLMCapture {
 type ScriptedResponse = {
   /** SSE lines to stream back */
   lines: string[]
+  /** Optional live SSE source for cancellation and generation-barrier tests. */
+  stream?: ReadableStream<Uint8Array>
   /** HTTP status to return (default: 200) */
   status?: number
+  beforeReply?: () => Promise<unknown>
 }
 
 function sseChunk(delta: Record<string, unknown>, finishReason?: string): string {
@@ -117,26 +120,20 @@ export function textLengthResponse(text: string): string[] {
 }
 
 /** Build SSE lines for a tool-call response (finish_reason: tool_calls) */
-export function toolCallResponse(params: {
-  id: string
-  name: string
-  args: string
-}): string[] {
+export function toolCallResponse(params: { id: string; name: string; args: string }): string[] {
+  return toolCallsResponse([params])
+}
+
+/** Build one assistant step containing multiple tool calls in emission order. */
+export function toolCallsResponse(calls: { id: string; name: string; args: string }[]): string[] {
   return [
     sseChunk({ role: "assistant" }),
-    sseChunk({
-      tool_calls: [
-        {
-          index: 0,
-          id: params.id,
-          type: "function",
-          function: { name: params.name, arguments: "" },
-        },
-      ],
-    }),
-    sseChunk({
-      tool_calls: [{ index: 0, function: { arguments: params.args } }],
-    }),
+    ...calls.flatMap((call, index) => [
+      sseChunk({
+        tool_calls: [{ index, id: call.id, type: "function", function: { name: call.name, arguments: "" } }],
+      }),
+      sseChunk({ tool_calls: [{ index, function: { arguments: call.args } }] }),
+    ]),
     sseChunk({}, "tool_calls"),
     "data: [DONE]\n\n",
   ]
@@ -230,10 +227,11 @@ export function startScriptedLLMServer(responses: ScriptedResponse[]): ScriptedL
 
       const response = responses[Math.min(callIdx, responses.length - 1)]
       callIdx++
+      await response.beforeReply?.()
 
       const lines = response.lines
       const encoder = new TextEncoder()
-      const stream = new ReadableStream<Uint8Array>({
+      const stream = response.stream ?? new ReadableStream<Uint8Array>({
         start(ctrl) {
           for (const line of lines) ctrl.enqueue(encoder.encode(line))
           ctrl.close()

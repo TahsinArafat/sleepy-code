@@ -2,6 +2,86 @@ import { describe, expect, test } from "bun:test"
 import { parseActorNotification, renderActorNotification } from "../../src/inbox/render"
 
 describe("parseActorNotification", () => {
+  test("[TP-R14-12] a summary-looking line inside a warning is not the card summary", () => {
+    const text = renderActorNotification({ actorID: "child", description: "work", status: "completed", result: "MAIN-RESULT", warnings: ["postStop failed\nSummary: warning detail"] })
+    // TUI card keeps the first non-stack line only; the raw XML still carries the rest for the main agent.
+    expect(parseActorNotification(text)).toMatchObject({ summary: "MAIN-RESULT", warnings: ["postStop failed"] })
+  })
+  test("[TP-R14-12] partial result text cannot inject warning metadata or replace the failure summary", () => {
+    const text = renderActorNotification({
+      actorID: "child",
+      description: "work",
+      status: "failed",
+      error: "actual failure",
+      result: "partial\nWarning: quoted warning\nResult: quoted result\nSummary: quoted summary",
+    })
+    expect(parseActorNotification(text)).toEqual({ status: "failed", description: "work", summary: "actual failure" })
+  })
+  test("[TP-R14-12] parses multiline warnings without accepting warning text inside the result", () => {
+    const text = renderActorNotification({
+      actorID: "child",
+      description: "work",
+      status: "completed",
+      warnings: ["postStop failed\n  detail line", "gate unavailable"],
+      result: "REAL-RESULT\nWarning: this belongs to the result",
+    })
+    expect(parseActorNotification(text)).toMatchObject({
+      status: "completed",
+      warnings: ["postStop failed", "gate unavailable"],
+      summary: "REAL-RESULT",
+    })
+  })
+
+  test("[TP-R14-12] a result containing Warning is not metadata", () => {
+    const text = renderActorNotification({
+      actorID: "child",
+      description: "work",
+      status: "completed",
+      result: "Warning: quoted result text",
+    })
+    expect(parseActorNotification(text)).not.toHaveProperty("warnings")
+  })
+  test("[TP-R14-07] completion preserves its result alongside hook warnings", () => {
+    const text = renderActorNotification({
+      actorID: "child",
+      description: "work",
+      status: "completed",
+      result: "MAIN-RESULT",
+      warnings: ["postStop failed"],
+    })
+    expect(text).toContain("Warning: postStop failed")
+    expect(text).toContain("Result: MAIN-RESULT")
+    expect(parseActorNotification(text)?.status).toBe("completed")
+  })
+
+  test("[TP-R14-07] failure includes available partial output without becoming success", () => {
+    const text = renderActorNotification({
+      actorID: "child",
+      description: "work",
+      status: "failed",
+      error: "verification failed",
+      result: "PARTIAL-RESULT",
+    })
+    expect(text).toContain("Partial result: PARTIAL-RESULT")
+    expect(parseActorNotification(text)?.status).toBe("failed")
+  })
+  test("[TP-R14-07] card drops stack frames; raw XML keeps them for the main agent", () => {
+    const stack = "postStop: Error: Actor assistant failed: APIError\n    at foo (/tmp/spawn.ts:357:15)\n    at bar (/tmp/spawn.ts:620:43)"
+    const text = renderActorNotification({
+      actorID: "custom-1",
+      description: "custom",
+      status: "completed",
+      result: "PRESERVED-WARNING-RESULT",
+      warnings: [stack],
+    })
+    const note = parseActorNotification(text)!
+    expect(note.summary).toBe("PRESERVED-WARNING-RESULT")
+    expect(note.warnings).toEqual(["postStop: Error: Actor assistant failed: APIError"])
+    expect(note.warnings![0]).not.toContain("spawn.ts")
+    // Main agent still sees the full dump on the synthetic message text.
+    expect(text).toContain("at foo (/tmp/spawn.ts:357:15)")
+  })
+
   test("parses a completed notification with reported status + summary", () => {
     const text = renderActorNotification({
       actorID: "explore-1",
@@ -172,7 +252,7 @@ describe("parseActorNotification", () => {
 
   test("returns null for non-notification text", () => {
     expect(parseActorNotification("just a normal user message")).toBeNull()
-    expect(parseActorNotification("<inbox from=\"x:y\">hello</inbox>")).toBeNull()
+    expect(parseActorNotification('<inbox from="x:y">hello</inbox>')).toBeNull()
     expect(parseActorNotification("")).toBeNull()
   })
 

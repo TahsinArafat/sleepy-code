@@ -31,12 +31,13 @@ Memory files live under `~/.local/share/sleepycode/memory/`:
 - `SLEEPY_HOME` — override all base dirs (absolute path).
 - `SLEEPYCODE_CONFIG_DIR` — extra config directory to search.
 - `SLEEPYCODE_PURE` — run without external plugins (same as `sleepy --pure`). Does **not** change models or Claude Code inheritance.
-- `SLEEPYCODE_SLEEPY_ONLY` — pure-Sleepy mode: don't inherit Claude Code settings (CLAUDE.md, `~/.claude/skills`), don't read provider API keys from env, fall back to the sleepy-auto model.
 - `SLEEPYCODE_DISABLE_LOG_ROTATION` — keep a single growing log file instead of rotating.
 - `SLEEPYCODE_TEXT_TOOL_CALL_RETRY_LIMIT` — retries when a model emits a tool call as prose markup instead of a structured call (default 2).
 - `SLEEPYCODE_EXPERIMENTAL_CRON` — scheduled prompts (cron/loop); **on by default**. `SLEEPYCODE_DISABLE_CRON` kills it at runtime. Tune loop keepalive with `SLEEPYCODE_LOOP_KEEPALIVE_BUDGET` (default 1) and `SLEEPYCODE_LOOP_KEEPALIVE_DELAY_S` (default 1200).
 - `SLEEPYCODE_EXPERIMENTAL_TOKEN_EFFICIENCY_HEURISTIC` — shape-based compaction of bash output to save tokens; off by default.
-- `SLEEPYCODE_DISABLE_BUILTIN_SKILLS`, `_COMPOSE_SKILLS`, `_EXTERNAL_SKILLS`, `_CLAUDE_CODE_SKILLS`, `_CODEX_SKILLS`, `_OPENCODE_SKILLS`, `_PROJECT_CONFIG`, `_CLAUDE_IMPORT` — feature toggles.
+- `SLEEPYCODE_SLEEPY_ONLY` — pure-Sleepy mode: don't inherit Claude Code settings (CLAUDE.md, `~/.claude/CLAUDE.md`), don't read provider API keys from env, fall back to the sleepy-auto model.
+- **External skill roots** — default load surface is `.sleepycode` + open-standard `.agents`. Brand roots are opt-in: `SLEEPYCODE_ENABLE_CLAUDE_CODE_SKILLS`, `SLEEPYCODE_ENABLE_CODEX_SKILLS`, `SLEEPYCODE_ENABLE_OPENCODE_SKILLS`. Turn agents off with `SLEEPYCODE_DISABLE_AGENTS_SKILLS`. External scans skip dotted path segments under `skills/`.
+- `SLEEPYCODE_DISABLE_BUILTIN_SKILLS`, `_COMPOSE_SKILLS`, `_PROJECT_CONFIG`, `_CLAUDE_IMPORT` — feature toggles.
 
 ## Top-level config keys
 
@@ -100,7 +101,6 @@ Prefer a markdown file (`.sleepycode/agent/<name>.md`, body = system prompt) for
 | `skills` | `paths[]` extra skill folders + `urls[]` remote skill indexes |
 | `mcp` | MCP servers: `local` (command/env) or `remote` (url/headers/oauth); `{ "enabled": false }` disables one; `sampling` sets the client-sampling policy (`deny`/`ask`/`allow`, default `ask`) |
 | `tools` | Record of tool-id → boolean enable/disable |
-| `tool.invocation_style` | `json` (default) or `shell`; `tool.invocation_style_by_tool` for per-tool override |
 | `command` | Custom slash commands |
 | `plugin` | Plugin specs |
 | `formatter`, `lsp` | Formatter & language-server config |
@@ -157,7 +157,6 @@ The trigger is the model's prompt capacity (`limit.input` when the provider publ
 | `autoupdate` | `true` / `false` / `"notify"` |
 | `share` | `"manual"` / `"auto"` / `"disabled"` |
 | `snapshot` | Filesystem snapshot tracking for undo/redo (default true) |
-| `auto_worktree` | Auto-Worktree Notice on main-worktree writes (default false) |
 | `logLevel` | Log verbosity |
 | `server` | Config for `sleepy serve` |
 | `enterprise.url` | Enterprise endpoint |

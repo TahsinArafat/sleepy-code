@@ -18,7 +18,6 @@ import { ShareNext } from "../../src/share"
 import { SessionShareTable } from "../../src/share/share.sql"
 import { Database, eq } from "../../src/storage"
 import { provideTmpdirInstance } from "../fixture/fixture"
-import { resetDatabase } from "../fixture/db"
 import { testEffect } from "../lib/effect"
 
 const env = Layer.mergeAll(
@@ -86,8 +85,8 @@ const seed = (url: string, org?: string) =>
     }),
   )
 
-beforeEach(async () => {
-  await resetDatabase()
+beforeEach(() => {
+  Database.close()
 })
 
 describe("ShareNext", () => {

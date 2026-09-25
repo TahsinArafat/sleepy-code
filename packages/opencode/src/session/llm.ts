@@ -1,9 +1,11 @@
+import { HostModelTransport } from "../provider/host-transport"
+import { bindHostError, inheritHostError } from "@/error/host-registry"
 import path from "path"
 import { Provider, ProviderError } from "@/provider"
 import { Log } from "@/util"
 import { Context, Duration, Effect, Layer, Record, Cause } from "effect"
 import * as Stream from "effect/Stream"
-import { streamText, wrapLanguageModel, type ModelMessage, type Tool, tool, jsonSchema } from "ai"
+import { streamText, wrapLanguageModel, type ModelMessage, type Tool, tool, jsonSchema, NoSuchToolError } from "ai"
 import { mergeDeep, pipe } from "remeda"
 import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
 import { ProviderTransform } from "@/provider"
@@ -20,7 +22,6 @@ import { Wildcard, ToolCompat } from "@/util"
 import { asSchema } from "@ai-sdk/provider-utils"
 import { SessionID } from "@/session/schema"
 import * as Session from "@/session/session"
-import { SessionStatus } from "@/session/status"
 import { migrateProjectMemory } from "./checkpoint-paths"
 import { ProjectID } from "@/project/schema"
 import { Auth } from "@/auth"
@@ -36,56 +37,11 @@ import { isRetryableTransientError } from "./retry"
 import * as SessionRetry from "./retry"
 import { MCP_TOOL_SEARCH_ID } from "@/tool/mcp-tool-search"
 import { TOOL_SCRIPT_EXCLUDED } from "@/tool/tool-script-ref"
-import { deriveLiveness } from "@/actor/schema"
-import { SYSTEM_SPAWNED_AGENT_TYPES } from "@/agent/config"
 import { Flag } from "@/flag/flag"
 
 const log = Log.create({ service: "llm" })
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
 
-/**
- * Lead-in for the orchestrator's fleet roster, and the reason the roster carries
- * NO XML envelope.
- *
- * It used to be pushed as `<active-sessions>\n…\n</active-sessions>`, and users
- * saw that literal tag — rows and all — in the TUI. The TUI is not at fault: the
- * roster goes into the SYSTEM array and the TUI never renders system content.
- * The model was quoting it. It had every reason to: `orchestrator.txt` named the
- * tag five times and told it to "Look at `<active-sessions>`", so the tag was
- * vocabulary the prompt had taught it, and the literal string was sitting in its
- * context to copy.
- *
- * Asking it not to echo the tag would be another prompt instruction, and this PR
- * measured what those are worth — the maintainer/author paragraph lost 3/3 live
- * turns. So remove the artifact instead of requesting restraint: with no
- * `<active-sessions>` string anywhere in the assembled request, echoing it is not
- * a behaviour the model can exhibit. The prompt now refers to the roster
- * functionally ("your fleet roster") and keeps the field layout, which is the
- * part that was actually load-bearing for routing.
- *
- * Dropping the delimiter costs nothing structurally: this was the ONLY tagged
- * block in the system array (the agent prompt and the memory instructions are
- * both plain prose), and `dispatchLedgerNotice` already ships the same roster to
- * the model in a tool result with a prose header and no envelope.
- *
- * The "internal working context" sentence is a genuinely weaker lever than the
- * removal — it can only ask. It is here because it costs one line and it sits
- * ADJACENT to the data it governs rather than in a paragraph assembled far away.
- * It does not stop the model paraphrasing a child's title, and it is not claimed
- * to; what is mechanically closed is the literal tag.
- */
-export const ROSTER_HEADER =
-  "Your fleet — your routable child sessions right now. This list is internal working context, " +
-  "not output: never repeat it, or these session ids and titles, back to the user — report the " +
-  'routing DECISION instead ("routing this to the docs child"). Format is id | title | agent | status:'
-
-// How many FINISHED-but-resumable child sessions the fleet roster carries,
-// most-recently-active first. The roster is re-injected on EVERY request,
-// so the idle tail (which grows monotonically as children complete) must be
-// bounded; running children are self-limiting and are never dropped. A count cap
-// rather than a time window, because N children can finish inside one minute and
-// a window would not actually bound the block.
-export const ROSTER_IDLE_LIMIT = 5
 type Result = Awaited<ReturnType<typeof streamText>>
 
 /**
@@ -112,19 +68,14 @@ export function isTransientCapacityError(error: unknown): boolean {
 /**
  * Memory-system instructions appended to the main agent's system prompt.
  *
- * Teaches the agent its v8.1 ownership of the memory system:
- * - MEMORY.md (project-scoped): writer is sole curator + agent edits for
- *   project-level user-stated rules
- * - checkpoint.md (session-scoped): writer EXCLUSIVE; agent never edits
- * - tasks/<id>/progress.md: writer-derived splitover from session-level
- *   progress.md; not LLM-written. Subagents handed a task may read but
- *   should not write.
- *
- * Also documents the Active recall protocol that prevents re-Reading
- * files already present in the rebuild dump, and the Subagent return
- * format contract.
- *
- * This block is not appended when `SLEEPYCODE_DISABLE_CHECKPOINT` is on.
+ * Always injected for main/peer actors (`servesCheckpoint`); memory ownership
+ * is not gated on checkpoint. `SLEEPYCODE_DISABLE_CHECKPOINT` only drops the
+ * checkpoint-write subsections:
+ * - Always: project MEMORY.md + when the agent may Edit; global MEMORY.md;
+ *   session notes.md scratchpad; subagent return format; search-first /
+ *   no-ad-hoc-files rules.
+ * - When checkpoint is on: checkpoint.md / tasks/<id>/progress.md paths,
+ *   writer-as-curator ownership, Active recall protocol after rebuild dumps.
  *
  * `memoryRoot` is the same absolute root returned by Memory.root(), so these
  * paths match the files used by checkpoint restore and memory/task detection.
@@ -155,19 +106,20 @@ You have a persistent file-based memory system. ${checkpointEnabled ? "Four" : "
 ${files.join("\n")}`,
     ...(checkpointEnabled
       ? [
-        "The checkpoint writer is the sole curator of the structured files. You don't maintain them mid-task — the writer extracts everything from the conversation at checkpoint events.",
-      ]
+          "The checkpoint writer is the sole curator of the structured files. You don't maintain them mid-task — the writer extracts everything from the conversation at checkpoint events.",
+        ]
       : []),
-    `## When to Edit MEMORY.md directly
+    `## When to edit MEMORY.md directly
 
-You may Edit MEMORY.md when:
+You may edit MEMORY.md when:
 - User states a project-level rule that should hold across sessions → ## Rules
 - User states a project-level architectural decision → ## Architecture decisions
-- A clearly durable cross-session fact emerges that you want available immediately${checkpointEnabled ? ", before the next checkpoint" : ""} → ## Discovered durable knowledge${checkpointEnabled
-      ? `
+- A clearly durable cross-session fact emerges that you want available immediately${checkpointEnabled ? ", before the next checkpoint" : ""} → ## Discovered durable knowledge${
+      checkpointEnabled
+        ? `
 
 These are exceptions, not the norm. The writer covers most extraction at checkpoint time.`
-      : ""
+        : ""
     }`,
     `## Notes scratchpad
 
@@ -183,29 +135,16 @@ Format each entry as:
   Free-form body.${checkpointEnabled ? " The writer reorganizes structured content at checkpoint time." : ""}
 
 This is your ONLY legal scratchpad — don't create \`learning.md\`, \`scratch.md\`, or any other ad-hoc memory file.`,
-    `## Subagent return format
-
-When you (as a subagent) finish your task, your final assistant message will be delivered to the spawning agent. If the spawn machinery added a "Return format (required)" section to your prompt, follow it exactly:
-
-  **Status**: success | partial | failed | blocked
-  **Summary**: <one-line description>
-
-  <deliverable body>
-
-  **Files touched**: <comma-separated paths or "(none)">
-  **Findings worth promoting**: <bullet list, or "(none)">
-
-If your spawn prompt didn't include this format (e.g., explore/title/summary agents have their own contracts), follow whatever your prompt specifies.`,
     `## What NOT to do
 
 ${[
-      ...(checkpointEnabled ? ["- Don't Edit checkpoint.md — that's the writer's domain."] : []),
-      "- Don't create memory files other than notes.md (no learning.md, no scratch.md). Use notes.md for any free-form entry.",
-      "- Don't ask the user about something memory may already record — search first via Grep / Read.",
-    ].join("\n")}`,
+  ...(checkpointEnabled ? ["- Don't edit checkpoint.md — that's the writer's domain."] : []),
+  "- Don't create memory files other than notes.md (no learning.md, no scratch.md). Use notes.md for any free-form entry.",
+  "- Don't ask the user about something memory may already record — search first via the Grep and Read tools.",
+].join("\n")}`,
     ...(checkpointEnabled
       ? [
-        `## Active recall protocol
+          `## Active recall protocol
 
 After a checkpoint rebuild, the following dumps may be already in your context (look for the "Summary of previous conversation from checkpoint files:" header followed by these dumps):
 
@@ -216,11 +155,11 @@ After a checkpoint rebuild, the following dumps may be already in your context (
 
 If these dumps are visible in your context:
 
-- Do NOT Read them again as whole files. The bytes are already in front of you.
-- For specific past details (a particular turn's content, a specific tool output, an old command), use Grep with a keyword pattern to target the exact item — do not pull a whole file.
-- For files NOT in the rebuild dump (per-task splitover progress.md files for tasks you don't actively need, spillover files, older session checkpoints in other sessions), Read on demand.
+- Do NOT read them again as whole files. The bytes are already in front of you.
+- For specific past details (a particular turn's content, a specific tool output, an old command), use the Grep tool with a keyword pattern to target the exact item — do not pull a whole file.
+- For files NOT in the rebuild dump (per-task splitover progress.md files for tasks you don't actively need, spillover files, older session checkpoints in other sessions), read on demand.
 
-If a dump shows "⚠️ Truncated at ~N tokens. Read(<path>, offset=L) for the rest." — that file was budget-cut. Use Read with the offset only when you need the missing tail.
+If a dump is budget-truncated, retrieve only the missing section when you need it: use the Read tool with offset/limit.
 
 Memory entries name functions, files, flags, paths — those are CLAIMS about a point in time when they were written. Verify before acting on a specific name.
 
@@ -251,8 +190,16 @@ export type StreamInput = {
   mergeTurnContextIntoLastUser?: boolean
   /** Keep an appended control prompt last while applying provider-specific turn context to the conversation before it. */
   mergeTurnContextBeforeLastMessage?: boolean
+  /**
+   * Propose-only / ensemble draws: skip Session.Event.RetryAttempt on request-phase
+   * ladders. Narrower than `ephemeral` (which also skips plugins, affinity headers,
+   * OTel functionId, and system assembly). session.status is already processor-owned.
+   */
+  quietRetryDiagnostics?: boolean
+  retryScope?: "max-candidate" | "max-judge"
   ephemeral?: boolean
   requestID?: string
+  assistantMessageID?: string
 }
 
 export type StreamRequest = StreamInput & {
@@ -320,24 +267,24 @@ const live: Layer.Layer<
   Service,
   never,
   | Auth.Service
+  | Bus.Service
   | Config.Service
   | Provider.Service
   | Plugin.Service
   | Permission.Service
   | ActorRegistry.Service
   | Memory.Service
-  | SessionStatus.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
     const auth = yield* Auth.Service
+    const bus = yield* Bus.Service
     const config = yield* Config.Service
     const provider = yield* Provider.Service
     const plugin = yield* Plugin.Service
     const perm = yield* Permission.Service
     const actorReg = yield* ActorRegistry.Service
     const memory = yield* Memory.Service
-    const status = yield* SessionStatus.Service
 
     const buildSystemArray = Effect.fn("LLM.buildSystemArray")(function* (input: {
       agent: Agent.Info
@@ -348,15 +295,16 @@ const live: Layer.Layer<
       agentID?: string
       ephemeral?: boolean
     }) {
-      // "Is this a main/peer actor" — the single judgement two sections below key
-      // on (replace-agent base override + memory instructions). Injected only for
-      // actors whose context the checkpoint flow serves — main + peer. Subagents
-      // (explore/general/…) run in the SHARED sessionID (F37 slices) but are NOT
-      // main/peer; system-spawned actors (checkpoint-writer et al.) and ephemeral
-      // one-shots (title gen) likewise are not. Shares the exact `servesCheckpoint`
-      // judgement with SessionPrune.fireCheckpoints so the "who owns a checkpoint"
-      // and "who is taught about it" (and now "who applies the session base") sets
-      // can never drift apart.
+      // "Is this a main/peer actor" — the single judgement memory-instructions
+      // and replace-agent base override share. Memory system is ALWAYS taught to
+      // these actors; only checkpoint-write copy inside the block is
+      // flag-filtered. Injected only for actors whose context the checkpoint
+      // flow serves — main + peer. Subagents (explore/general/…) run in the
+      // SHARED sessionID (F37 slices) but are NOT main/peer; system-spawned
+      // actors (checkpoint-writer et al.) and ephemeral one-shots (title gen)
+      // likewise are not. Shares the exact `servesCheckpoint` judgement with
+      // SessionPrune.fireCheckpoints so "who owns a checkpoint" and "who is
+      // taught about memory" cannot drift apart on the actor axis.
       const servesCheckpoint =
         !input.ephemeral && (yield* actorReg.servesCheckpoint(SessionID.make(input.sessionID), input.agentID))
 
@@ -397,14 +345,15 @@ const live: Layer.Layer<
           .join("\n"),
       )
 
-      // v5: memory-instructions section. Teaches the agent how/where/when to
-      // maintain `MEMORY.md` and (when checkpointing is on) `checkpoint.md`.
-      // Project ID is resolved from the ALS-bound Instance with a safe fallback
-      // to `ProjectID.global` (mirrors the pattern in session/checkpoint.ts so the
-      // path the prompt advertises matches the path the writer actually writes).
-      // Gated on the shared `servesCheckpoint` judgement above; disabling
-      // checkpoints also disables this memory-system prompt block.
-      if (servesCheckpoint && !Flag.SLEEPYCODE_DISABLE_CHECKPOINT) {
+      // Memory-instructions section. Always injected for main/peer actors —
+      // memory paths/ownership are independent of checkpoint. The checkpoint
+      // flag only narrows which subsections buildMemoryInstructions emits
+      // (writer/ckpt/Active-recall extras). Project ID is resolved from the
+      // ALS-bound Instance with a safe fallback to `ProjectID.global`
+      // (mirrors session/checkpoint.ts so advertised paths match writer
+      // paths). system-spawned actors (checkpoint-writer et al.) stay out via
+      // servesCheckpoint.
+      if (servesCheckpoint) {
         const projectID =
           (yield* Effect.try({
             try: () => Instance.current?.project?.id as ProjectID | undefined,
@@ -418,48 +367,6 @@ const live: Layer.Layer<
         // the "agent edits MEMORY.md before any checkpoint" path. Idempotent.
         yield* Effect.promise(() => migrateProjectMemory(projectID)).pipe(Effect.ignore)
         system.push(buildMemoryInstructions(projectID, yield* memory.root()))
-      }
-
-      // Orchestrator fleet roster: inject a compact one-line-per-session
-      // list of the orchestrator's ROUTABLE child sessions. Only for the orchestrator
-      // agent — other agents don't manage children. Format is intentionally compact
-      // (~30 tokens/session): id | title | agent | status. Field 3 is the child's
-      // AGENT (build/plan/compose) — the routing signal the model needs — not its
-      // actor mode, which is always "peer" here and therefore carries no signal.
-      // AI needs details on demand → session status/ask.
-      if (!input.ephemeral && input.agent.name === "orchestrator") {
-        // listPeerChildren joins through the Session row's parent_id, because a
-        // peer child registers its actor row under its OWN session id — a
-        // session_id-keyed lookup (listByParent) never matches a peer.
-        const children = yield* actorReg.listPeerChildren(SessionID.make(input.sessionID), input.agentID ?? "main")
-        const now = Date.now()
-        const routable = children
-          .filter(({ actor }) => !SYSTEM_SPAWNED_AGENT_TYPES.has(actor.agent))
-          .map(({ actor, title }) => ({ actor, title, live: deriveLiveness(actor, now) }))
-          // Genuinely dead children stay out: `failure` and `cancelled` mean the
-          // child errored out or was torn down, so routing work into it is wrong.
-          .filter(({ live }) => live !== "failure" && live !== "cancelled")
-        // `success` means "its LAST TURN finished cleanly", NOT "the session is
-        // gone" — a persistent peer child is still resumable by `session send`
-        // (same id, history intact). Dropping those made a child PERMANENTLY
-        // invisible the moment it did its job, degrading "route to this topic's
-        // standing owner" into "route to whatever id I still remember". Report
-        // them honestly as `idle` (the same success→idle mapping `session list`
-        // already uses) rather than as `progressing`.
-        const working = routable.filter(({ live }) => live === "progressing" || live === "stalled")
-        // The idle tail is the only side that grows without bound (children keep
-        // finishing; running ones are capped by the machine), so bound IT: keep
-        // the most recently active few. Older idle children stay reachable via
-        // `session list`, they just don't pay rent in every request.
-        const idle = routable
-          .filter(({ live }) => live === "success" || live === "idle")
-          .sort((a, b) => b.actor.lastTurnTime - a.actor.lastTurnTime)
-          .slice(0, ROSTER_IDLE_LIMIT)
-        const lines = [...working, ...idle].map(
-          ({ actor, title, live }) =>
-            `  ${actor.sessionID} | ${title} | ${actor.agent} | ${live === "success" ? "idle" : live}`,
-        )
-        if (lines.length > 0) system.push(`${ROSTER_HEADER}\n${lines.join("\n")}`)
       }
 
       // Plugins transform the stable base before the caller-controlled tail.
@@ -541,6 +448,9 @@ const live: Layer.Layer<
         mergeDeep(variant),
       )
       const isWorkflow = language instanceof GitLabWorkflowLanguageModel
+      // Workflow connectors mutate shared session/tool-executor state and may
+      // ask permissions. They have no safe isolated title adapter.
+      if (input.ephemeral && isWorkflow) return yield* Effect.fail(new Error("Ephemeral workflow generation is unsupported"))
       const providerSystem =
         input.user.systemMode !== "replace-agent" && (isOpenaiOauth || isWorkflow) && input.user.system?.trim()
           ? [...system, input.user.system]
@@ -576,7 +486,14 @@ const live: Layer.Layer<
             ...requestMessagesWithContext,
           ]
 
-      const params = yield* plugin.trigger(
+      const defaults = {
+        temperature: input.model.capabilities.temperature ? (input.agent.temperature ?? ProviderTransform.temperature(input.model)) : undefined,
+        topP: input.agent.topP ?? ProviderTransform.topP(input.model),
+        topK: ProviderTransform.topK(input.model),
+        maxOutputTokens: ProviderTransform.maxOutputTokens(input.model),
+        options,
+      }
+      const params = input.ephemeral ? defaults : yield* plugin.trigger(
         "chat.params",
         {
           sessionID: input.sessionID,
@@ -596,7 +513,7 @@ const live: Layer.Layer<
         },
       )
 
-      const { headers } = yield* plugin.trigger(
+      const { headers } = input.ephemeral ? { headers: {} } : yield* plugin.trigger(
         "chat.headers",
         {
           sessionID: input.sessionID,
@@ -611,7 +528,7 @@ const live: Layer.Layer<
       )
 
       const tools = resolveTools(input)
-      const requestedActiveTools = new Set(input.activeTools ?? Object.keys(tools))
+      const requestedActiveTools = new Set(input.activeTools ?? Object.keys(input.tools))
       const activeTools = Object.keys(tools).filter((name) => name !== "invalid" && requestedActiveTools.has(name))
 
       // LiteLLM and some Anthropic proxies require the tools parameter to be present
@@ -659,9 +576,7 @@ const live: Layer.Layer<
         workflowModel.sessionID = input.sessionID
         workflowModel.systemPrompt = system.join("\n")
         workflowModel.toolExecutor = async (toolName, argsJson, _requestID) => {
-          const registered = Object.keys(tools)
-          const resolvedName = ToolCompat.resolveName(toolName, registered) ?? toolName
-          const t = tools[resolvedName]
+          const t = tools[toolName]
           if (!t || !t.execute) {
             return { result: "", error: `Unknown tool: ${toolName}` }
           }
@@ -778,7 +693,7 @@ const live: Layer.Layer<
         )
         .pipe(Effect.ignore)
 
-      return streamText({
+      const result = streamText({
         onError(error) {
           l.debug("streamText error", {
             messageID: input.user.id,
@@ -811,7 +726,12 @@ const live: Layer.Layer<
             ...failed.toolCall,
             input: JSON.stringify({
               tool: failed.toolCall.toolName,
-              error: failed.error.message,
+              error: NoSuchToolError.isInstance(failed.error)
+                ? new NoSuchToolError({
+                    toolName: failed.toolCall.toolName,
+                    availableTools: activeTools,
+                  }).message
+                : failed.error.message,
             }),
             toolName: "invalid",
           }
@@ -841,6 +761,76 @@ const live: Layer.Layer<
           middleware: [
             {
               specificationVersion: "v3" as const,
+              wrapStream: ({ doStream, params }) => HostModelTransport.modelCall({
+                sessionID: input.sessionID, userMessageID: input.user.id,
+                assistantMessageID: input.assistantMessageID,
+                providerID: input.model.providerID, modelID: input.model.id, sdk: input.model.api.npm,
+                agent: input.agent.name, ephemeral: !!input.ephemeral, format: input.user.format?.type,
+              }, async () => {
+                const forwardRaw = params.includeRawChunks === true
+                params.includeRawChunks = true
+                const result = await Promise.resolve().then(doStream).catch((error: unknown) => {
+                  bindHostError(error, { providerID: input.model.providerID })
+                  throw error
+                })
+                const reader = result.stream.getReader()
+                let cancelled = false
+                let pendingRaw: { frame: object; message: string } | undefined
+                const stream: typeof result.stream = new ReadableStream({
+                  async pull(controller) {
+                    try {
+                      while (true) {
+                        const next = await reader.read()
+                        if (cancelled) return
+                        if (next.done) {
+                          pendingRaw = undefined
+                          reader.releaseLock()
+                          controller.close()
+                          return
+                        }
+                        if (next.value.type === "raw") {
+                          const value = next.value.rawValue
+                          pendingRaw = value !== null && typeof value === "object" && !Array.isArray(value) &&
+                            "error" in value && value.error !== null && typeof value.error === "object" &&
+                            "message" in value.error && typeof value.error.message === "string"
+                            ? { frame: value, message: value.error.message } : undefined
+                          if (!forwardRaw) continue
+                          controller.enqueue(next.value)
+                          return
+                        }
+                        const raw = pendingRaw
+                        pendingRaw = undefined
+                        if (next.value.type === "error") {
+                          // Some adapters emit only the message after an adjacent raw error frame.
+                          const error = typeof next.value.error === "string" && raw?.message === next.value.error
+                            ? bindHostError({ ...raw.frame, type: "error", message: next.value.error }, { providerID: input.model.providerID }, { responseBody: JSON.stringify(raw.frame) })
+                            : bindHostError(next.value.error, { providerID: input.model.providerID })
+                          controller.enqueue({ ...next.value, error })
+                          return
+                        }
+                        controller.enqueue(next.value)
+                        return
+                      }
+                    } catch (error) {
+                      pendingRaw = undefined
+                      if (cancelled) return
+                      bindHostError(error, { providerID: input.model.providerID })
+                      reader.releaseLock()
+                      controller.error(error)
+                    }
+                  },
+                  async cancel(reason) {
+                    cancelled = true
+                    pendingRaw = undefined
+                    try {
+                      await reader.cancel(reason)
+                    } finally {
+                      reader.releaseLock()
+                    }
+                  },
+                })
+                return { ...result, stream }
+              }),
               async transformParams(args) {
                 // `generate || stream`, matching session/prompt.ts:597. This file's
                 // only SDK entrypoint is `streamText` (:599), so narrowing to
@@ -866,6 +856,7 @@ const live: Layer.Layer<
           },
         },
       })
+      return { result }
     })
 
     const stream: Interface["stream"] = (input) => {
@@ -882,31 +873,28 @@ const live: Layer.Layer<
               )
               const result = yield* run({ ...input, abort: ctrl.signal, dropAssistantPrefill })
 
-              // Structurally identical to the pre-guard stream: a bare scoped
-              // stream over the provider's fullStream. No per-event combinator, no
-              // extra catch layer — so the normal (non-error) event flow and the
-              // AbortController scope teardown are exactly as before. The reactive
-              // prefill retry is layered lazily below and only pays a cost when an
-              // actual error surfaces.
-              const rawStream = Stream.fromAsyncIterable(result.fullStream, (e) =>
-                e instanceof Error ? e : new Error(String(e)),
+              // Restore canonical tool IDs before session processing and persistence.
+              // The reactive prefill retry remains scoped to request failures.
+              const rawStream = Stream.fromAsyncIterable(result.result.fullStream, (e) =>
+                inheritHostError(e, { providerID: input.model.providerID }),
               )
               let hasProviderOutput = false
               return rawStream.pipe(
                 Stream.mapEffect((event) =>
                   Effect.gen(function* () {
+                    if (event.type === "error") inheritHostError(event.error, { providerID: input.model.providerID })
                     if (
                       event.type === "error" &&
                       !hasProviderOutput &&
                       allowRequestRetry &&
                       !ProviderTransform.isAssistantPrefillRejection(event.error)
                     ) {
-                      const normalized = MessageV2.fromError(event.error, {
+                      const normalized = MessageV2.fromLiveError(event.error, {
                         providerID: input.model.providerID,
                         aborted: ctrl.signal.aborted,
                         allow404Retry: ProviderError.allowsModelNotFoundRetry(input.model),
                       })
-                      if (SessionRetry.decide(normalized, "request").retryable) return yield* Effect.fail(event.error)
+                      if (SessionRetry.decide(normalized, "request", input.retryScope).retryable) return yield* Effect.fail(event.error)
                     }
                     if (event.type !== "start" && event.type !== "error") hasProviderOutput = true
                     return event
@@ -928,7 +916,7 @@ const live: Layer.Layer<
         stream.pipe(
           Stream.flatMap((event) =>
             event.type === "error" && ProviderTransform.isAssistantPrefillRejection(event.error)
-              ? Stream.fail(event.error instanceof Error ? event.error : new Error(String(event.error)))
+              ? Stream.fail(event.error)
               : Stream.succeed(event),
           ),
         )
@@ -954,13 +942,13 @@ const live: Layer.Layer<
           ): Stream.Stream<Event, unknown, never> =>
             source.pipe(
               Stream.catchCause((primaryCause) => {
-                const primaryError = Cause.squash(primaryCause)
-                if (ProviderTransform.isAssistantPrefillRejection(primaryError)) {
+                const primaryError = inheritHostError(Cause.squash(primaryCause), { providerID: input.model.providerID })
+                const normalized = MessageV2.fromLiveError(primaryError, { providerID: input.model.providerID, allow404Retry: ProviderError.allowsModelNotFoundRetry(input.model) })
+                if (!normalized.data.hostCode && ProviderTransform.isAssistantPrefillRejection(primaryError)) {
                   if (prefillRepaired) return Stream.failCause(primaryCause)
                   return retryRequest(attempt(true, true), retryCount, startedAt, true)
                 }
-                const normalized = MessageV2.fromError(primaryError, { providerID: input.model.providerID, allow404Retry: ProviderError.allowsModelNotFoundRetry(input.model) })
-                const decision = SessionRetry.decide(normalized, "request")
+                const decision = SessionRetry.decide(normalized, "request", input.retryScope)
                 if (!decision.retryable) return Stream.failCause(primaryCause)
                 const budget = SessionRetry.budgetFor(retryConfig, decision)
                 const nextAttempt = retryCount + 1
@@ -982,29 +970,27 @@ const live: Layer.Layer<
                   return Stream.failCause(primaryCause)
                 return Stream.unwrap(
                   Effect.gen(function* () {
-                    const globalAttempt = yield* status.setRetry(SessionID.make(input.sessionID), {
-                      type: "retry",
+                    // Request-phase ladders nest inside processor stream retries. Publishing
+                    // session.status{retry} here restarts a 200ms×4 burst on every outer
+                    // cycle; measured with unreachable baseURL: 4 request + 1 stream per
+                    // cycle ≈ 20 UI frames in 32s (looks nothing like exponential backoff).
+                    // Session status is owned by processor (user-visible wait); request
+                    // attempts stay on Session.Event.RetryAttempt for diagnostics only —
+                    // unless the caller is propose-only ensemble (quietRetryDiagnostics).
+                    // The Promise bridge would reattach ambient ALS instead of this fiber's InstanceRef.
+                    if (!input.ephemeral && !input.quietRetryDiagnostics) yield* bus.publish(Session.Event.RetryAttempt, {
+                      sessionID: SessionID.make(input.sessionID),
+                      messageID: input.user.id,
                       attempt: nextAttempt,
                       phaseAttempt: nextAttempt,
-                      message: decision.message,
-                      next: Date.now() + wait,
+                      maxAttempts: budget.maxRetries ?? 0,
                       phase: "request",
-                      scope: "request",
+                      kind: decision.kind,
+                      scope: decision.scope,
+                      reason: decision.message,
+                      nextDelayMs: wait,
+                      hostCode: decision.hostCode,
                     })
-                    if (!input.ephemeral) yield* Effect.promise(() =>
-                      Bus.publish(Session.Event.RetryAttempt, {
-                        sessionID: SessionID.make(input.sessionID),
-                        messageID: input.user.id,
-                        attempt: globalAttempt,
-                        phaseAttempt: nextAttempt,
-                        maxAttempts: budget.maxRetries ?? 0,
-                        phase: "request",
-                        kind: decision.kind,
-                        scope: "request",
-                        reason: decision.message,
-                        nextDelayMs: wait,
-                      }),
-                    )
                     yield* Effect.sleep(Duration.millis(wait))
                     return retryRequest(attempt(false, true), nextAttempt, deadlineStart)
                   }),
@@ -1020,7 +1006,7 @@ const live: Layer.Layer<
   }),
 )
 
-export const layer = live.pipe(Layer.provide(Permission.defaultLayer))
+export const layer = live.pipe(Layer.provide(Permission.defaultLayer), Layer.provide(Bus.defaultLayer))
 
 export const defaultLayer = Layer.suspend(() =>
   layer.pipe(
@@ -1030,7 +1016,6 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Plugin.defaultLayer),
     Layer.provide(ActorRegistry.defaultLayer),
     Layer.provide(Memory.defaultLayer),
-    Layer.provide(SessionStatus.defaultLayer),
   ),
 )
 

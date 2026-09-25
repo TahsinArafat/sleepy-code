@@ -1,3 +1,4 @@
+import { ActorExecution } from "../../src/actor/execution"
 import { afterEach, describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import { Bus } from "../../src/bus"
@@ -5,6 +6,7 @@ import { Session as SessionNs } from "../../src/session"
 import { SessionID, MessageID, PartID } from "../../src/session/schema"
 import { ActorRegistry } from "../../src/actor/registry"
 import { ActorWaiter } from "../../src/actor/waiter"
+import { runTurn } from "../../src/actor/turn"
 import { Instance } from "../../src/project/instance"
 import { provideTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
@@ -23,7 +25,11 @@ const env = Layer.mergeAll(
   CrossSpawnSpawner.defaultLayer,
   Bus.layer,
   ActorRegistry.defaultLayer,
-  ActorWaiter.layer.pipe(Layer.provide(ActorRegistry.defaultLayer), Layer.provide(Bus.layer), Layer.provide(SessionNs.defaultLayer)),
+  ActorWaiter.layer.pipe(
+    Layer.provide(ActorRegistry.defaultLayer),
+    Layer.provide(Bus.layer),
+    Layer.provide(SessionNs.defaultLayer),
+  ),
 )
 
 const it = testEffect(env)
@@ -73,6 +79,90 @@ const seedAssistantText = (sessionID: SessionID, actorID: string, text: string) 
   })
 
 describe("ActorWaiter — lifecycle predicate (Plan 3 / Task 3)", () => {
+  it.live(
+    "[TP-R14-11] failure reads the referenced structured delivery rather than newer text",
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionNs.Service
+        const registry = yield* ActorRegistry.Service
+        const waiter = yield* ActorWaiter.Service
+        const parent = yield* sessions.create({ title: "structured partial" })
+        yield* registry.register({
+          sessionID: parent.id,
+          actorID: "child",
+          mode: "subagent",
+          agent: "general",
+          description: "child",
+          contextMode: "none",
+          background: true,
+          lifecycle: "ephemeral",
+        })
+        yield* seedAssistantText(parent.id, "child", "raw text")
+        const delivery = (yield* sessions.messages({ sessionID: parent.id, agentID: "child" })).findLast(
+          (m) => m.info.role === "assistant",
+        )!
+        if (delivery.info.role !== "assistant") throw new Error("missing assistant")
+        yield* sessions.updateMessage({ ...delivery.info, actorResult: { structured: { answer: 42 } } })
+        yield* seedAssistantText(parent.id, "child", "UNRELATED-NEWER-TEXT")
+        yield* registry.updateStatus(parent.id, "child", {
+          status: "idle",
+          lastOutcome: "failure",
+          lastError: "verification failed",
+          resultMessageID: delivery.info.id,
+        })
+        const snapshot = yield* waiter.wait({ sessionID: parent.id, actor_id: "child" })
+        expect(snapshot.lastOutcome).toBe("failure")
+        expect(snapshot.structured).toEqual({ answer: 42 })
+        expect(snapshot.result).toBeUndefined()
+      }),
+    ),
+  )
+  for (const previousOutcome of ["success", "failure"] as const) {
+    it.live(
+      `[TP-R14-11] failure without output does not reuse a previous ${previousOutcome} delivery`,
+      provideTmpdirInstance(() =>
+        Effect.gen(function* () {
+          const sessions = yield* SessionNs.Service
+          const registry = yield* ActorRegistry.Service
+          const waiter = yield* ActorWaiter.Service
+          const parent = yield* sessions.create({ title: "delivery isolation" })
+          yield* registry.register({
+            sessionID: parent.id,
+            actorID: "child",
+            mode: "subagent",
+            agent: "general",
+            description: "child",
+            contextMode: "none",
+            background: true,
+            lifecycle: "ephemeral",
+          })
+          yield* seedAssistantText(parent.id, "child", "OLD-RESULT")
+          const message = (yield* sessions.messages({ sessionID: parent.id, agentID: "child" })).findLast(
+            (m) => m.info.role === "assistant",
+          )!
+          if (message.info.role !== "assistant") throw new Error("missing assistant")
+          yield* sessions.updateMessage({ ...message.info, actorResult: { finalText: "OLD-RESULT" } })
+          yield* registry.updateStatus(parent.id, "child", {
+            status: "idle",
+            lastOutcome: previousOutcome,
+            resultMessageID: message.info.id,
+          })
+          expect((yield* waiter.wait({ sessionID: parent.id, actor_id: "child" })).result).toBe("OLD-RESULT")
+          yield* runTurn(parent.id, "child", Effect.fail("CURRENT-FAILURE")).pipe(Effect.exit)
+          const current = yield* waiter.wait({ sessionID: parent.id, actor_id: "child" })
+          expect(current.lastOutcome).toBe("failure")
+          expect(current.error).toContain("CURRENT-FAILURE")
+          expect(current.result).toBeUndefined()
+          expect(current.structured).toBeUndefined()
+          expect((yield* registry.get(parent.id, "child"))?.resultMessageID).toBeUndefined()
+          const prior = (yield* sessions.messages({ sessionID: parent.id, agentID: "child" })).find(
+            (m) => m.info.id === message.info.id,
+          )!
+          if (prior.info.role === "assistant") expect(prior.info.actorResult?.finalText).toBe("OLD-RESULT")
+        }),
+      ),
+    )
+  }
   // Test 1: ephemeral idle/success → resolves with result from slice's last assistant
   it.live(
     "ephemeral idle/success resolves with result text from last assistant message",
@@ -179,6 +269,72 @@ describe("ActorWaiter — lifecycle predicate (Plan 3 / Task 3)", () => {
     ),
   )
 
+  // Desktop tool-step-schema [TP-R14-11]: a missed event at the timeout
+  // boundary must not hide a persisted failure/cancellation.
+  for (const lastOutcome of ["failure", "cancelled"] as const) {
+    it.live(
+      `[TP-R14-11] timeout performs a final registry read for ${lastOutcome}`,
+      provideTmpdirInstance(() =>
+        Effect.gen(function* () {
+          const sessions = yield* SessionNs.Service
+          const registry = yield* ActorRegistry.Service
+          const parent = yield* sessions.create({ title: "timeout boundary" })
+          yield* registry.register({
+            sessionID: parent.id,
+            actorID: "child",
+            mode: "subagent",
+            agent: "general",
+            description: "child",
+            contextMode: "none",
+            background: true,
+            lifecycle: "ephemeral",
+          })
+          yield* registry.updateStatus(parent.id, "child", { status: "running" })
+          let reads = 0
+          const waiter = yield* Effect.gen(function* () {
+            const executions = yield* ActorExecution.Service
+            yield* executions.reserve(parent.id, "child")
+            return yield* ActorWaiter.Service
+          }).pipe(
+            Effect.provide(Layer.fresh(ActorWaiter.layer)),
+            Effect.provideService(
+              ActorRegistry.Service,
+              ActorRegistry.Service.of({
+                ...registry,
+                get: (sid, aid) =>
+                  Effect.gen(function* () {
+                    const entry = yield* registry.get(sid, aid)
+                    reads++
+                    // Simulate a commit after the subscription recheck has read its
+                    // snapshot. The bus callback in this test deliberately gets no event.
+                    if (reads === 2)
+                      yield* registry.updateStatus(sid, aid, {
+                        status: "idle",
+                        lastOutcome,
+                        lastError: lastOutcome === "failure" ? "boom" : undefined,
+                      })
+                    return entry
+                  }),
+              }),
+            ),
+            Effect.provideService(
+              Bus.Service,
+              Bus.Service.of({
+                ...(yield* Bus.Service),
+                subscribeCallback: () => Effect.succeed(() => {}),
+              }),
+            ),
+          )
+          const result = yield* waiter.wait({ sessionID: parent.id, actor_id: "child", timeout_ms: 10 })
+          expect(result.lastOutcome).toBe(lastOutcome)
+          expect(result.status).toBe("idle")
+          expect(result.error).toBe(lastOutcome === "failure" ? "boom" : undefined)
+          expect(reads).toBe(3)
+        }),
+      ),
+    )
+  }
+
   // Test 4: unknown actor → status: "unknown"
   it.live(
     "unknown actor returns status: unknown",
@@ -197,50 +353,53 @@ describe("ActorWaiter — lifecycle predicate (Plan 3 / Task 3)", () => {
     ),
   )
 
-  // Test 5: slow path — status flips during wait → callback resolves
-  // NOTE: This test is skipped in full-suite runs due to a cross-test Effect-runtime
-  // issue documented in the original waiter.test.ts (see the describe.skip comment).
-  // The feature works in production; the hang is in scope-close after the Deferred
-  // resolves, caused by cross-runtime interaction when other tests have pre-built
-  // AppRuntime at module scope.
-  it.live.skip(
-    "slow path: status flips during wait, callback resolves with idle/success",
-    provideTmpdirInstance(() =>
-      Effect.gen(function* () {
-        const sessions = yield* SessionNs.Service
-        const registry = yield* ActorRegistry.Service
-        const waiter = yield* ActorWaiter.Service
+  for (const lastOutcome of ["success", "failure", "cancelled"] as const) {
+    it.live(
+      `[TP-R14-11] slow path: status flips during wait, callback resolves with ${lastOutcome}`,
+      provideTmpdirInstance(() =>
+        Effect.gen(function* () {
+          const sessions = yield* SessionNs.Service
+          const registry = yield* ActorRegistry.Service
+          const waiter = yield* ActorWaiter.Service
 
-        const parent = yield* sessions.create({ title: "parent" })
-        yield* registry.register({
-          sessionID: parent.id,
-          actorID: "explore-2",
-          mode: "subagent",
-          parentActorID: undefined,
-          agent: "explore",
-          description: "in-flight",
-          contextMode: "none",
-          contextWatermark: undefined,
-          background: false,
-          lifecycle: "ephemeral",
-        })
-        yield* registry.updateStatus(parent.id, "explore-2", { status: "running" })
+          const parent = yield* sessions.create({ title: "parent" })
+          yield* registry.register({
+            sessionID: parent.id,
+            actorID: "explore-2",
+            mode: "subagent",
+            parentActorID: undefined,
+            agent: "explore",
+            description: "in-flight",
+            contextMode: "none",
+            contextWatermark: undefined,
+            background: false,
+            lifecycle: "ephemeral",
+          })
+          yield* registry.updateStatus(parent.id, "explore-2", { status: "running" })
+          const executions = yield* ActorExecution.Service
+          const execution = yield* executions.reserve(parent.id, "explore-2")
 
-        // Fork: after 50ms, flip to idle/success and seed a result message
-        yield* Effect.forkDetach(
-          Effect.gen(function* () {
-            yield* Effect.sleep("50 millis")
-            yield* seedAssistantText(parent.id, "explore-2", "result from slow path")
-            yield* registry.updateStatus(parent.id, "explore-2", { status: "idle", lastOutcome: "success" })
-          }),
-        )
+          yield* Effect.forkChild(
+            Effect.gen(function* () {
+              yield* Effect.sleep("50 millis")
+              yield* seedAssistantText(parent.id, "explore-2", "result from slow path")
+              yield* registry.updateStatus(parent.id, "explore-2", {
+                status: "idle",
+                lastOutcome,
+                lastError: lastOutcome === "failure" ? "execution failed" : undefined,
+              })
+            }),
+          )
 
-        const snap = yield* waiter.wait({ sessionID: parent.id, actor_id: "explore-2", timeout_ms: 2000 })
+          const snap = yield* waiter.wait({ sessionID: parent.id, actor_id: "explore-2", timeout_ms: 2000 })
 
-        expect(snap.status).toBe("idle")
-        expect(snap.lastOutcome).toBe("success")
-        expect(snap.result).toBe("result from slow path")
-      }),
-    ),
-  )
+          expect(snap.status).toBe("idle")
+          expect(snap.lastOutcome).toBe(lastOutcome)
+          yield* executions.release(execution)
+          expect(snap.result).toBe(lastOutcome === "success" ? "result from slow path" : undefined)
+          expect(snap.error).toBe(lastOutcome === "failure" ? "execution failed" : undefined)
+        }),
+      ),
+    )
+  }
 })

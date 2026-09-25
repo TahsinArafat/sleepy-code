@@ -311,6 +311,20 @@ test("loads project config from Cygwin paths on Windows", async () => {
   })
 })
 
+test("ignores removed auto_worktree without changing other config", async () => {
+  await using tmp = await tmpdir({
+    init: (dir) => writeConfig(dir, { $schema: "https://opencode.ai/config.json", model: "test/model", auto_worktree: true }),
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const config = await load()
+      expect(config.model).toBe("test/model")
+      expect(config).not.toHaveProperty("auto_worktree")
+    },
+  })
+})
+
 test("ignores legacy tui keys in opencode config", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
@@ -2612,31 +2626,46 @@ test("parseManagedPlist handles empty config", async () => {
   expect(config.$schema).toBe("https://opencode.ai/config.json")
 })
 
-describe("tool config inline struct", () => {
-  test("accepts invocation_style and invocation_style_by_tool", () => {
-    const config = Config.Info.parse({
-      $schema: "https://opencode.ai/config.json",
-      tool: { invocation_style: "shell", invocation_style_by_tool: { task: "shell", read: "json" } },
-    })
-    expect(config.tool?.invocation_style).toBe("shell")
-    expect(config.tool?.invocation_style_by_tool).toEqual({ task: "shell", read: "json" })
+test("ignores removed history kinds in existing configuration", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await writeConfig(dir, { history: { kinds: [] }, model: "test/model" })
+    },
   })
-
-  test("accepts empty tool object (all fields optional)", () => {
-    const config = Config.Info.parse({
-      $schema: "https://opencode.ai/config.json",
-      tool: {},
-    })
-    expect(config.tool?.invocation_style).toBeUndefined()
-    expect(config.tool?.invocation_style_by_tool).toBeUndefined()
-  })
-
-  test("rejects unknown invocation_style value", () => {
-    expect(() =>
-      Config.Info.parse({
-        $schema: "https://opencode.ai/config.json",
-        tool: { invocation_style: "verb" },
-      }),
-    ).toThrow()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const config = await load()
+      expect(config.model).toBe("test/model")
+      expect((config as Record<string, unknown>).history).toBeUndefined()
+    },
   })
 })
+
+for (const extension of ["json", "jsonc"]) {
+  it.live(`updateGlobal accepts removed history kinds in ${extension}`, () =>
+    provideTmpdirInstance(() => Effect.gen(function* () {
+      const original = Global.Path.config
+      const dir = yield* Effect.promise(() => fs.mkdtemp(path.join(original, "history-write-")))
+      const file = path.join(dir, `sleepycode.${extension}`)
+      const before = extension === "jsonc"
+        ? '{\n // keep this comment\n "history": {"kinds": []}, "model": "test/original"\n}'
+        : JSON.stringify({ history: { kinds: [] }, model: "test/original" })
+      yield* Effect.promise(() => Filesystem.write(file, before))
+      Global.Path.config = dir
+      try {
+        const svc = yield* Config.Service
+        const next = yield* svc.updateGlobal({ model: "test/updated" })
+        expect(next.model).toBe("test/updated")
+        expect((next as Record<string, unknown>).history).toBeUndefined()
+        const written = yield* Effect.promise(() => Filesystem.readText(file))
+        expect(ConfigParse.jsonc(written, file)).toMatchObject({ model: "test/updated" })
+        if (extension === "jsonc") expect(written).toContain("// keep this comment")
+        expect((yield* svc.get()).model).toBe("test/updated")
+      } finally {
+        Global.Path.config = original
+        yield* Effect.promise(() => fs.rm(dir, { recursive: true, force: true }))
+      }
+    }))
+  )
+}

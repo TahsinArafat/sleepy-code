@@ -1,4 +1,5 @@
-import { afterEach, describe, expect } from "bun:test"
+import { afterEach, describe, expect, spyOn } from "bun:test"
+import { spawnSync } from "node:child_process"
 import { Effect, Layer } from "effect"
 import { Database } from "../../src/storage"
 import { HistoryFtsTable } from "../../src/history/fts.sql"
@@ -32,7 +33,7 @@ function seedFts(rows: Array<Partial<typeof HistoryFtsTable.$inferInsert>>) {
           session_id: r.session_id ?? "ses_a",
           message_id: r.message_id ?? "msg_x",
           project_id: r.project_id ?? "proj_a",
-          kind: r.kind ?? "user_text",
+
           tool_name: r.tool_name ?? null,
           body: r.body!,
           time_created: r.time_created ?? Date.now(),
@@ -43,6 +44,50 @@ function seedFts(rows: Array<Partial<typeof HistoryFtsTable.$inferInsert>>) {
 }
 
 describe("History.search", () => {
+  it.live("Node SQLite matches FTS before applying selective project filters", () =>
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const project = Instance.project.id
+        seedFts([{ part_id: "p1", project_id: project, body: "needle" }])
+        const client = Database.Client().$client
+        const prepare = client.prepare.bind(client)
+        let query = ""
+        const capture = spyOn(client, "prepare").mockImplementation((sql, ...args) => {
+          if (sql.includes("history_fts_idx MATCH")) query = sql
+          return prepare(sql, ...args)
+        })
+        try {
+          const svc = yield* History.Service
+          expect((yield* svc.search({ query: "needle", scope: "project", limit: 5 })).map((hit) => hit.part_id)).toEqual(["p1"])
+        } finally {
+          capture.mockRestore()
+        }
+        expect(query).not.toBe("")
+        // Replay the actual service SQL under Node's SQLite planner, not Bun's.
+        const result = spawnSync("node", ["--input-type=module", "-e", `
+          import assert from "node:assert/strict"
+          import { readFileSync } from "node:fs"
+          import { DatabaseSync } from "node:sqlite"
+          const {query, project} = JSON.parse(readFileSync(0, "utf8"))
+          const db = new DatabaseSync(":memory:")
+          db.exec(readFileSync("migration/20260609000000_history_fts/migration.sql", "utf8"))
+          const insert = db.prepare("INSERT INTO history_fts(part_id,session_id,message_id,project_id,kind,body,time_created) VALUES(?,?,?,?,?,?,?)")
+          db.exec("BEGIN")
+          for (let i = 0; i < 3000; i++) insert.run("part_"+i,"ses_test","msg_test",i===0 ? project : "project_"+i,"text",i===0 ? "needle" : "common",1)
+          db.exec("COMMIT; ANALYZE")
+          const args = ['"needle"', project, 120]
+          const plan = db.prepare("EXPLAIN QUERY PLAN " + query).all(...args)
+          const loops = plan.filter(row => /^(SCAN|SEARCH) /.test(row.detail))
+          assert.match(loops[0].detail, /^SCAN history_fts_idx VIRTUAL TABLE/)
+          assert.match(loops[1].detail, /^SEARCH history_fts USING INTEGER PRIMARY KEY/)
+          assert.deepEqual(db.prepare(query).all(...args).map(row => row.part_id), ["part_0"])
+          db.close()
+        `], { cwd: new URL("../../", import.meta.url), input: JSON.stringify({ query, project }), encoding: "utf8", timeout: 10000 })
+        expect(result.status, result.stderr).toBe(0)
+      }),
+    ),
+  )
+
   it.live("returns BM25-ranked matches", () =>
     provideTmpdirInstance(() =>
       Effect.gen(function* () {
@@ -55,6 +100,7 @@ describe("History.search", () => {
         expect(r.length).toBe(1)
         expect(r[0].part_id).toBe("p1")
         expect(r[0].score).toBeGreaterThan(0)
+        expect(r[0]).not.toHaveProperty("kind")
       }),
     ),
   )
@@ -76,27 +122,12 @@ describe("History.search", () => {
     ),
   )
 
-  it.live("kind filter narrows results", () =>
-    provideTmpdirInstance(() =>
-      Effect.gen(function* () {
-        seedFts([
-          { part_id: "p1", kind: "user_text", body: "git log oneline" },
-          { part_id: "p2", kind: "tool_input", body: "Bash git log oneline" },
-        ])
-        const svc = yield* History.Service
-        const onlyTool = yield* svc.search({ query: "git", scope: "global", kind: "tool_input" })
-        expect(onlyTool.length).toBe(1)
-        expect(onlyTool[0].kind).toBe("tool_input")
-      }),
-    ),
-  )
-
   it.live("tool_name filter requires matching tool", () =>
     provideTmpdirInstance(() =>
       Effect.gen(function* () {
         seedFts([
-          { part_id: "p1", kind: "tool_input", tool_name: "Bash", body: "Bash git log" },
-          { part_id: "p2", kind: "tool_input", tool_name: "Read", body: "Read git log" },
+          { part_id: "p1", tool_name: "Bash", body: "Bash git log" },
+          { part_id: "p2", tool_name: "Read", body: "Read git log" },
         ])
         const svc = yield* History.Service
         const r = yield* svc.search({ query: "git", scope: "global", tool_name: "Bash" })
@@ -124,9 +155,7 @@ describe("History.search", () => {
   it.live("limit hard-capped at 50", () =>
     provideTmpdirInstance(() =>
       Effect.gen(function* () {
-        seedFts(
-          Array.from({ length: 60 }, (_, i) => ({ part_id: `p${i}`, body: "match" })),
-        )
+        seedFts(Array.from({ length: 60 }, (_, i) => ({ part_id: `p${i}`, body: "match" })))
         const svc = yield* History.Service
         const r = yield* svc.search({ query: "match", scope: "global", limit: 1000 })
         expect(r.length).toBe(50)
@@ -152,7 +181,9 @@ describe("History.around", () => {
       Effect.gen(function* () {
         const now = Date.now()
         Database.use((db) => {
-          db.insert(ProjectTable).values({ id: "p", worktree: "/tmp", sandboxes: [] as any, time_created: now, time_updated: now } as any).run()
+          db.insert(ProjectTable)
+            .values({ id: "p", worktree: "/tmp", sandboxes: [] as any, time_created: now, time_updated: now } as any)
+            .run()
           db.insert(SessionTable)
             .values({
               id: "ses_a" as any,

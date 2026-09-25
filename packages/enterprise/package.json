@@ -1,6 +1,6 @@
 {
   "name": "@sleepy-ai/enterprise",
-  "version": "0.1.13",
+  "version": "0.1.15",
   "private": true,
   "type": "module",
   "license": "MIT",

@@ -38,16 +38,13 @@ export const assertExternalDirectoryEffect = Effect.fn("Tool.assertExternalDirec
   // tasks/<taskId>/*.md and rejects cross-task / wrong-agent writes.
   if (AppFileSystem.contains(path.join(Global.Path.data, "memory"), full)) return
 
-  // Orchestrator-created worktrees live under <data>/worktree/<projectID>/<name>.
-  // They are TRUSTED, app-managed workspaces — a child session isolated into one is
-  // meant to work there freely. But a child's Instance boundary (directory/worktree)
-  // does not always contain the worktree path: an isolated peer whose worktree boot
-  // fails falls back to the shared/parent context, and a subagent inherits the
-  // spawner's (main-checkout) context. In those cases every in-worktree write hits
-  // external_directory:ask, and a background/isolated child has no interactive
-  // replier — so the ask hangs on a never-resolved Deferred and the child deadlocks.
-  // Since this base is created and owned by the app itself (not a foreign user path),
-  // trust it here, exactly as the memory subtree above. Genuinely external user paths
+  // App-managed worktrees live under <data>/worktree/<projectID>/<name>. They are
+  // TRUSTED workspaces created and owned by the app itself (workflow isolation and
+  // related tooling), not foreign user paths. A subagent may inherit the spawner's
+  // (main-checkout) Instance boundary, which does not contain the worktree path —
+  // every in-worktree write would then hit external_directory:ask, and a background
+  // child has no interactive replier so the ask fails closed. Trust the managed
+  // base here, exactly as the memory subtree above. Genuinely external user paths
   // are unaffected and still prompt.
   if (AppFileSystem.contains(path.join(Global.Path.data, "worktree"), full)) return
 
@@ -93,18 +90,14 @@ const memoryWriteEnabled = Effect.gen(function* () {
 
 /**
  * The single write-permission gate for file-mutating tools (edit, write,
- * apply_patch). Runs the two checks every write must pass, in order:
+ * apply_patch, notebook_edit). Runs every write check in order:
  *   1. external_directory — asks before touching paths outside the worktree
  *      (defers the memory subtree to the memory guard; see the early return above).
- *   2. memory-path-guard — finer authority over the memory tree: a task-bound
- *      subagent may write its own tasks/<taskId>/*.md, the checkpoint-writer its
- *      canonical paths, and everything else is rejected.
+ *   2. memory-path-guard — finer authority over the memory tree.
  *
- * Collapsing both into one call removes the per-tool duplication and, more
- * importantly, makes "call external_directory but forget the memory guard"
- * unrepresentable — a new write tool that calls this one gate cannot drift into
- * leaving the memory tree unguarded. Read-only tools (read/grep/glob/lsp) keep
- * calling assertExternalDirectoryEffect directly; the memory guard is write-only.
+ * Collapsing into one call makes "call one gate but forget another"
+ * unrepresentable — a new write tool that calls this cannot drift into
+ * leaving memory unguarded.
  */
 export const assertWriteAllowed = Effect.fn("Tool.assertWriteAllowed")(function* (
   ctx: Tool.Context,

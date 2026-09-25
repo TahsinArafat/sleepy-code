@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test"
+import { describe, expect, spyOn, test } from "bun:test"
 import { Effect } from "effect"
 import path from "path"
 import { GlobalBus } from "../../src/bus/global"
@@ -7,14 +7,9 @@ import { Instance } from "../../src/project/instance"
 import { Server } from "../../src/server/server"
 import { Filesystem } from "../../src/util"
 import { Log } from "../../src/util"
-import { resetDatabase } from "../fixture/db"
 import { provideInstance, tmpdir, withTmpdirOutsideGit } from "../fixture/fixture"
 
 void Log.init({ print: false })
-
-afterEach(async () => {
-  await resetDatabase()
-})
 
 // This test needs a tmpdir OUTSIDE any git repo so project detection doesn't
 // inherit a parent .git. Serving a directory outside cwd is only allowed when the

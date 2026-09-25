@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect } from "bun:test"
-import { Effect, Fiber, Layer } from "effect"
+import { Deferred, Effect, Fiber, Layer } from "effect"
 import { Bus } from "../../src/bus"
 import * as CrossSpawnSpawner from "../../src/effect/cross-spawn-spawner"
 import { Permission } from "../../src/permission"
@@ -17,14 +17,14 @@ afterEach(async () => {
 
 beforeEach(() => {
   forwardRef.parentGrants.clear()
-  forwardRef.clearGrantsForParent("ses_parent")
+  forwardRef.clearParentGrants("ses_parent")
 })
 
 const bus = Bus.layer
 const env = Layer.mergeAll(Permission.layer.pipe(Layer.provide(bus)), bus, CrossSpawnSpawner.defaultLayer)
 const it = testEffect(env)
 
-// A background subagent's ask that would otherwise fail closed (interactive:false).
+// Direct service requests default to non-interactive for fail-closed coverage.
 function childAsk(patterns: string[], extra?: Partial<Parameters<Permission.Interface["ask"]>[0]>) {
   return {
     permission: "edit" as never,
@@ -41,8 +41,44 @@ function childAsk(patterns: string[], extra?: Partial<Parameters<Permission.Inte
 }
 
 describe("Permission.ask parent-grant inheritance", () => {
+  for (const granted of [true, false]) {
+    it.live(
+      `[TP-R20-03] interactive subagent ${granted ? "inherits a matching grant without asking" : "asks and resumes when inheritance misses"}`,
+      provideTmpdirInstance(() =>
+        Effect.gen(function* () {
+          const perm = yield* Permission.Service
+          forwardRef.setParentGrants("ses_parent", {
+            ruleset: [],
+            approved: [{ permission: "edit", pattern: "/granted/dir/*", action: "allow" }],
+          })
+          let asked = 0
+          const askedEvent = yield* Deferred.make<void>()
+          const events = yield* Bus.Service
+          const unsub = yield* events.subscribeCallback(Permission.Event.Asked, () => {
+            asked += 1
+            Effect.runSync(Deferred.succeed(askedEvent, undefined))
+          })
+          yield* Effect.addFinalizer(() => Effect.sync(unsub))
+          const fiber = yield* perm.ask(childAsk(
+            [granted ? "/granted/dir/file.ts" : "/foreign/dir/file.ts"],
+            { interactive: true },
+          )).pipe(Effect.forkScoped)
+          if (!granted) {
+            yield* Deferred.await(askedEvent)
+            const [pending] = yield* perm.list()
+            expect(asked).toBe(1)
+            yield* perm.reply({ requestID: pending.id, reply: "once" })
+          }
+          expect((yield* Fiber.await(fiber))._tag).toBe("Success")
+          expect(asked).toBe(granted ? 0 : 1)
+          expect(yield* perm.list()).toHaveLength(0)
+        }),
+      ),
+    )
+  }
+
   it.live(
-    "ordinary background subagent auto-allowed for a dir the parent granted",
+    "non-interactive child request auto-allowed for a dir the parent granted",
     provideTmpdirInstance(() =>
       Effect.gen(function* () {
         const perm = yield* Permission.Service
@@ -66,7 +102,7 @@ describe("Permission.ask parent-grant inheritance", () => {
   )
 
   it.live(
-    "ordinary background subagent still fails closed for an ungranted dir",
+    "non-interactive child request still fails closed for an ungranted dir",
     provideTmpdirInstance(() =>
       Effect.gen(function* () {
         const perm = yield* Permission.Service
@@ -89,7 +125,7 @@ describe("Permission.ask parent-grant inheritance", () => {
   )
 
   it.live(
-    "same-session actor subagent inherits parent always-grant",
+    "same-session non-interactive request inherits parent always-grant",
     provideTmpdirInstance(() =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -114,8 +150,7 @@ describe("Permission.ask parent-grant inheritance", () => {
           yield* perm.reply({ requestID: pending.id, reply: "always" })
           yield* Fiber.await(fiber)
 
-          // Same-session subagent: decideAskRouting inherits under the shared
-          // session id. Still non-interactive; the always-grant auto-allows.
+          // A persisted grant also allows a non-interactive request in this session.
           const result = yield* perm
             .ask({
               permission: "bash" as never,
@@ -189,95 +224,7 @@ describe("Permission.ask parent-grant inheritance", () => {
   )
 })
 
-// An EXPLICIT `session grant-approval <child|all>` must reach a background
-// SUBAGENT too. decideAskRouting routes such a child to `inherit` (never to
-// `forward`), so before this the DB-backed grant was consulted nowhere on the
-// subagent's path: `grant-approval` silently did nothing and the child's
-// external_directory ask failed closed. Unlike the in-memory parentGrants
-// snapshot, this grant survives a restart and a separate-process child, so it
-// cannot lapse mid-task.
-describe("Permission.ask explicit grant-approval reaches a background subagent", () => {
-  it.live(
-    "grant-approval for this child auto-approves with NO parent snapshot at all",
-    provideTmpdirInstance(() =>
-      Effect.gen(function* () {
-        const perm = yield* Permission.Service
-        forwardRef.setGrant("ses_parent", "ses_child")
-        let asked = 0
-        const unsub = Bus.subscribe(Permission.Event.Asked, () => {
-          asked += 1
-        })
-        // No setParentGrants: this is exactly the "snapshot missing / lapsed"
-        // case (separate-process child, or a parent that never asked).
-        const result = yield* perm
-          .ask(childAsk(["/Users/me/projects/app/*"], { permission: "external_directory" as never }))
-          .pipe(Effect.exit)
-        unsub()
-        expect(result._tag).toBe("Success")
-        expect(asked).toBe(0)
-        expect((yield* perm.list()).length).toBe(0)
-      }),
-    ),
-  )
-
-  it.live(
-    "an 'all' grant covers any child of that parent",
-    provideTmpdirInstance(() =>
-      Effect.gen(function* () {
-        const perm = yield* Permission.Service
-        forwardRef.setGrant("ses_parent", "*")
-        const result = yield* perm
-          .ask(childAsk(["/anywhere/x.ts"], { sessionID: "ses_other_child" as never }))
-          .pipe(Effect.exit)
-        expect(result._tag).toBe("Success")
-      }),
-    ),
-  )
-
-  it.live(
-    "WITHOUT a grant and without a snapshot the subagent still fails closed",
-    provideTmpdirInstance(() =>
-      Effect.gen(function* () {
-        const perm = yield* Permission.Service
-        const result = yield* perm.ask(childAsk(["/ungranted/x.ts"])).pipe(Effect.exit)
-        expect(result._tag).toBe("Failure")
-      }),
-    ),
-  )
-
-  it.live(
-    "a grant for a DIFFERENT child does not leak to this one",
-    provideTmpdirInstance(() =>
-      Effect.gen(function* () {
-        const perm = yield* Permission.Service
-        forwardRef.setGrant("ses_parent", "ses_someone_else")
-        const result = yield* perm.ask(childAsk(["/ungranted/x.ts"])).pipe(Effect.exit)
-        expect(result._tag).toBe("Failure")
-      }),
-    ),
-  )
-
-  it.live(
-    "forced-ask (bash_delete) is NOT auto-approved by a grant",
-    provideTmpdirInstance(() =>
-      Effect.gen(function* () {
-        const perm = yield* Permission.Service
-        forwardRef.setGrant("ses_parent", "*")
-        const result = yield* perm
-          .ask(childAsk(["rm -rf /"], { permission: "bash_delete" as never }))
-          .pipe(Effect.exit)
-        expect(result._tag).toBe("Failure")
-      }),
-    ),
-  )
-})
-
-/**
- * Background subagent ask shape after decideAskRouting:
- * interactive:false, inherit: { parentSessionID: current session } when the
- * actor row is a background subagent with a session id.
- */
-function subagentAsk(extra?: Partial<Parameters<Permission.Interface["ask"]>[0]>) {
+function nonInteractiveInheritAsk(extra?: Partial<Parameters<Permission.Interface["ask"]>[0]>) {
   return {
     permission: "bash" as never,
     patterns: ["wc -l /tmp/foo"],
@@ -292,9 +239,9 @@ function subagentAsk(extra?: Partial<Parameters<Permission.Interface["ask"]>[0]>
   }
 }
 
-describe("skip-all inheritance for background subagents", () => {
+describe("Permission service non-interactive inheritance with skip-all", () => {
   it.live(
-    "skipAll=true + production inherit shape → auto-allow, no human ask",
+    "skipAll=true + non-interactive inherit → auto-allow, no human ask",
     provideTmpdirInstance(() =>
       Effect.gen(function* () {
         const perm = yield* Permission.Service
@@ -303,9 +250,8 @@ describe("skip-all inheritance for background subagents", () => {
         const unsub = Bus.subscribe(Permission.Event.Asked, () => {
           asked += 1
         })
-        // Production routing always attaches inherit. skip-all must still win
-        // even when the parent snapshot has no matching allow.
-        const result = yield* perm.ask(subagentAsk()).pipe(Effect.exit)
+        // skip-all must win even when the parent snapshot has no matching allow.
+        const result = yield* perm.ask(nonInteractiveInheritAsk()).pipe(Effect.exit)
         unsub()
         expect(result._tag).toBe("Success")
         expect(asked).toBe(0)
@@ -328,7 +274,7 @@ describe("skip-all inheritance for background subagents", () => {
         })
         const result = yield* perm
           .ask(
-            subagentAsk({
+            nonInteractiveInheritAsk({
               inherit: { parentSessionID: "ses_parent" },
             }),
           )
@@ -348,7 +294,7 @@ describe("skip-all inheritance for background subagents", () => {
         const perm = yield* Permission.Service
         // No prior always-grant under ses_main. The child's own ask() publishes
         // an empty snapshot first, then inherit finds nothing to allow.
-        const result = yield* perm.ask(subagentAsk()).pipe(Effect.exit)
+        const result = yield* perm.ask(nonInteractiveInheritAsk()).pipe(Effect.exit)
         expect(result._tag).toBe("Failure")
       }),
     ),
@@ -376,8 +322,114 @@ describe("skip-all inheritance for background subagents", () => {
         // Child with inherit only (skip-all OFF) must NOT be saved by inherit,
         // because full access never wrote an allow into the parent snapshot.
         yield* perm.setSkipAll(false)
-        const child = yield* perm.ask(subagentAsk()).pipe(Effect.exit)
+        const child = yield* perm.ask(nonInteractiveInheritAsk()).pipe(Effect.exit)
         expect(child._tag).toBe("Failure")
+      }),
+    ),
+  )
+})
+
+describe("[TP-R20-07] Permission.reply reject source isolation", () => {
+  it.live(
+    "reject does not cascade to a different tool.messageID source",
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const perm = yield* Permission.Service
+        const askA = yield* perm
+          .ask({
+            permission: "bash" as never,
+            patterns: ["sudo ls"],
+            always: ["*"],
+            metadata: {},
+            sessionID: "ses_main" as never,
+            ruleset: [],
+            tool: { messageID: "msg_a" as never, callID: "c_a" },
+          })
+          .pipe(Effect.forkScoped)
+        const askB = yield* perm
+          .ask({
+            permission: "bash" as never,
+            patterns: ["sudo ls"],
+            always: ["*"],
+            metadata: {},
+            sessionID: "ses_main" as never,
+            ruleset: [],
+            tool: { messageID: "msg_b" as never, callID: "c_b" },
+          })
+          .pipe(Effect.forkScoped)
+        while ((yield* perm.list()).length < 2) {
+          yield* Effect.promise(() => Bun.sleep(10))
+        }
+        const pending = yield* perm.list()
+        const a = pending.find((x) => x.tool?.callID === "c_a")!
+        yield* perm.reply({ requestID: a.id, reply: "reject" })
+        // R20: reject A 不得连坐 B — B 仍留在 pending
+        const left = yield* perm.list()
+        expect(left.length).toBe(1)
+        expect(left[0]!.tool?.callID).toBe("c_b")
+        yield* Fiber.interrupt(askA).pipe(Effect.ignore)
+        yield* Fiber.interrupt(askB).pipe(Effect.ignore)
+      }),
+    ),
+  )
+
+  it.live(
+    "reject cascades only within the same tool.messageID",
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const perm = yield* Permission.Service
+        const askA = yield* perm
+          .ask({
+            permission: "bash" as never, patterns: ["sudo ls"], always: ["*"], metadata: {},
+            sessionID: "ses_main" as never, ruleset: [],
+            tool: { messageID: "msg_a" as never, callID: "c_a" },
+          })
+          .pipe(Effect.forkScoped)
+        const askA2 = yield* perm
+          .ask({
+            permission: "bash" as never, patterns: ["sudo ls"], always: ["*"], metadata: {},
+            sessionID: "ses_main" as never, ruleset: [],
+            tool: { messageID: "msg_a" as never, callID: "c_a2" },
+          })
+          .pipe(Effect.forkScoped)
+        while ((yield* perm.list()).length < 2) yield* Effect.promise(() => Bun.sleep(10))
+        const pending = yield* perm.list()
+        const a = pending.find((x) => x.tool?.callID === "c_a")!
+        yield* perm.reply({ requestID: a.id, reply: "reject" })
+        expect((yield* perm.list()).length).toBe(0)
+        yield* Fiber.interrupt(askA).pipe(Effect.ignore)
+        yield* Fiber.interrupt(askA2).pipe(Effect.ignore)
+      }),
+    ),
+  )
+
+  it.live(
+    "reject does not cascade when either side lacks tool.messageID",
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const perm = yield* Permission.Service
+        const askNamed = yield* perm
+          .ask({
+            permission: "bash" as never, patterns: ["sudo ls"], always: ["*"], metadata: {},
+            sessionID: "ses_main" as never, ruleset: [],
+            tool: { messageID: "msg_a" as never, callID: "c_a" },
+          })
+          .pipe(Effect.forkScoped)
+        const askAnon = yield* perm
+          .ask({
+            permission: "bash" as never, patterns: ["sudo ls"], always: ["*"], metadata: {},
+            sessionID: "ses_main" as never, ruleset: [],
+          })
+          .pipe(Effect.forkScoped)
+        while ((yield* perm.list()).length < 2) yield* Effect.promise(() => Bun.sleep(10))
+        const pending = yield* perm.list()
+        const a = pending.find((x) => x.tool?.callID === "c_a")!
+        yield* perm.reply({ requestID: a.id, reply: "reject" })
+        const left = yield* perm.list()
+        expect(left.length).toBe(1)
+        expect(left[0]!.tool?.callID ?? "no-tool").toBe("no-tool")
+        yield* Fiber.interrupt(askNamed).pipe(Effect.ignore)
+        yield* Fiber.interrupt(askAnon).pipe(Effect.ignore)
       }),
     ),
   )

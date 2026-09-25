@@ -126,7 +126,7 @@ SleepyCode записывает метаданные провайдера в с�
 - условия показа `view_image` и проверка поддержки изображений во время выполнения согласованы не полностью;
 - `files.readText` полагается на ограничение путей и не выполняет обычный запрос разрешения `read`;
 - QuickJS не обеспечивает для Bash изоляцию на уровне операционной системы;
-- тесты профиля GPT для `exec`, описания Bash, `skill_search` и `multiedit` в [`registry-invocation-style.test.ts`](../../packages/opencode/test/tool/registry-invocation-style.test.ts#L17) сейчас пропущены.
+- тесты профиля GPT для `exec`, описания Bash, `skill_search` и `multiedit` в [`registry-toolset.test.ts`](../../packages/opencode/test/tool/registry-toolset.test.ts#L17) сейчас пропущены.
 
 ## Ключевые исходные файлы
 

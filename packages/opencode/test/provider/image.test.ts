@@ -7,9 +7,11 @@ import {
   DEFAULT_MAX_IMAGE_BYTES,
   DEFAULT_MAX_IMAGE_DIMENSION,
   imageDimensions,
+  ImageInputError,
   jpegMemoryBudget,
   MAX_DECODE_IMAGE_PIXELS,
   MAX_JPEG_DECODE_MEMORY_MB,
+  prepareImage,
 } from "../../src/provider/image"
 
 // --- helpers -------------------------------------------------------------
@@ -112,6 +114,15 @@ describe("imageDimensions - header-only inspection", () => {
 
   test("reads GIF logical screen dimensions", () => {
     expect(imageDimensions("image/gif", gifHeader(3210, 987))).toEqual({ width: 3210, height: 987 })
+  })
+
+  test("reads BMP dimensions from BITMAPINFOHEADER", () => {
+    const bytes = Buffer.alloc(54)
+    bytes.write("BM", 0, "ascii")
+    bytes.writeUInt32LE(40, 14)
+    bytes.writeInt32LE(3210, 18)
+    bytes.writeInt32LE(987, 22)
+    expect(imageDimensions("image/bmp", bytes)).toEqual({ width: 3210, height: 987 })
   })
 
   test("rejects malformed headers", () => {
@@ -332,5 +343,104 @@ describe("compressImage - undecodable formats return undefined", () => {
 
   test("empty buffer returns undefined", () => {
     expect(compressImage("image/png", Buffer.alloc(0), DEFAULT_MAX_IMAGE_BYTES)).toBeUndefined()
+  })
+})
+
+function encodeBmp(
+  width: number,
+  height: number,
+  paint: (x: number, y: number) => [number, number, number, number],
+) {
+  const rowSize = Math.floor((24 * width + 31) / 32) * 4
+  const pixelSize = rowSize * height
+  const bytes = Buffer.alloc(54 + pixelSize)
+  bytes.write("BM", 0, "ascii")
+  bytes.writeUInt32LE(bytes.length, 2)
+  bytes.writeUInt32LE(54, 10)
+  bytes.writeUInt32LE(40, 14)
+  bytes.writeInt32LE(width, 18)
+  bytes.writeInt32LE(height, 22)
+  bytes.writeUInt16LE(1, 26)
+  bytes.writeUInt16LE(24, 28)
+  bytes.writeUInt32LE(pixelSize, 34)
+  for (let y = 0; y < height; y++) {
+    const fileRow = height - 1 - y
+    for (let x = 0; x < width; x++) {
+      const [r, g, b] = paint(x, y)
+      const i = 54 + fileRow * rowSize + x * 3
+      bytes[i] = b
+      bytes[i + 1] = g
+      bytes[i + 2] = r
+    }
+  }
+  return bytes
+}
+
+const visionModel = {
+  id: "gpt-4o",
+  providerID: "openai",
+  api: { npm: "@ai-sdk/openai", id: "gpt-4o" },
+  capabilities: { input: { text: true, image: true, audio: false } },
+} as any
+
+describe("prepareImage - sniff, verify, and transcode", () => {
+  test("sends JPEG bytes as image/jpeg even when claimed as PNG", () => {
+    const bytes = encodeJpeg(2, 2, () => [10, 20, 30, 255])
+    const out = prepareImage(bytes, "image/png", visionModel)
+    expect(out.mime).toBe("image/jpeg")
+    expect(out.bytes.equals(bytes)).toBe(true)
+  })
+
+  test("converts a vendor-unsupported BMP to PNG", () => {
+    const bytes = encodeBmp(2, 2, (x, y) => [x === 0 ? 255 : 0, y === 0 ? 255 : 0, 128, 255])
+    const out = prepareImage(bytes, "image/bmp", visionModel)
+    expect(out.mime).toBe("image/png")
+    const decoded = PNG.sync.read(out.bytes)
+    expect(decoded.width).toBe(2)
+    expect(decoded.height).toBe(2)
+    expect(decoded.data[0]).toBe(255)
+    expect(decoded.data[1]).toBe(255)
+    expect(decoded.data[2]).toBe(128)
+  })
+
+  test("converts a BMP claimed as PNG to PNG from sniffed bytes", () => {
+    const bytes = encodeBmp(1, 1, () => [1, 2, 3, 255])
+    const out = prepareImage(bytes, "image/png", visionModel)
+    expect(out.mime).toBe("image/png")
+    expect(out.bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))).toBe(true)
+  })
+
+  test("throws ImageInputError for a truncated BMP that cannot be decoded", () => {
+    const bytes = Buffer.from([0x42, 0x4d, 0x00, 0x00])
+    try {
+      prepareImage(bytes, "image/bmp", visionModel)
+      throw new Error("expected ImageInputError")
+    } catch (error) {
+      expect(ImageInputError.isInstance(error)).toBe(true)
+      if (ImageInputError.isInstance(error)) expect(error.data.reason).toBe("corrupt")
+    }
+  })
+
+  test("throws ImageInputError for corrupt PNG and does not return bytes", () => {
+    try {
+      prepareImage(Buffer.from("not a png"), "image/png", visionModel)
+      throw new Error("expected ImageInputError")
+    } catch (error) {
+      expect(ImageInputError.isInstance(error)).toBe(true)
+      if (ImageInputError.isInstance(error)) {
+        expect(error.data.reason).toBe("corrupt")
+        expect(error.data.message).toContain("was not sent to the model")
+      }
+    }
+  })
+
+  test("throws ImageInputError for an empty buffer", () => {
+    try {
+      prepareImage(Buffer.alloc(0), "image/png", visionModel)
+      throw new Error("expected ImageInputError")
+    } catch (error) {
+      expect(ImageInputError.isInstance(error)).toBe(true)
+      if (ImageInputError.isInstance(error)) expect(error.data.reason).toBe("empty")
+    }
   })
 })

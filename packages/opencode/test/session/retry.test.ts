@@ -1,18 +1,24 @@
-import { describe, expect, test } from "bun:test"
-import type { NamedError } from "@sleepy-ai/shared/util/error"
-import { APICallError, RetryError } from "ai"
+import { describe, expect, test, afterEach } from "bun:test"
+import { NamedError } from "@sleepy-ai/shared/util/error"
+import { APICallError, RetryError, generateText } from "ai"
 import { setTimeout as sleep } from "node:timers/promises"
-import { Effect, Schedule, Schema } from "effect"
+import { Clock, Effect, Exit, Fiber, Schedule, Schema } from "effect"
+import * as TestClock from "effect/testing/TestClock"
+import { it } from "../lib/effect"
 import { ConfigRetry } from "../../src/config/retry"
-import { SessionRetry, decide, isRetryableTransientError, retryable } from "../../src/session/retry"
+import { SessionRetry, decide, isRetryableTransientError, retryable, budgetFor } from "../../src/session/retry"
+import { loadHostErrorCatalog, bindHostError, isSafetyTerminal } from "../../src/error/host-registry"
 import { MessageV2 } from "../../src/session/message-v2"
 import { ProviderID } from "../../src/provider/schema"
+import { ProviderError } from "../../src/provider"
 import { allowsModelNotFoundRetry } from "../../src/provider/error"
 import { AppRuntime } from "../../src/effect/app-runtime"
 import { SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
 import { Instance } from "../../src/project/instance"
 import { tmpdir } from "../fixture/fixture"
+
+afterEach(() => { loadHostErrorCatalog({ protocolVersion: 2, rules: [] }) })
 
 const providerID = ProviderID.make("test")
 
@@ -195,18 +201,65 @@ describe("session.retry.retryable", () => {
         test: { retry: { network: { mode: "persistent", deadlineMs: 60000 }, stream: { maxRetries: 12 } } },
       },
     }, "test")
-    expect(resolved.network).toMatchObject({ mode: "persistent", maxRetries: undefined, maxElapsedMs: 60000, initialDelayMs: 100, maxDelayMs: 1000 })
+    expect(resolved.network).toMatchObject({ mode: "persistent", maxRetries: undefined, maxElapsedMs: 0, initialDelayMs: 100, maxDelayMs: 1000 })
     expect(resolved.stream.maxRetries).toBe(12)
   })
 
-  test("selects a long network budget without widening request server retries", () => {
+  test("defaults: unknown stays bounded; network/rateLimit/server are persistent", () => {
     const resolved = SessionRetry.resolve(undefined, "test")
-    expect(SessionRetry.budgetFor(resolved, { retryable: true, phase: "stream", scope: "live-step", kind: "network", message: "reset" }).mode).toBe("persistent")
-    expect(SessionRetry.budgetFor(resolved, { retryable: true, phase: "request", scope: "request", kind: "server", message: "503" }).maxRetries).toBe(4)
-    expect(SessionRetry.budgetFor(resolved, { retryable: true, phase: "request", scope: "request", kind: "network", message: "reset" }).maxRetries).toBe(4)
     expect(resolved.unknown).toMatchObject({ maxRetries: 8, maxElapsedMs: 15 * 60_000 })
     expect(resolved.request.jitterRatio).toBe(0.1)
-    expect(resolved.network.jitterRatio).toBe(0)
+    expect(resolved.network).toMatchObject({ mode: "persistent", maxRetries: undefined, maxElapsedMs: 0, jitterRatio: 0 })
+    expect(resolved.rateLimit.mode).toBe("persistent")
+    expect(resolved.rateLimit.maxRetries).toBeUndefined()
+    expect(resolved.server.mode).toBe("persistent")
+    expect(resolved.server.maxRetries).toBeUndefined()
+  })
+
+  test("network / rate_limit / server stay persistent even in request phase", () => {
+    const resolved = SessionRetry.resolve(undefined, "test")
+    expect(SessionRetry.budgetFor(resolved, { retryable: true, phase: "stream", scope: "live-step", kind: "network", message: "reset" }).mode).toBe("persistent")
+    const requestNetwork = SessionRetry.budgetFor(resolved, { retryable: true, phase: "request", scope: "request", kind: "network", message: "ENOTFOUND" })
+    expect(requestNetwork.mode).toBe("persistent")
+    expect(requestNetwork.maxRetries).toBeUndefined()
+    expect(requestNetwork.maxElapsedMs).toBe(0)
+    const requestServer = SessionRetry.budgetFor(resolved, { retryable: true, phase: "request", scope: "request", kind: "server", message: "503" })
+    expect(requestServer.mode).toBe("persistent")
+    const requestRateLimit = SessionRetry.budgetFor(resolved, { retryable: true, phase: "request", scope: "request", kind: "rate_limit", message: "429" })
+    expect(requestRateLimit.mode).toBe("persistent")
+    expect(SessionRetry.budgetFor(resolved, { retryable: true, phase: "request", scope: "request", kind: "unknown", message: "x" }).maxRetries).toBe(4)
+    expect(SessionRetry.budgetFor(resolved, { retryable: true, phase: "stream", scope: "max-candidate", kind: "network", message: "reset" }).maxRetries).toBe(3)
+  })
+
+  test("classifies ENOTFOUND / Cannot connect to API as network", () => {
+    const dns = new Error("Cannot connect to API: getaddrinfo ENOTFOUND example.internal.srv")
+    ;(dns as Error & { code?: string }).code = "ENOTFOUND"
+    const decision = decide(dns)
+    expect(decision.retryable).toBe(true)
+    expect(decision.kind).toBe("network")
+    expect(ProviderError.isRetryableNetworkError(dns)).toBe(true)
+    expect(decide(new Error("getaddrinfo EAI_AGAIN example.internal.srv")).kind).toBe("network")
+  })
+
+  test("transport classification is shape-based, not a closed code allow-list", () => {
+    // Unlisted undici code still transport
+    const undici = Object.assign(new Error("other side closed"), { code: "UND_ERR_CLOSED" })
+    expect(ProviderError.isTransportErrnoCode("UND_ERR_CLOSED")).toBe(true)
+    expect(ProviderError.isRetryableNetworkError(undici)).toBe(true)
+    // Unlisted network errno family still transport
+    expect(ProviderError.isTransportErrnoCode("ECONNREFUSED")).toBe(true)
+    expect(ProviderError.isTransportErrnoCode("EAI_NODATA")).toBe(true)
+    expect(ProviderError.isTransportErrnoCode("ENETRESET")).toBe(true)
+    // Local fs/process errors are NOT transport
+    expect(ProviderError.isTransportErrnoCode("ENOENT")).toBe(false)
+    expect(ProviderError.isTransportErrnoCode("EACCES")).toBe(false)
+    expect(ProviderError.isTransportErrnoCode("EINVAL")).toBe(false)
+    expect(ProviderError.isRetryableNetworkError(Object.assign(new Error("missing"), { code: "ENOENT" }))).toBe(false)
+    // User abort is never network
+    expect(ProviderError.isRetryableNetworkError(Object.assign(new Error("aborted"), { name: "AbortError", code: "ABORT_ERR" }))).toBe(false)
+    // Nested cause chain: outer message clean, inner code is transport
+    const nested = new Error("request failed", { cause: Object.assign(new Error("boom"), { code: "ECONNRESET" }) })
+    expect(ProviderError.isRetryableNetworkError(nested)).toBe(true)
   })
 
   test("caps retry-after by the selected budget", () => {
@@ -236,6 +289,30 @@ describe("session.retry.retryable", () => {
       const error = new MessageV2.APIError({ message: "failure", statusCode, isRetryable: true }).toObject()
       expect(decide(error)).toMatchObject({ retryable: false, kind: "terminal", statusCode })
     }
+  })
+
+  // A gateway error label must not turn an unauthorized response into a stream retry.
+  test("does not retry an unmatched upstream_error HTTP 401", () => {
+    const body = JSON.stringify({ error: { type: "upstream_error", code: "401", message: "Access denied due to invalid subscription key or wrong API endpoint" } })
+    const unauthorized = new MessageV2.APIError({ message: "Access denied", statusCode: 401, isRetryable: false, responseBody: body }).toObject()
+    for (const phase of ["request", "stream"] as const) {
+      expect(decide(unauthorized, phase)).toMatchObject({ retryable: false, phase, kind: "terminal", statusCode: 401 })
+    }
+
+    expect(loadHostErrorCatalog({ protocolVersion: 2, rules: [{
+      match: { providerID, statusCode: 401, response: { kind: "json", value: JSON.parse(body) } },
+      code: "host.temporary", retryClass: "bounded",
+    }] }).ok).toBe(true)
+    const matched = bindHostError(new APICallError({
+      message: "Access denied", url: "https://example.test", requestBodyValues: {},
+      responseBody: body, statusCode: 401, isRetryable: false,
+    }), { providerID })
+    expect(decide(MessageV2.fromError(matched, { providerID }), "request")).toMatchObject({
+      retryable: true, hostCode: "host.temporary", hostRetryClass: "bounded", statusCode: 401,
+    })
+
+    const unavailable = new MessageV2.APIError({ message: "Service unavailable", statusCode: 503, isRetryable: true, responseBody: JSON.stringify({ error: { type: "upstream_error", message: "Temporary failure" } }) }).toObject()
+    expect(decide(unavailable, "stream")).toMatchObject({ retryable: true, kind: "stream", statusCode: 503 })
   })
 
   test("only retries provider-specific compatible 404 responses", () => {
@@ -671,6 +748,138 @@ describe("session.message-v2.fromError unwraps AI_RetryError", () => {
   })
 })
 
+describe("native retry facts", () => {
+  test("real SDK retry history cannot turn a final TypeError into persistent recovery", async () => {
+    let calls = 0
+    const model = {
+      specificationVersion: "v3" as const,
+      provider: "test-native",
+      modelId: "test",
+      supportedUrls: {},
+      async doGenerate(): Promise<never> {
+        if (++calls === 1) throw new APICallError({
+          message: "Request timed out", statusCode: 408, url: "https://example.com",
+          requestBodyValues: {}, isRetryable: true,
+        })
+        throw new TypeError("invalid content.map")
+      },
+      async doStream(): Promise<never> { throw new Error("Unexpected stream call") },
+    }
+    const raw = await generateText({ model, prompt: "test", maxRetries: 1 }).then(
+      () => { throw new Error("Expected SDK failure") },
+      (error: unknown) => error,
+    )
+    expect(RetryError.isInstance(raw)).toBe(true)
+    expect(calls).toBe(2)
+    const normalized = MessageV2.fromError(raw, { providerID })
+    for (const error of [normalized, JSON.parse(JSON.stringify(normalized))]) {
+      const decision = decide(error, "request")
+      expect(decision.kind).toBe("unknown")
+      expect(budgetFor(SessionRetry.resolve({ retry: { request: { maxRetries: 0, deadlineMs: 1 } } }), decision))
+        .toMatchObject({ mode: "bounded", maxRetries: 0, maxElapsedMs: 1 })
+    }
+    expect(normalized.data.metadata?.retryHistory).toContain("Request timed out")
+  })
+
+  test("real SDK retry preserves a single final safety fact through live and JSON normalization", async () => {
+    let calls = 0
+    const timeout = () => new APICallError({
+      message: "Request timed out", statusCode: 408, url: "https://example.com",
+      requestBodyValues: {}, isRetryable: true,
+    })
+    const model = {
+      specificationVersion: "v3" as const,
+      provider: "test-native",
+      modelId: "test",
+      supportedUrls: {},
+      async doGenerate(): Promise<never> {
+        if (++calls === 1) throw timeout()
+        throw Object.assign(new Error("Provider limit reached"), { name: "SubscriptionUsageLimitError" })
+      },
+      async doStream(): Promise<never> { throw new Error("Unexpected stream call") },
+    }
+    const sdk = await generateText({ model, prompt: "test", maxRetries: 1 }).then(
+      () => { throw new Error("Expected SDK failure") },
+      (error: unknown) => error,
+    )
+    expect(RetryError.isInstance(sdk)).toBe(true)
+    expect(calls).toBe(2)
+    for (const raw of [sdk, ...["FreeUsageLimitError", "ProviderAuthError", "ContextOverflowError"].map((name) =>
+      new RetryError({ message: "attempts failed", reason: "maxRetriesExceeded", errors: [
+        timeout(), Object.assign(new Error("Provider stopped"), { name }),
+      ] }),
+    )]) {
+      expect(decide(raw)).toMatchObject({ retryable: false, kind: "terminal" })
+      const live = MessageV2.fromLiveError(raw, { providerID })
+      expect(decide(live)).toMatchObject({ retryable: false, kind: "terminal" })
+      expect(live.data.metadata?.causeChain).toBeDefined()
+      expect(JSON.parse(live.data.metadata!.causeChain!)).toHaveLength(1)
+      expect(live.data.metadata?.retryHistory).toContain("Request timed out")
+      const restored = MessageV2.fromError(JSON.parse(JSON.stringify(live)), { providerID })
+      expect(decide(restored)).toMatchObject({ retryable: false, kind: "terminal" })
+    }
+  })
+
+  test("bare safety errors stay terminal through live normalization and idempotent restoration", () => {
+    for (const name of ["SubscriptionUsageLimitError", "FreeUsageLimitError", "ProviderAuthError", "ContextOverflowError"]) {
+      const raw = Object.assign(new Error("Provider stopped"), { name })
+      expect(isSafetyTerminal(raw)).toBe(true)
+      const live = MessageV2.fromLiveError(raw, { providerID })
+      expect(decide(live)).toMatchObject({ retryable: false, kind: "terminal" })
+      const restored = MessageV2.fromError(JSON.parse(JSON.stringify(live)), { providerID })
+      expect(decide(restored)).toMatchObject({ retryable: false, kind: "terminal" })
+      expect(restored).toEqual(live)
+      expect(MessageV2.fromError(restored, { providerID })).toEqual(restored)
+      expect(MessageV2.fromLiveError(restored, { providerID })).toEqual(restored)
+      expect(JSON.parse(restored.data.metadata!.causeChain!)).toHaveLength(1)
+      expect(restored.data.metadata?.retryHistory).toBeUndefined()
+    }
+  })
+
+  test("only the final SDK attempt and its actual causes supply retry facts", () => {
+    const api = (statusCode: number) => new APICallError({
+      message: "Provider failed", statusCode, url: "https://example.com", requestBodyValues: {}, isRetryable: true,
+    })
+    for (const earlier of [api(404), api(401), Object.assign(new Error("socket closed"), { code: "ECONNRESET" })]) {
+      const wrapped = new RetryError({ message: "attempts failed", reason: "maxRetriesExceeded", errors: [earlier, api(503)] })
+      const normalized = MessageV2.fromError(wrapped, { providerID })
+      expect(decide(normalized).kind).toBe("server")
+      expect(decide(JSON.parse(JSON.stringify(normalized))).kind).toBe("server")
+      expect(normalized.data.metadata?.retryHistory).toBeDefined()
+      expect(ProviderError.summarizeCause(wrapped).map((cause) => cause.statusCode)).toEqual([503])
+    }
+    const last = new TypeError("fetch failed", { cause: Object.assign(new Error("connect"), { code: "ETIMEDOUT" }) })
+    const wrapped = new RetryError({ message: "attempts failed", reason: "maxRetriesExceeded", errors: [api(401), last] })
+    const normalized = MessageV2.fromError(wrapped, { providerID })
+    expect(decide(normalized).kind).toBe("network")
+    expect(decide(JSON.parse(JSON.stringify(normalized))).kind).toBe("network")
+    expect(normalized.data.metadata?.causeChain).toContain("ETIMEDOUT")
+  })
+
+  for (const catalog of ["empty", "unmatched"] as const) {
+    test(`${catalog} catalog preserves native HTTP400 recovery signal precedence`, () => {
+      loadHostErrorCatalog({ protocolVersion: 2, rules: catalog === "empty" ? [] : [{
+        match: { providerID, response: { kind: "field", path: "/error/code", value: "host_only" } },
+        code: "host.only", retryClass: "terminal",
+      }] })
+      for (const [code, message, kind] of [
+        ["stream_read_error", "Upstream stream read failed", "stream"],
+        ["rate_limit_exceeded", "Too many requests", "rate_limit"],
+      ]) {
+        const raw = new APICallError({
+          message, statusCode: 400, responseBody: JSON.stringify({ error: { code, message } }),
+          url: "https://example.com", requestBodyValues: {}, isRetryable: false,
+        })
+        bindHostError(raw, { providerID })
+        const normalized = MessageV2.fromError(raw, { providerID })
+        expect(normalized.data.hostCode).toBeUndefined()
+        expect(decide(normalized)).toMatchObject({ retryable: true, kind })
+        expect(decide(JSON.parse(JSON.stringify(normalized)))).toMatchObject({ retryable: true, kind })
+      }
+    })
+  }
+})
+
 describe("isRetryableTransientError", () => {
   test("SSE read timed out string match", () => {
     expect(isRetryableTransientError(new Error("SSE read timed out"))).toBe(true)
@@ -763,6 +972,18 @@ describe("retry decision and coordinator budget", () => {
    expect(decide(error)).toMatchObject({ retryable: false, kind: "terminal" })
  })
 
+  test("fromError maps residual stream errors to AbortedError when ctx.aborted", () => {
+    const undici = Object.assign(new Error("request aborted by transport"), {
+      name: "AbortError",
+      code: "UND_ERR_ABORTED",
+    })
+    const parsed = MessageV2.fromError(undici, { providerID, aborted: true })
+    expect(MessageV2.AbortedError.isInstance(parsed)).toBe(true)
+    const timeout = Object.assign(new Error("Request timed out"), { code: "ETIMEDOUT" })
+    const parsed2 = MessageV2.fromError(timeout, { providerID, aborted: true })
+    expect(MessageV2.AbortedError.isInstance(parsed2)).toBe(true)
+  })
+
   test("treats an Undici transport abort as network-transient, not user abort", () => {
     const error = Object.assign(new Error("request aborted by transport"), { name: "AbortError", code: "UND_ERR_ABORTED" })
     expect(decide(error)).toMatchObject({ retryable: true, kind: "network" })
@@ -850,5 +1071,380 @@ describe("retry decision and coordinator budget", () => {
     ).rejects.toBe(error)
     expect(attempts).toBe(1)
     expect(retryEvents).toBe(0)
+  })
+
+  // [UnknownError 有限次重试] uncatalogued ≠ proven terminal:fromError catch-all
+  // (含丢掉 statusCode 的 5xx)应走有界预算,耗尽后再 terminal。
+  // 预算按 phase 分流(retry-coordinator.md budgetFor):
+  //   stream → unknown(默认 8 / 15min);request → request(默认 4 / 30s)。
+  test("UnknownError is retryable under the bounded stream unknown budget, not immediate terminal", () => {
+    const unknown = new NamedError.Unknown({ message: '"Internal Server Error"' }).toObject()
+    const decision = decide(unknown, "stream")
+    expect(decision).toMatchObject({ retryable: true, kind: "unknown", phase: "stream" })
+    const resolved = SessionRetry.resolve(undefined, "test")
+    const budget = SessionRetry.budgetFor(resolved, decision)
+    expect(budget.mode).toBe("bounded")
+    expect(budget.maxRetries).toBe(SessionRetry.UNKNOWN_MAX_RETRIES)
+  })
+
+  test("UnknownError in request phase uses the request budget, not the stream unknown budget", () => {
+    // budgetFor 顺序:max-scope → network/rate_limit/server persistent → phase=request → unknown。
+    // request 相位的 unknown 故意走 request 预算(scope 表:仅作用于非三类可恢复的如 unknown)。
+    const unknown = new NamedError.Unknown({ message: "Internal Server Error" }).toObject()
+    const decision = decide(unknown, "request")
+    expect(decision).toMatchObject({ retryable: true, kind: "unknown", phase: "request" })
+    const resolved = SessionRetry.resolve(undefined, "test")
+    const budget = SessionRetry.budgetFor(resolved, decision)
+    expect(budget.mode).toBe("bounded")
+    expect(budget.maxRetries).toBe(SessionRetry.REQUEST_MAX_RETRIES)
+    expect(budget.maxRetries).not.toBe(SessionRetry.UNKNOWN_MAX_RETRIES)
+  })
+
+  test("UnknownError stream policy retries a bounded number of times then terminal", async () => {
+    const unknown = new NamedError.Unknown({ message: '"Internal Server Error"' }).toObject()
+    let attempts = 0
+    let retries = 0
+    const schedule = SessionRetry.policy({
+      phase: "stream",
+      maxRetries: 2,
+      maxElapsedMs: 60_000,
+      initialDelayMs: 1,
+      parse: (input) => input as ReturnType<NamedError["toObject"]>,
+      set: () => Effect.sync(() => retries++),
+    })
+    await expect(
+      Effect.runPromise(
+        Effect.suspend(() => {
+          attempts++
+          return Effect.fail(unknown)
+        }).pipe(Effect.retry(schedule)),
+      ),
+    ).rejects.toBe(unknown)
+    // attempt 1 fail → retry → attempt 2 fail → retry → attempt 3 fail → give up
+    expect(attempts).toBe(3)
+    expect(retries).toBe(2)
+  })
+
+  test("terminal kinds stay terminal and are not swallowed by UnknownError retry", () => {
+    const aborted = new MessageV2.AbortedError({ message: "Aborted" }).toObject()
+    expect(decide(aborted)).toMatchObject({ retryable: false, kind: "terminal" })
+    const auth = new MessageV2.AuthError({ providerID: "sleepy", message: "invalid key" }).toObject()
+    expect(decide(auth)).toMatchObject({ retryable: false, kind: "terminal" })
+    const overflow = new MessageV2.ContextOverflowError({ message: "too long" }).toObject()
+    expect(decide(overflow)).toMatchObject({ retryable: false, kind: "terminal" })
+  })
+})
+
+describe("mandatory network recovery", () => {
+  test("global/provider count and deadline overrides cannot downgrade network", () => {
+    const config = SessionRetry.resolve({
+      retry: { network: { mode: "bounded", maxRetries: 0, deadlineMs: 1, initialDelayMs: 10, maxDelayMs: 100, jitterRatio: 0 } },
+      provider: { test: { retry: { network: { mode: "bounded", maxRetries: 1, deadlineMs: 2, initialDelayMs: 20 } } } },
+    }, "test")
+    expect(config.network).toEqual({ mode: "persistent", maxRetries: undefined, maxElapsedMs: 0, initialDelayMs: 20, maxDelayMs: 100, jitterRatio: 0 })
+    for (const phase of ["request", "stream"] as const) {
+      for (const kind of ["network", "server", "rate_limit", "stream", "unknown"] as const) {
+        const decision = { retryable: true, kind, phase, scope: phase === "request" ? "request" as const : "live-step" as const, message: "failure" }
+        const budget = budgetFor(config, decision)
+        expect(budget.mode).toBe(["network", "server", "rate_limit"].includes(kind) ? "persistent" : "bounded")
+        for (const scope of ["max-candidate", "max-judge"] as const) {
+          expect(budgetFor(config, { ...decision, scope })).toEqual(scope === "max-candidate" ? config.maxCandidate : config.maxJudge)
+        }
+      }
+    }
+    const configured = { ...config, network: { ...config.network, mode: "bounded" as const, maxRetries: 1, maxElapsedMs: 1 } }
+    expect(budgetFor(configured, { retryable: true, kind: "network", phase: "request", scope: "request", message: "timeout" })).toMatchObject({ mode: "persistent", maxRetries: undefined, maxElapsedMs: 0 })
+  })
+
+  for (const phase of ["request", "stream"] as const) {
+    test(`${phase} coordinator retries eight HTTP timeouts then succeeds despite host/config limits`, async () => {
+      loadHostErrorCatalog({ protocolVersion: 2, rules: [] })
+      const config = SessionRetry.resolve({ retry: { network: { mode: "bounded", maxRetries: 1, deadlineMs: 1, initialDelayMs: 1, maxDelayMs: 1, jitterRatio: 0 } } })
+      let attempts = 0
+      const updates: Array<{ hostCode?: string; kind: string; maxAttempts: number }> = []
+      const schedule = SessionRetry.policy({
+        phase,
+        parse: (error) => MessageV2.fromError(error, { providerID }),
+        budget: (decision) => budgetFor(config, decision),
+        set: (info) => Effect.sync(() => { updates.push(info) }),
+      })
+      const result = await Effect.runPromise(Effect.suspend(() => {
+        attempts++
+        return attempts <= 8
+          ? Effect.fail(new APICallError({ message: "request timeout", url: "https://example.com", requestBodyValues: {}, statusCode: 408, isRetryable: false }))
+          : Effect.succeed("recovered")
+      }).pipe(Effect.retry(schedule)))
+      expect(result).toBe("recovered")
+      expect(attempts).toBe(9)
+      expect(updates).toHaveLength(8)
+      for (const update of updates) expect(update).toMatchObject({ hostCode: undefined, kind: "network", maxAttempts: 0 })
+    })
+  }
+
+  test("policy also ignores bounded custom session network budgets", async () => {
+    let attempts = 0
+    const schedule = SessionRetry.policy({
+      parse: (error) => MessageV2.fromError(error, { providerID }),
+      budget: () => ({ mode: "bounded", maxRetries: 0, maxElapsedMs: 1, initialDelayMs: 1, maxDelayMs: 1, jitterRatio: 0 }),
+      set: () => Effect.void,
+    })
+    await Effect.runPromise(Effect.suspend(() => ++attempts <= 4
+      ? Effect.fail(new TypeError("fetch failed", { cause: Object.assign(new Error("connect failed"), { code: "ETIMEDOUT" }) }))
+      : Effect.succeed("ok")).pipe(Effect.retry(schedule)))
+    expect(attempts).toBe(5)
+  })
+
+  test("max isolation and unsafe replay still stop network retries", async () => {
+    for (const scope of ["max-candidate", "max-judge", "live-step"] as const) {
+      let attempts = 0
+      const schedule = SessionRetry.policy({
+        scope,
+        parse: (error) => MessageV2.fromError(error, { providerID }),
+        budget: () => ({ mode: "bounded", maxRetries: 2, maxElapsedMs: 1000, initialDelayMs: 1, maxDelayMs: 1, jitterRatio: 0 }),
+        replaySafe: () => scope !== "live-step",
+        set: () => Effect.void,
+      })
+      await expect(Effect.runPromise(Effect.suspend(() => {
+        attempts++
+        return Effect.fail(Object.assign(new Error("socket failed"), { code: "ECONNRESET" }))
+      }).pipe(Effect.retry(schedule)))).rejects.toBeDefined()
+      expect(attempts).toBe(scope === "live-step" ? 1 : 3)
+    }
+  })
+})
+
+describe("host registry budget and publish (R006/R011)", () => {
+  test("budgetFor selects host kind budgets by phase/scope", () => {
+    loadHostErrorCatalog({ protocolVersion: 2, rules: [] })
+    const cfg = {
+      request: { mode: "bounded", maxRetries: 4, maxElapsedMs: 30_000, initialDelayMs: 200, maxDelayMs: 30_000, jitterRatio: 0 },
+      stream: { mode: "bounded", maxRetries: 5, maxElapsedMs: 60_000, initialDelayMs: 2000, maxDelayMs: 30_000, jitterRatio: 0 },
+      maxCandidate: { mode: "bounded", maxRetries: 1, maxElapsedMs: 1, initialDelayMs: 1, maxDelayMs: 1, jitterRatio: 0 },
+      maxJudge: { mode: "bounded", maxRetries: 1, maxElapsedMs: 1, initialDelayMs: 1, maxDelayMs: 1, jitterRatio: 0 },
+      network: { mode: "persistent", maxRetries: 0, maxElapsedMs: 0, initialDelayMs: 2000, maxDelayMs: 30_000, jitterRatio: 0 },
+      server: { mode: "persistent", maxRetries: 0, maxElapsedMs: 0, initialDelayMs: 2000, maxDelayMs: 30_000, jitterRatio: 0 },
+      rateLimit: { mode: "persistent", maxRetries: 0, maxElapsedMs: 0, initialDelayMs: 2000, maxDelayMs: 30_000, jitterRatio: 0 },
+      unknown: { mode: "bounded", maxRetries: 8, maxElapsedMs: 900_000, initialDelayMs: 2000, maxDelayMs: 30_000, jitterRatio: 0 },
+      jitterRatio: 0,
+    } as never
+    const base = { retryable: true, message: "m", hostCode: "host.x" }
+    expect(budgetFor(cfg, { ...base, phase: "stream", scope: "live-step", kind: "network" }).mode).toBe("persistent")
+    expect(budgetFor(cfg, { ...base, phase: "request", scope: "request", kind: "rate_limit" }).mode).toBe("persistent")
+    expect(budgetFor(cfg, { ...base, phase: "stream", scope: "max-candidate", kind: "server" }).maxRetries).toBe(1)
+    expect(budgetFor(cfg, { ...base, phase: "request", scope: "request", kind: "unknown" }).maxRetries).toBe(4)
+    expect(budgetFor(cfg, { ...base, phase: "stream", scope: "live-step", kind: "unknown" }).maxRetries).toBe(8)
+    expect(budgetFor(cfg, { ...base, phase: "request", scope: "request", kind: "terminal" as never }).mode).toBe("bounded")
+  })
+
+  test("host behavior is independent of diagnostic kind", () => {
+    const cases = [
+      ["persistent", "unknown"],
+      ["bounded", "unknown"],
+      ["terminal", "terminal"],
+    ] as const
+    for (const [cls, kind] of cases) {
+      const d = decide({
+        name: "APIError",
+        data: { message: "x", isRetryable: true, hostCode: "h.x", hostRetryClass: cls },
+      })
+      expect(d.kind).toBe(kind)
+      expect(d.hostCode).toBe("h.x")
+      expect(d.retryable).toBe(cls !== "terminal")
+    }
+  })
+
+  test("RetryAttempt/policy set carries hostCode only when host-driven", () => {
+    loadHostErrorCatalog({ protocolVersion: 2, rules: [] })
+    const hostDriven = decide({
+      name: "APIError",
+      data: { message: "x", isRetryable: true, hostCode: "h.r", hostRetryClass: "bounded" },
+    })
+    expect(hostDriven.hostCode).toBe("h.r")
+    const heuristic = decide({
+      name: "APIError",
+      data: { message: "Too Many Requests", statusCode: 429, isRetryable: true },
+    })
+    expect(heuristic.retryable).toBe(true)
+    expect(heuristic.hostCode).toBeUndefined()
+  })
+})
+
+describe("policy set hostCode publish (R006/R011)", () => {
+  test("opts.set receives hostCode iff host-driven", async () => {
+    loadHostErrorCatalog({ protocolVersion: 2, rules: [] })
+    const captured: Array<{ hostCode?: string; message: string }> = []
+    const schedule = SessionRetry.policy({
+      parse: (err) => err as ReturnType<NamedError["toObject"]>,
+      set: (info) =>
+        Effect.sync(() => {
+          captured.push({ hostCode: info.hostCode, message: info.message })
+        }),
+      maxElapsedMs: 5,
+      initialDelayMs: 0,
+      jitterRatio: 0,
+      maxRetries: 1,
+    })
+    const hostErr = {
+      name: "APIError",
+      data: { message: "host-fail", isRetryable: true, hostCode: "h.r", hostRetryClass: "bounded" },
+    }
+    await expect(
+      Effect.runPromise(Effect.suspend(() => Effect.fail(hostErr)).pipe(Effect.retry(schedule))),
+    ).rejects.toBe(hostErr)
+    expect(captured.length).toBeGreaterThanOrEqual(1)
+    expect(captured[0]!.hostCode).toBe("h.r")
+
+    captured.length = 0
+    const heurSchedule = SessionRetry.policy({
+      parse: (err) => err as ReturnType<NamedError["toObject"]>,
+      set: (info) =>
+        Effect.sync(() => {
+          captured.push({ hostCode: info.hostCode, message: info.message })
+        }),
+      maxElapsedMs: 50,
+      initialDelayMs: 0,
+      jitterRatio: 0,
+      maxRetries: 1,
+    })
+    const heurErr = {
+      name: "APIError",
+      data: { message: "weird transient failure", isRetryable: true },
+    }
+    await expect(
+      Effect.runPromise(Effect.suspend(() => Effect.fail(heurErr)).pipe(Effect.retry(heurSchedule))),
+    ).rejects.toBe(heurErr)
+    expect(captured.length).toBeGreaterThanOrEqual(1)
+    expect(captured[0]!.hostCode).toBeUndefined()
+  })
+})
+
+describe("host v2 enforced budgets", () => {
+  const restricted = { error: "Example restricted account", code: 403 }
+  function failure(retryClass: "persistent" | "bounded" | "terminal", statusCode = 503) {
+    expect(loadHostErrorCatalog({ protocolVersion: 2, rules: [{
+      match: { providerID, statusCode, response: { kind: "json", value: restricted } },
+      code: "host.example", retryClass,
+    }] }).ok).toBe(true)
+    return bindHostError(new APICallError({
+      message: "fetch failed ETIMEDOUT", url: "https://example.com", requestBodyValues: {},
+      responseBody: JSON.stringify(restricted), statusCode, isRetryable: false,
+    }), { providerID })
+  }
+
+  test("host phase budgets remain finite or unlimited regardless of kind defaults/config", () => {
+    const config = SessionRetry.resolve({ retry: {
+      request: { mode: "persistent", noDeadline: true }, stream: { mode: "persistent", noDeadline: true },
+      server: { mode: "persistent", noDeadline: true },
+    } })
+    const bounded = MessageV2.fromError(failure("bounded", 403), { providerID })
+    const persistent = MessageV2.fromError(failure("persistent"), { providerID })
+    for (const phase of ["request", "stream"] as const) {
+      expect(budgetFor(config, decide(bounded, phase))).toMatchObject({
+        mode: "bounded", maxRetries: phase === "request" ? 4 : 5, maxElapsedMs: phase === "request" ? 30_000 : 600_000,
+      })
+      expect(budgetFor(config, decide(persistent, phase))).toMatchObject({ mode: "persistent", maxRetries: undefined, maxElapsedMs: 0 })
+      for (const scope of ["max-candidate", "max-judge"] as const) {
+        expect(budgetFor(config, decide(persistent, phase, scope))).toEqual(scope === "max-candidate" ? config.maxCandidate : config.maxJudge)
+      }
+    }
+  })
+
+  for (const phase of ["request", "stream"] as const) {
+    it.effect(`${phase} persistent recovers beyond old counts and one virtual hour`, () => Effect.gen(function* () {
+      const raw = failure("persistent")
+      let attempts = 0
+      const updates: Array<{ hostCode?: string; maxAttempts: number }> = []
+      const start = yield* Clock.currentTimeMillis
+      const fiber = yield* Effect.suspend(() => ++attempts <= 70 ? Effect.fail(raw) : Effect.succeed("recovered")).pipe(
+        Effect.retry(SessionRetry.policy({
+          phase, parse: (error) => MessageV2.fromError(error, { providerID }),
+          budget: () => ({ mode: "bounded", maxRetries: 1, maxElapsedMs: 30_000, initialDelayMs: 60_000, maxDelayMs: 60_000, jitterRatio: 0 }),
+          silentRetry: () => true,
+          set: (info) => Effect.sync(() => { updates.push(info) }),
+        })), Effect.forkChild,
+      )
+      yield* TestClock.adjust("71 minutes")
+      expect(yield* Fiber.join(fiber)).toBe("recovered")
+      expect((yield* Clock.currentTimeMillis) - start).toBeGreaterThan(3_600_000)
+      expect(attempts).toBe(71)
+      expect(updates).toHaveLength(70)
+      for (const update of updates) expect(update).toMatchObject({ hostCode: "host.example", maxAttempts: 0 })
+    }))
+
+    it.effect(`${phase} exact restricted 403 actually exhausts despite persistent configuration`, () => Effect.gen(function* () {
+      const raw = failure("bounded", 403)
+      let attempts = 0
+      const updates: number[] = []
+      const fiber = yield* Effect.suspend(() => { attempts++; return Effect.fail(raw) }).pipe(
+        Effect.retry(SessionRetry.policy({
+          phase, parse: (error) => MessageV2.fromError(error, { providerID }),
+          budget: () => ({ mode: "persistent", maxElapsedMs: 0, initialDelayMs: 1, maxDelayMs: 1, jitterRatio: 0 }),
+          set: (info) => Effect.sync(() => { updates.push(info.maxAttempts) }),
+        })), Effect.exit, Effect.forkChild,
+      )
+      yield* TestClock.adjust("1 second")
+      expect(Exit.isFailure(yield* Fiber.join(fiber))).toBe(true)
+      expect(attempts).toBe(phase === "request" ? 5 : 6)
+      expect(updates).toEqual(Array.from({ length: attempts - 1 }, () => attempts - 1))
+    }))
+  }
+
+  it.effect("user cancellation interrupts a persistent wait without reopening requests", () => Effect.gen(function* () {
+    const raw = failure("persistent")
+    let attempts = 0
+    const fiber = yield* Effect.suspend(() => { attempts++; return Effect.fail(raw) }).pipe(
+      Effect.retry(SessionRetry.policy({
+        parse: (error) => MessageV2.fromError(error, { providerID }),
+        initialDelayMs: 30_000, set: () => Effect.void,
+      })), Effect.forkChild,
+    )
+    yield* TestClock.adjust("1 second")
+    expect(attempts).toBe(1)
+    yield* Fiber.interrupt(fiber)
+    yield* TestClock.adjust("2 hours")
+    expect(attempts).toBe(1)
+  }))
+
+  it.effect("native network with empty catalog recovers after one virtual hour", () => Effect.gen(function* () {
+    loadHostErrorCatalog({ protocolVersion: 2, rules: [] })
+    let attempts = 0
+    const raw = new TypeError("fetch failed", { cause: Object.assign(new Error("connect failed"), { code: "ETIMEDOUT" }) })
+    const fiber = yield* Effect.suspend(() => ++attempts <= 70 ? Effect.fail(raw) : Effect.succeed("recovered")).pipe(
+      Effect.retry(SessionRetry.policy({
+        parse: (error) => MessageV2.fromError(error, { providerID }),
+        budget: () => ({ mode: "bounded", maxRetries: 1, maxElapsedMs: 1, initialDelayMs: 60_000, maxDelayMs: 60_000, jitterRatio: 0 }),
+        set: (info) => Effect.sync(() => { expect(info.hostCode).toBeUndefined() }),
+      })), Effect.forkChild,
+    )
+    yield* TestClock.adjust("71 minutes")
+    expect(yield* Fiber.join(fiber)).toBe("recovered")
+    expect(attempts).toBe(71)
+  }))
+
+  test("max candidate and judge retain finite isolation around host persistent failures", async () => {
+    for (const scope of ["max-candidate", "max-judge"] as const) {
+      const raw = failure("persistent")
+      let attempts = 0
+      await expect(Effect.runPromise(Effect.suspend(() => { attempts++; return Effect.fail(raw) }).pipe(Effect.retry(SessionRetry.policy({
+        scope, parse: (error) => MessageV2.fromError(error, { providerID }),
+        budget: () => ({ mode: "bounded", maxRetries: 2, maxElapsedMs: 1000, initialDelayMs: 1, maxDelayMs: 1, jitterRatio: 0 }),
+        set: () => Effect.void,
+      }))))).rejects.toBe(raw)
+      expect(attempts).toBe(3)
+    }
+  })
+
+  test("terminal API responses and unsafe replay never schedule a retry", async () => {
+    for (const retryClass of ["terminal", "persistent"] as const) {
+      const raw = failure(retryClass)
+      let attempts = 0
+      let scheduled = 0
+      await expect(Effect.runPromise(Effect.suspend(() => { attempts++; return Effect.fail(raw) }).pipe(Effect.retry(SessionRetry.policy({
+        parse: (error) => MessageV2.fromError(error, { providerID }), replaySafe: () => retryClass !== "persistent",
+        set: () => Effect.sync(() => { scheduled++ }),
+      }))))).rejects.toBe(raw)
+      expect(attempts).toBe(1)
+      expect(scheduled).toBe(0)
+    }
   })
 })

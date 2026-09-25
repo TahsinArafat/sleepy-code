@@ -47,8 +47,6 @@ export const dict: Record<string, string> = {
     "Start a message with {highlight}!{/highlight} to run shell commands directly (e.g., {highlight}!ls -la{/highlight})",
   "tui.tips.tab_agent":
     "Press {highlight}Tab{/highlight} or {highlight}Shift+Tab{/highlight} to cycle between Build, Plan, and Compose agents",
-  "tui.tips.tab_agent_orchestrator":
-    "Press {highlight}Tab{/highlight} or {highlight}Shift+Tab{/highlight} to cycle between Build, Plan, Compose, and Orchestrator agents",
   "tui.tips.theme_mode":
     "Run {highlight}/dark{/highlight} for dark mode or {highlight}/light{/highlight} for light mode",
   "tui.tips.doc": "Run {highlight}/doc{/highlight} to open the user documentation",
@@ -126,8 +124,6 @@ export const dict: Record<string, string> = {
   "tui.tips.disable_formatter": 'Set {highlight}"formatter": false{/highlight} in config to disable all auto-formatting',
   "tui.tips.custom_formatter": "Define custom formatter commands with file extensions in config",
   "tui.tips.lsp": "Sleepy Code uses LSP servers for intelligent code analysis",
-  "tui.tips.custom_tool":
-    "Create {highlight}.ts{/highlight} files in {highlight}.sleepy/tools/{/highlight} to define new LLM tools",
   "tui.tips.tool_scripts": "Tool definitions can invoke scripts written in Python, Go, etc",
   "tui.tips.plugins":
     "Add {highlight}.ts{/highlight} files to {highlight}.sleepy/plugin/{/highlight} for event hooks",
@@ -210,8 +206,6 @@ export const dict: Record<string, string> = {
   "tui.skill.pdf-official.description": "Create, edit, transform, and read PDF files",
   "tui.skill.pptx-official.description": "Create, edit, and read Microsoft PowerPoint (.pptx) decks",
   "tui.skill.sleepycode.description": "Self-documentation for SleepyCode features, config, and commands",
-  "tui.skill.evolve.description": "Rewrite any layer of yourself — tools, behavior hooks, knowledge, workflows, even the UI",
-  "tui.skill.frontend-design.description": "Guidance for distinctive, intentional visual UI design",
   "tui.skill.loop.description": "Schedule a prompt to run on a recurring interval",
   "tui.skill.html-to-video-pipeline.description": "Short-video magic — make short videos with HTML",
   "tui.skill.arxiv.description": "Search, cite, download, and track arXiv papers",
@@ -221,8 +215,6 @@ export const dict: Record<string, string> = {
   "tui.skill.codex.description": "Run Codex CLI autonomously in scripts, CI, Docker, and Kubernetes",
   "tui.skill.claude-code.description": "Delegate coding tasks to Claude Code CLI",
   "tui.skill.grok-build.description": "Operate Grok Build from the command line",
-  "tui.skill.design-blueprint.description":
-    "Produce a design blueprint (DESIGN.md + Decision Trace) before mocking up any visual",
   "tui.skill.super-research.description":
     "Autonomous research — experiments, surveys, quantitative analysis, benchmarks, RCA, ablation, paper reproduction & writing",
   "tui.skill.deep-research.description":
@@ -498,18 +490,18 @@ export const dict: Record<string, string> = {
   "tui.command.voice.toggle.title": "Toggle voice input",
   "tui.command.voice.toggle.title_on": "Voice input: ON — click to turn off",
   "tui.command.voice.toggle.title_off": "Voice input: OFF — click to turn on",
-  "tui.command.voice.send.title": "Toggle voice send command",
+  "tui.command.voice.send.title": "Toggle voice send",
   "tui.command.voice.send.title_on": "Voice send: ON — click to turn off",
   "tui.command.voice.send.title_off": "Voice send: OFF — click to turn on",
   "tui.voice.enabled": "Voice input on (Chinese/English) — click [Voice] to record",
   "tui.voice.disabled": "Voice input disabled",
-  "tui.voice.send.enabled": "Voice send enabled — after a pause, clearly say \"send it\" to submit",
+  "tui.voice.send.enabled": "Voice send enabled — in voice control, say \"send it\" to submit the prompt",
   "tui.voice.send.disabled": "Voice send disabled",
-  "tui.voice.control.enabled": "Voice control enabled — using multimodal model for intelligent editing (slower)",
-  "tui.voice.control.disabled": "Voice control disabled — using fast ASR transcription",
-  "tui.command.voice.control.title": "Toggle voice control (multimodal)",
-  "tui.command.voice.control.title_on": "Voice control: ON (multimodal) — click to turn off",
-  "tui.command.voice.control.title_off": "Voice control: OFF (fast ASR) — click to turn on",
+  "tui.voice.control.enabled": "Smart Edit on — understands edit intent; needs some thinking time",
+  "tui.voice.control.disabled": "Switched to Quick Input — no intent understanding; faster, better in dialect/noise",
+  "tui.command.voice.control.title": "Toggle Smart Edit / Quick Input",
+  "tui.command.voice.control.title_on": "Smart Edit: ON — click for Quick Input",
+  "tui.command.voice.control.title_off": "Quick Input: ON — click for Smart Edit",
   "tui.voice.error.no_auth": "Use /connect to sign in to Sleepy, or configure voice.asr_model for another provider",
   "tui.voice.error.no_auth_provider": "Voice provider \"{{provider}}\" is not authenticated, check its apiKey",
   "tui.voice.error.provider_not_found": "Provider \"{{provider}}\" not available — /connect to authenticate, or declare models in config for custom endpoints",
@@ -519,8 +511,9 @@ export const dict: Record<string, string> = {
   "tui.voice.error.no_recorder": "No recording tool found, please install sox",
   "tui.voice.error.too_short": "Recording too short",
   "tui.voice.error.network": "Transcription failed, please check your network",
+  "tui.voice.error.protocol": "Voice control reply was not a valid voice_input call",
+  "tui.voice.error.stale": "Prompt changed while listening — voice edit skipped",
   "tui.voice.error.empty_send": "Nothing to send",
-  "tui.voice.error.unknown_agent": "Agent \"{{name}}\" not found",
   "tui.command.prompt.stash.title": "Stash prompt",
   "tui.command.prompt.stash.pop.title": "Stash pop",
   "tui.command.prompt.stash.list.title": "Stash list",
@@ -562,6 +555,13 @@ export const dict: Record<string, string> = {
 
   // Session badges
   "tui.session.badge.auto": "Auto",
+  "tui.session.actor_warning": "Warning",
+  "tui.session.inbox.from": "Message from {{from}}",
+  "tui.session.actor_status.completed": "Subagent completed",
+  "tui.session.actor_status.failed": "Subagent failed",
+  "tui.session.actor_status.cancelled": "Subagent cancelled",
+  "tui.session.actor_status.stalled": "Subagent stalled",
+  "tui.session.actor_status.ended": "Subagent ended (status not reported)",
 
   // Context rebuild boundary marker (inserted by /rebuild)
   "tui.session.rebuild_boundary.label": "context rebuilt",

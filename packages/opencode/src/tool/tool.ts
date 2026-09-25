@@ -50,15 +50,6 @@ export interface Def<Parameters extends z.ZodType = z.ZodType, M extends Metadat
   parameters: Parameters
   execute(args: z.infer<Parameters>, ctx: Context): Effect.Effect<ExecuteResult<M>>
   formatValidationError?(error: z.ZodError): string
-  shell?: {
-    description: string
-    parse(script: string): Effect.Effect<z.infer<Parameters>[], unknown>
-    // Optional recovery for shell-mode calls that arrive shaped like the tool's
-    // JSON args (no usable `script`). Returns the tool's parsed JSON shape to be
-    // routed to execute, or undefined if rawArgs can't be lifted. Lets shell mode
-    // transparently accept a JSON-shape call instead of erroring.
-    recover?(rawArgs: unknown): z.infer<Parameters> | undefined
-  }
 }
 export type DefWithoutID<Parameters extends z.ZodType = z.ZodType, M extends Metadata = Metadata> = Omit<
   Def<Parameters, M>,

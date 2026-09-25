@@ -1,35 +1,75 @@
-import { APICallError } from "ai"
+import { APICallError, RetryError } from "ai"
 import { STATUS_CODES } from "http"
 import { iife } from "@/util/iife"
 import type { ProviderID } from "./schema"
 
-const RETRYABLE_NETWORK_CODES = new Set([
-  "ECONNABORTED",
-  "ECONNREFUSED",
-  "ECONNRESET",
-  "EHOSTDOWN",
-  "EHOSTUNREACH",
-  "EPIPE",
-  "ENETDOWN",
-  "ENETUNREACH",
-  "EAI_AGAIN",
-  "ETIMEDOUT",
-  "UND_ERR_BODY_TIMEOUT",
-  "UND_ERR_CONNECT_TIMEOUT",
-  "UND_ERR_HEADERS_TIMEOUT",
-  "UND_ERR_RES_CONTENT_LENGTH_MISMATCH",
-  "UND_ERR_ABORTED",
-  "UND_ERR_SOCKET",
+// Transport failures are identified by *shape*, not a closed allow-list of codes.
+// Product: recoverable transport errors must keep retrying; a growing enum of
+// "known network codes" always lags undici/Node and misses the next one.
+//
+// Rule:
+// 1. User abort is never transport-retryable (ABORT_ERR / AbortError).
+// 2. Any `code` starting with `UND_ERR_` is undici transport (except user abort).
+// 3. Any POSIX-style `E*` system code is transport unless it is on the small
+//    local-fs / process deny-list (ENOENT, EACCES, …). New network errnos
+//    (ENOTFOUND, EAI_*, ECONN*, ENET*, …) are covered by the family, not listed one-by-one.
+// 4. Message family matches connect/fetch/socket/dns language broadly.
+const NON_NETWORK_ERRNO = new Set([
+  "ABORT_ERR",
+  "ENOENT",
+  "ENOTDIR",
+  "EISDIR",
+  "EACCES",
+  "EPERM",
+  "EEXIST",
+  "EMFILE",
+  "ENFILE",
+  "EINVAL",
+  "ENOMEM",
+  "EBUSY",
+  "EROFS",
+  "ENAMETOOLONG",
+  "ELOOP",
+  "EXDEV",
+  "EFBIG",
+  "ESPIPE",
+  "ENOSPC",
+  "EDEADLK",
+  "ENOTEMPTY",
+  "ESRCH",
+  "ECHILD",
+  "ENOEXEC",
+  "EDOM",
+  "ERANGE",
+  "EILSEQ",
 ])
 
-const RETRYABLE_NETWORK_MESSAGES = [
+const TRANSPORT_MESSAGE_PATTERNS = [
   /^fetch failed$/i,
   /^SSE read timed out$/i,
-  /connection (?:aborted|closed|refused|reset)(?: by server)?$/i,
-  /network (?:connection|error)/i,
-  /response body (?:terminated|closed)/i,
+  /\brequest timed out\b/i,
   /socket hang up/i,
+  /response body (?:terminated|closed)/i,
+  /other side closed/i,
+  /connection (?:reset|closed|refused|aborted|timed ?out|terminated)/i,
+  /network (?:error|connection|unreachable)/i,
+  /\b(?:getaddrinfo|ENOTFOUND|EAI_[A-Z]+|ECONN[A-Z]*|ENET[A-Z]*|EHOST[A-Z]*|EPIPE|ETIMEDOUT|UND_ERR_[A-Z0-9_]+)\b/i,
+  /cannot connect to (?:the )?api/i,
+  /dns (?:lookup|resolve)/i,
 ]
+
+/** POSIX-style errno or similar (`E` + SCREAMING_SNAKE). */
+function isSystemErrnoCode(code: string): boolean {
+  return /^E[A-Z][A-Z0-9_]*$/.test(code)
+}
+
+/** Shape check: does this code look like wire/transport rather than local fs/process? */
+export function isTransportErrnoCode(code: string): boolean {
+  if (NON_NETWORK_ERRNO.has(code)) return false
+  if (code.startsWith("UND_ERR_")) return true
+  if (isSystemErrnoCode(code)) return true
+  return false
+}
 
 export type CauseSummary = {
   depth: number
@@ -53,7 +93,7 @@ export function isAbortError(error: unknown): boolean {
   return (error as { name?: unknown }).name === "AbortError" || code === "ABORT_ERR"
 }
 
-export function summarizeCause(input: unknown): CauseSummary[] {
+export function summarizeCause(input: unknown, options: { includeRetryHistory?: boolean } = {}): CauseSummary[] {
   const seen = new Set<object>()
   const queue: Array<{ value: unknown; depth: number; source: CauseSummary["source"] }> = [
     { value: input, depth: 0, source: "root" },
@@ -63,25 +103,48 @@ export function summarizeCause(input: unknown): CauseSummary[] {
     const node = queue.shift()!
     if (typeof node.value !== "object" || node.value === null || seen.has(node.value)) continue
     seen.add(node.value)
+    if (!options.includeRetryHistory && RetryError.isInstance(node.value)) {
+      const inner = node.value.lastError ?? (Array.isArray(node.value.errors) ? node.value.errors.at(-1) : undefined)
+      if (inner !== undefined && inner !== node.value) {
+        if (node.depth < 8) {
+          queue.unshift({ value: inner, depth: node.depth + 1, source: node.source })
+          if (node.value.cause !== undefined && node.value.cause !== inner)
+            queue.push({ value: node.value.cause, depth: node.depth + 1, source: "cause" })
+        }
+        continue
+      }
+    }
     const object = node.value as {
       name?: unknown
       message?: unknown
       code?: unknown
       status?: unknown
       statusCode?: unknown
+      response?: { status?: unknown }
       cause?: unknown
       errors?: unknown
+      data?: { message?: unknown; statusCode?: unknown; metadata?: { code?: unknown; causeChain?: unknown } }
     }
-    const status = object.statusCode ?? object.status
+    const status = object.data?.statusCode ?? object.statusCode ?? object.status ?? object.response?.status
     const statusCode = typeof status === "string" ? Number.parseInt(status, 10) : status
+    const message = object.data?.message ?? object.message
+    const code = object.data?.metadata?.code ?? object.code
     result.push({
       depth: node.depth,
       name: typeof object.name === "string" ? object.name : undefined,
-      message: typeof object.message === "string" ? object.message : undefined,
-      code: typeof object.code === "string" ? object.code : undefined,
+      message: typeof message === "string" ? message : undefined,
+      code: typeof code === "string" ? code : undefined,
       statusCode: typeof statusCode === "number" && !Number.isNaN(statusCode) ? statusCode : undefined,
       source: node.source,
     })
+    if (node.depth === 0 && typeof object.data?.metadata?.causeChain === "string") {
+      try {
+        const persisted: unknown = JSON.parse(object.data.metadata.causeChain)
+        if (Array.isArray(persisted)) {
+          for (const cause of persisted.slice(0, 16)) queue.push({ value: cause, depth: 1, source: "cause" })
+        }
+      } catch {}
+    }
     if (object.cause !== undefined && node.depth < 8)
       queue.push({ value: object.cause, depth: node.depth + 1, source: "cause" })
     if (Array.isArray(object.errors) && node.depth < 8) {
@@ -93,7 +156,7 @@ export function summarizeCause(input: unknown): CauseSummary[] {
 export function networkErrorCode(input: unknown): string | undefined {
   return summarizeCause(input)
     .map((cause) => cause.code)
-    .find((code): code is string => code !== undefined && RETRYABLE_NETWORK_CODES.has(code))
+    .find((code): code is string => code !== undefined && isTransportErrnoCode(code))
 }
 
 export function isRetryableNetworkError(input: unknown): boolean {
@@ -101,10 +164,11 @@ export function isRetryableNetworkError(input: unknown): boolean {
   if (chain.some((cause) => (cause.name === "AbortError" && cause.code !== "UND_ERR_ABORTED") || cause.code === "ABORT_ERR")) return false
 
   return chain.some((cause) => {
+    if (cause.statusCode === 408 || cause.statusCode === 504) return true
     const code = cause.code
-    if (code && RETRYABLE_NETWORK_CODES.has(code)) return true
+    if (code && isTransportErrnoCode(code)) return true
     const message = cause.message
-    return message !== undefined && RETRYABLE_NETWORK_MESSAGES.some((pattern) => pattern.test(message))
+    return message !== undefined && TRANSPORT_MESSAGE_PATTERNS.some((pattern) => pattern.test(message))
   })
 }
 
@@ -167,7 +231,18 @@ function isOverflow(message: string) {
 // non-standard semantics (e.g. moderation/risk-control blocks under HTTP 400),
 // so the gateway-specific handling below is scoped to these providers and leaves
 // every other provider's error flow untouched.
-const SLEEPY_GATEWAY_PROVIDERS = new Set(["sleepy", "sleepy"])
+// models.dev ships several Xiaomi gateway aliases (billing + regional token plans):
+//   xiaomi                         → api.xiaomimimo.com/v1
+//   xiaomi-token-plan-cn|ams|sgp   → token-plan-*.xiaomimimo.com/v1
+// Desktop BYOK presets may also use xiaomi-sleepy-* against the same gateways.
+// Treat any `xiaomi-*` id as gateway-backed so regional/token-plan aliases
+// get the same 421/441 relabeling.
+const SLEEPY_GATEWAY_PROVIDERS = new Set(["xiaomi", "sleepy", "sleepy-desktop"])
+
+function isSleepyGatewayProvider(providerID: string): boolean {
+  const id = String(providerID || "").toLowerCase()
+  return SLEEPY_GATEWAY_PROVIDERS.has(id) || id.startsWith("xiaomi-")
+}
 
 // Sleepy gateway error.code values worth relabeling: moderation (421) and
 // risk-control (441) blocks arrive under a generic HTTP 400.
@@ -182,7 +257,7 @@ function message(providerID: ProviderID, e: APICallError) {
     // reason often lives there while error.message stays generic). json() returns
     // undefined for non-JSON, so HTML/proxy error pages fall through to the
     // original handling below.
-    const gw = SLEEPY_GATEWAY_PROVIDERS.has(providerID) ? json(e.responseBody)?.error : undefined
+    const gw = isSleepyGatewayProvider(providerID) ? json(e.responseBody)?.error : undefined
     if (gw && typeof gw === "object") {
       const base = FRIENDLY_GATEWAY_CODES[String(gw.code)] ?? (typeof gw.message === "string" ? gw.message : "")
       if (base) return typeof gw.param === "string" && gw.param !== base ? `${base}: ${gw.param}` : base
@@ -257,11 +332,20 @@ export type ParsedStreamError =
     }
 
 export function parseStreamError(input: unknown): ParsedStreamError | undefined {
-  const body = json(input)
+  const raw = json(input)
+  const body = raw?.type === "error" ? raw : json(raw?.data)
   if (!body) return
 
   const responseBody = JSON.stringify(body)
   if (body.type !== "error") return
+
+  if ([body.error?.code, body.error?.type].some((value) =>
+    value === "context_length_exceeded" || value === "context_window_exceeded",
+  )) return {
+    type: "context_overflow",
+    message: "Input exceeds context window of this model",
+    responseBody,
+  }
 
   switch (body?.error?.code || body?.error?.type) {
     case "overloaded_error":
@@ -272,12 +356,6 @@ export function parseStreamError(input: unknown): ParsedStreamError | undefined 
         type: "api_error",
         message: typeof body?.error?.message === "string" ? body.error.message : "OpenAI server error",
         isRetryable: true,
-        responseBody,
-      }
-    case "context_length_exceeded":
-      return {
-        type: "context_overflow",
-        message: "Input exceeds context window of this model",
         responseBody,
       }
     case "insufficient_quota":
@@ -323,7 +401,14 @@ export type ParsedAPICallError =
 export function parseAPICallError(input: { providerID: ProviderID; error: APICallError; allow404Retry?: boolean }): ParsedAPICallError {
   const m = message(input.providerID, input.error)
   const body = json(input.error.responseBody)
-  if (isOverflow(m) || input.error.statusCode === 413 || body?.error?.code === "context_length_exceeded") {
+  if (
+    isOverflow(m) ||
+    input.error.statusCode === 413 ||
+    body?.error?.code === "context_length_exceeded" ||
+    body?.error?.code === "context_window_exceeded" ||
+    body?.error?.type === "context_length_exceeded" ||
+    body?.error?.type === "context_window_exceeded"
+  ) {
     return {
       type: "context_overflow",
       message: m,

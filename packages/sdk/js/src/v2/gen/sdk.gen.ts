@@ -175,6 +175,8 @@ import type {
   SessionRecoveryResponses,
   SessionResumeErrors,
   SessionResumeResponses,
+  SessionResumeUserErrors,
+  SessionResumeUserResponses,
   SessionRevertErrors,
   SessionRevertResponses,
   SessionShareErrors,
@@ -229,8 +231,6 @@ import type {
   WorkflowResumeResponses,
   WorkflowStructureResponses,
   WorkflowTranscriptResponses,
-  WorktreeAutoErrors,
-  WorktreeAutoResponses,
   WorktreeCreateErrors,
   WorktreeCreateInput,
   WorktreeCreateResponses,
@@ -938,7 +938,7 @@ export class Title extends HeyApiClient {
   /**
    * Generate conversation title
    *
-   * Generate a short conversation title with the configured lite model and deterministic fallback.
+   * Generate a short conversation title with the configured lite model, optional source model, and deterministic fallback.
    */
   public generate<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -958,6 +958,10 @@ export class Title extends HeyApiClient {
           }
       >
       locale?: string
+      model?: {
+        providerID: string
+        modelID: string
+      }
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -971,6 +975,7 @@ export class Title extends HeyApiClient {
             { in: "body", key: "text" },
             { in: "body", key: "parts" },
             { in: "body", key: "locale" },
+            { in: "body", key: "model" },
           ],
         },
       ],
@@ -1796,36 +1801,6 @@ export class Worktree extends HeyApiClient {
       },
     })
   }
-
-  /**
-   * Auto-create worktree on conflict
-   *
-   * Check for conflicts and auto-create a worktree if needed.
-   */
-  public auto<ThrowOnError extends boolean = false>(
-    parameters?: {
-      directory?: string
-      workspace?: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ) {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "query", key: "directory" },
-            { in: "query", key: "workspace" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<WorktreeAutoResponses, WorktreeAutoErrors, ThrowOnError>({
-      url: "/experimental/worktree/auto",
-      ...options,
-      ...params,
-    })
-  }
 }
 
 export class Session2 extends HeyApiClient {
@@ -2019,6 +1994,7 @@ export class Session2 extends HeyApiClient {
       directory?: string
       workspace?: string
       title?: string
+      expectedRevision?: number
       permission?: PermissionRuleset
       time?: {
         archived?: number
@@ -2035,6 +2011,7 @@ export class Session2 extends HeyApiClient {
             { in: "query", key: "directory" },
             { in: "query", key: "workspace" },
             { in: "body", key: "title" },
+            { in: "body", key: "expectedRevision" },
             { in: "body", key: "permission" },
             { in: "body", key: "time" },
           ],
@@ -2205,6 +2182,7 @@ export class Session2 extends HeyApiClient {
       directory?: string
       workspace?: string
       messageID?: string
+      title?: string
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -2217,6 +2195,7 @@ export class Session2 extends HeyApiClient {
             { in: "query", key: "directory" },
             { in: "query", key: "workspace" },
             { in: "body", key: "messageID" },
+            { in: "body", key: "title" },
           ],
         },
       ],
@@ -2638,7 +2617,7 @@ export class Session2 extends HeyApiClient {
   /**
    * List interrupted turn recovery candidates
    *
-   * Return the latest incomplete assistant turn that can be resumed without creating a user message.
+   * Return resumable targets: incomplete assistant turns and/or a trailing parent user (D16f).
    */
   public recovery<ThrowOnError extends boolean = false>(
     parameters: {
@@ -2683,6 +2662,8 @@ export class Session2 extends HeyApiClient {
       agentID?: string
       task_id?: string
       titleLocale?: string
+      modelProviderID?: string
+      modelID?: string
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -2698,6 +2679,8 @@ export class Session2 extends HeyApiClient {
             { in: "query", key: "agentID" },
             { in: "query", key: "task_id" },
             { in: "query", key: "titleLocale" },
+            { in: "query", key: "modelProviderID" },
+            { in: "query", key: "modelID" },
           ],
         },
       ],
@@ -2706,6 +2689,55 @@ export class Session2 extends HeyApiClient {
       url: "/session/{sessionID}/turn/{assistantMessageID}/resume",
       ...options,
       ...params,
+    })
+  }
+
+  /**
+   * Resume from a trailing user
+   *
+   * Start the next turn from a trailing user message without creating another user message.
+   */
+  public resumeUser<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      agentID?: string
+      task_id?: string
+      titleLocale?: string
+      modelProviderID?: string
+      modelID?: string
+      userMessageID?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "agentID" },
+            { in: "query", key: "task_id" },
+            { in: "query", key: "titleLocale" },
+            { in: "query", key: "modelProviderID" },
+            { in: "query", key: "modelID" },
+            { in: "body", key: "userMessageID" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SessionResumeUserResponses, SessionResumeUserErrors, ThrowOnError>({
+      url: "/session/{sessionID}/resume",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
     })
   }
 
@@ -2798,6 +2830,8 @@ export class Session2 extends HeyApiClient {
       messageID?: string
       agent?: string
       model?: string
+      source?: "user" | "spawn" | "hook"
+      provenance?: Provenance
       arguments?: string
       command?: string
       titleLocale?: string
@@ -2805,14 +2839,30 @@ export class Session2 extends HeyApiClient {
       system?: string
       systemMode?: "append" | "replace-agent"
       harness?: "auto" | "codex" | "default"
-      parts?: Array<{
-        id?: string
-        type: "file"
-        mime: string
-        filename?: string
-        url: string
-        source?: FilePartSource
-      }>
+      parts?: Array<
+        | {
+            id?: string
+            type: "text"
+            text: string
+            synthetic?: boolean
+            ignored?: boolean
+            time?: {
+              start: number
+              end?: number
+            }
+            metadata?: {
+              [key: string]: unknown
+            }
+          }
+        | {
+            id?: string
+            type: "file"
+            mime: string
+            filename?: string
+            url: string
+            source?: FilePartSource
+          }
+      >
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -2827,6 +2877,8 @@ export class Session2 extends HeyApiClient {
             { in: "body", key: "messageID" },
             { in: "body", key: "agent" },
             { in: "body", key: "model" },
+            { in: "body", key: "source" },
+            { in: "body", key: "provenance" },
             { in: "body", key: "arguments" },
             { in: "body", key: "command" },
             { in: "body", key: "titleLocale" },
@@ -3009,7 +3061,7 @@ export class Session2 extends HeyApiClient {
   /**
    * List session actors
    *
-   * List actors registered for a session.
+   * List actors with execution status in this server runtime; persisted outcomes are preserved.
    */
   public actors<ThrowOnError extends boolean = false>(
     parameters: {

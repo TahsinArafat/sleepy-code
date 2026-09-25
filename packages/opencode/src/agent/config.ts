@@ -41,18 +41,9 @@ export function resolveInvalidOutputPolicy(input: {
   return "actor"
 }
 
-/** Decide how a permission `ask` from the current turn should be routed:
- *  - system agent -> non-interactive (auto-deny, no human to answer)
- *  - orchestrator peer (background + mode:peer + has a parent) -> forward the ask
- *    for approval (interactive, with the parent session as approval route)
- *  - other background WITH a parent session id (child-session peers, or
- *    same-session actor subagents via sessionID) -> non-interactive but INHERIT:
- *    reuse the parent session's already-held grants (auto-allow granted paths,
- *    fail-closed on ungranted ones — never hang)
- *  - background with neither sessionParentID nor (for mode:subagent) sessionID
- *    -> non-interactive (auto-deny)
- *  - normal foreground -> interactive
- *  Pure function so the gate is unit-testable without a full prompt turn.
+/** Background actor subagents still have an attached client to answer asks.
+ * Other background actors can only reuse existing parent grants; system agents
+ * remain non-interactive even when a parent grant is available.
  */
 export function decideAskRouting(input: {
   askActor?: { agent: string; background: boolean; mode: string; parentActorID?: string }
@@ -62,45 +53,17 @@ export function decideAskRouting(input: {
    *  under this id, so it is the inherit parent for that case. */
   sessionID?: string
   agentName: string
-  // When false, orchestrator-peer forwarding is disabled (feature flag off) and
-  // a peer falls back to the background auto-deny path.
-  orchestratorEnabled?: boolean
-}): { interactive: boolean; forward?: { parentSessionID: string }; inherit?: { parentSessionID: string } } {
+}): { interactive: boolean; inherit?: { parentSessionID: string } } {
   const isSystemAgent = input.askActor
     ? SYSTEM_SPAWNED_AGENT_TYPES.has(input.askActor.agent)
     : SYSTEM_SPAWNED_AGENT_TYPES.has(input.agentName)
   if (isSystemAgent) return { interactive: false }
-  const isOrchestratorPeer =
-    input.orchestratorEnabled !== false &&
-    !!input.askActor?.background &&
-    input.askActor?.mode === "peer" &&
-    !!(input.askActor?.parentActorID || input.sessionParentID)
-  if (isOrchestratorPeer && input.sessionParentID) {
-    return { interactive: true, forward: { parentSessionID: input.sessionParentID } }
+  const interactive = !input.askActor?.background || input.askActor.mode === "subagent"
+  // Only same-session subagents may use their own session as the grant source.
+  const inheritParent =
+    input.sessionParentID ?? (input.askActor?.mode === "subagent" ? input.sessionID : undefined)
+  if (inheritParent) {
+    return { interactive, inherit: { parentSessionID: inheritParent } }
   }
-  // Ordinary background subagent: don't fail closed outright — let it inherit
-  // the permissions the parent already holds a grant for. Still non-interactive
-  // (no human attached); the ask consults the parent snapshot and auto-allows
-  // only genuinely-granted paths, else fails closed.
-  //
-  // Inherit parent resolution:
-  // - child-session peer (orchestrator worker): session.parentID points at the
-  //   orchestrator session that published the grants.
-  // - same-session actor spawn/run subagent: they share the parent session, so
-  //   session.parentID is empty on a root session. Grants were published under
-  //   the current session id — use that. Without this, same-session actor
-  //   subagents silently skipped inherit and only skip-all could save them.
-  //
-  // sessionID fallback is subagent-only on purpose: a peer without
-  // sessionParentID is a broken registration (its parent is the orchestrator
-  // session). Looking up the peer's own session as "parent" would silently
-  // broaden that edge; keep it fail-closed.
-  if (input.askActor?.background) {
-    const inheritParent = input.sessionParentID
-      ?? (input.askActor.mode === "subagent" ? input.sessionID : undefined)
-    if (inheritParent) {
-      return { interactive: false, inherit: { parentSessionID: inheritParent } }
-    }
-  }
-  return { interactive: !input.askActor?.background }
+  return { interactive }
 }

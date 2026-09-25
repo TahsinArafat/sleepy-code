@@ -47,15 +47,14 @@ const log = Log.create({ service: "mcp.sampling" })
  *    total budget made it ~48x more impatient than the main path for no stated
  *    reason.
  *
- * 2. THE APPROVAL BOUND (30 s). `src/permission/index.ts` settles this too, and the
- *    other way round from how it was assumed: THE ORDINARY INTERACTIVE ASK HAS NO
- *    TIMEOUT AT ALL. It awaits the Deferred raced against the caller's abort signal,
- *    so a human takes as long as they take. Only two special cases are bounded — a
- *    FORWARDED ask (`FORWARD_DENY_TIMEOUT_MS`, :24) and a forced-ask under skip-all
- *    (`skipAllForcedAskTimeoutMs`, :29, env-overridable). Sampling's ask is neither:
- *    it passes no `forward`, and `mcp_sampling` is not in `FORCED_ASK` (:195, which
- *    holds only `bash_delete`). So a TUI chat prompt waits indefinitely while
- *    sampling used to give up at 30 s on the same kind of prompt.
+ * 2. THE APPROVAL BOUND (30 s). `src/permission/index.ts` settles this too. Sampling
+ *    does not apply its own independent 30 s approval ceiling: once an ask is in
+ *    the human-confirmation wait it follows Permission's optional
+ *    `permissionAskTimeoutMs`. Unset, the wait is unbounded (raced only against
+ *    the caller's abort signal). Set, ordinary and forced asks alike are bounded
+ *    by that value. Sampling's ask is ordinary, so a TUI chat prompt can wait as
+ *    long as the operator takes while sampling used to give up at 30 s on the
+ *    same kind of prompt.
  *
  * WHAT NO LONGER GETS CAUGHT, stated rather than glossed. The stall detector covers
  * a provider that goes quiet, on any request. Three things it does not cover:
@@ -573,6 +572,12 @@ export interface HandleInput {
   readonly chunkTimeoutMs?: number
   /** Absent when the server did not ask for progress; then nothing is emitted. */
   readonly liveness?: Liveness
+  /**
+   * Effective per-server policy for this connection generation. Host overrides can
+   * deny sampling for a server the user config would otherwise allow; when present
+   * this wins over re-reading user config alone.
+   */
+  readonly samplingPolicy?: Policy
 }
 
 /**
@@ -581,12 +586,22 @@ export interface HandleInput {
  */
 export const handle = Effect.fn("MCP.sampling.handle")(function* (input: HandleInput) {
   const started = Date.now()
+  // Host-published deny is process-local and must win before any service lookup.
+  if (input.samplingPolicy === "deny") {
+    return yield* Effect.fail(
+      new SamplingError(REJECTED_CODE, `sampling is denied for MCP server "${input.server}"`, {
+        server: input.server,
+        policy: "deny",
+        deniedBy: "mcp.sampling",
+      }),
+    )
+  }
   const cfgSvc = yield* Config.Service
   const provider = yield* Provider.Service
   const permission = yield* Permission.Service
   const cfg = yield* cfgSvc.get()
 
-  const policy = policyFor(cfg as never, input.server)
+  const policy = input.samplingPolicy ?? policyFor(cfg as never, input.server)
   // TWO controls gate sampling and a `deny` from either one wins: the per-server
   // `mcp.<server>.sampling` policy, and the standard `permission.mcp_sampling`
   // ruleset. Evaluating the ruleset HERE rather than leaning on permission.ask
@@ -977,6 +992,7 @@ export function serve(
   bridge: Bridge,
   livenessIntervalMs: number = DEFAULT_LIVENESS_INTERVAL,
   chunkTimeoutMs?: number,
+  samplingPolicy?: Policy,
 ) {
   client.setRequestHandler(CreateMessageRequestSchema, async (request, extra) => {
     const params = (request.params ?? {}) as CreateMessageParams
@@ -997,6 +1013,7 @@ export function serve(
       signal: extra?.signal,
       chunkTimeoutMs,
       liveness,
+      samplingPolicy,
     }).pipe(Effect.exit)
 
     let fibers = inFlight.get(client)

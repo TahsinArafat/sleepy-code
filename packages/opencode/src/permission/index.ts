@@ -16,14 +16,7 @@ import os from "os"
 import { evaluate as evalRule } from "./evaluate"
 import { PermissionID } from "./schema"
 import { forwardRef } from "./permission-forward-ref"
-import { inboxServiceRef } from "@/inbox/inbox-ref"
-import { TuiEvent } from "@/cli/cmd/tui/event"
-import { EffectBridge } from "@/effect"
 
-// A forwarded ask (orchestrator peer) that no one ever approves resolves DENY
-// after this bound rather than hanging — preserving the hang-safety the old
-// interactive:false gate guaranteed. Aligned with the actor registry stuck bound.
-const FORWARD_DENY_TIMEOUT_MS = 5 * 60 * 1000
 // Legacy env var — maps to permissionAskTimeoutMs initial value for backward
 // compat. When set to a positive integer, new instances start with that timeout.
 // When unset or 0, permissionAskTimeoutMs starts as null (no timeout).
@@ -136,19 +129,9 @@ export const AskInput = Schema.Struct({
   // (SYSTEM_SPAWNED_AGENT_TYPES) which have no attached human to reply. Default
   // (undefined/true) preserves all existing interactive behavior.
   interactive: Schema.optional(Schema.Boolean),
-  // Orchestrator-peer forward mode. When present, an ask that would block is
-  // FORWARDED for approval instead of auto-denied: the orchestrator may
-  // pre-authorize it via a delegation grant (keyed by parentSessionID), else it
-  // waits (bounded) for a human/orchestrator reply. Internal to the ask call —
-  // NOT persisted on the Request schema.
-  forward: Schema.optional(Schema.Struct({ parentSessionID: Schema.String })),
-  // Parent-grant inheritance for ordinary (non-peer) background subagents. When
-  // present, an ask that would block is NOT auto-denied outright: it is first
-  // checked against the PARENT session's approved ruleset (published process-
-  // wide via forwardRef.parentGrants). If the parent already holds a matching
-  // grant for every pattern, the child is auto-allowed with no human round-trip;
-  // otherwise it fails closed (DeniedError) — never hangs, never blocks on a
-  // human. Distinct from `forward` (orchestrator-peer human/delegation routing).
+  // Matching parent grants are a fast path, subject to deny and forced-ask
+  // precedence. A miss leaves the normal ask path intact: interactive:false
+  // fails closed; true/undefined waits for a reply.
   inherit: Schema.optional(Schema.Struct({ parentSessionID: Schema.String })),
 })
   .annotate({ identifier: "PermissionAskInput" })
@@ -219,7 +202,8 @@ export function evaluate(permission: string, pattern: string, ...rulesets: Rules
 // perform an irreversible action must be recorded in-band, not inherited from
 // a broad blanket rule. Explicit deny still wins; the tool-side delete exemption
 // (dedicated or enabled by dangerous startup mode) is the only bypass.
-const FORCED_ASK = new Set(["bash_delete"])
+// computer is interactive UI control — never auto-allow via inherit/approved/skip-all.
+const FORCED_ASK = new Set(["bash_delete", "computer"])
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Permission") {}
 
@@ -227,7 +211,6 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const bus = yield* Bus.Service
-    const bridge = yield* EffectBridge.make()
     const state = yield* InstanceState.make<State>(
       Effect.fn("Permission.state")(function* (ctx) {
         const row = Database.use((db) =>
@@ -295,7 +278,8 @@ export const layer = Layer.effect(
       // Dangerous startup mode and the dedicated delete exemption may bypass
       // the human confirmation, but only after every explicit bash_delete deny
       // above has had a chance to reject the request.
-      if (needsAsk && forced && s.autoApproveDelete) {
+      // Delete exemption applies only to bash_delete — not other FORCED_ASK (computer).
+      if (needsAsk && request.permission === "bash_delete" && s.autoApproveDelete) {
         log.info("auto-approve-delete active, auto-allowing", {
           permission: request.permission,
           patterns: request.patterns,
@@ -317,26 +301,11 @@ export const layer = Layer.effect(
       // published grant snapshot; auto-allow ONLY when the parent already grants
       // every requested pattern (same evaluate() the parent would run). Ordered
       // AFTER the deny loop (explicit deny still wins) and forced-ask still falls
-      // through to the fail-closed/human path below. A path the parent doesn't
-      // hold isn't matched → we do NOT return here → it fails closed at the
-      // non-interactive gate. No human wait, no hang.
+      // through to the ask/deny path below. A path the parent doesn't hold isn't
+      // matched → we do NOT return here → the ask continues for interactive
+      // callers, and the non-interactive gate below denies it. Never an
+      // unbounded human wait.
       if (needsAsk && input.inherit && !forced) {
-        // An EXPLICIT `session grant-approval <child|all>` pre-authorizes this
-        // child. That grant is DB-backed (write-through in forwardRef.setGrant),
-        // so unlike the in-memory parentGrants snapshot it survives a restart and
-        // is visible to a child running in its own Instance/process. Checked here
-        // because `decideAskRouting` routes an ordinary background subagent to
-        // `inherit`, never to `forward` — the only other place grantAllowed is
-        // consulted — so without this the documented command silently does
-        // nothing for subagents and their asks fail closed below.
-        if (forwardRef.grantAllowed(input.inherit.parentSessionID, request.sessionID)) {
-          log.info("parent holds an explicit approval grant, auto-allowing", {
-            permission: request.permission,
-            patterns: request.patterns,
-            parentSessionID: input.inherit.parentSessionID,
-          })
-          return
-        }
         const parentSnapshot = forwardRef.getParentGrants(input.inherit.parentSessionID)
         if (parentSnapshot) {
           // Mirror the parent's own two-phase evaluation (see the deny loop
@@ -363,7 +332,7 @@ export const layer = Layer.effect(
         }
       }
 
-      // Non-interactive caller (system-spawned background agent): no human is
+      // Non-interactive caller (system agent): no client is
       // attached to reply, so an ask that would block instead fails clean with
       // the same DeniedError an explicit "deny" rule produces. Emits no
       // Event.Asked and creates no Deferred → provably cannot hang.
@@ -385,52 +354,6 @@ export const layer = Layer.effect(
       const deferred = yield* Deferred.make<void, RejectedError | CorrectedError>()
       pending.set(id, { info, deferred })
       yield* bus.publish(Event.Asked, info)
-
-      // Orchestrator-peer forward mode: either the orchestrator holds a delegation
-      // grant for this child (pre-authorized → resolve allow immediately, no human
-      // round-trip), or record the pending forward so `session approve` can find
-      // it and race a bounded deny-timeout below.
-      if (input.forward) {
-        const parentSessionID = input.forward.parentSessionID
-        if (forwardRef.grantAllowed(parentSessionID, info.sessionID)) {
-          yield* Deferred.succeed(deferred, void 0)
-        } else {
-          // Store a resolver bound to THIS ask's Deferred (in this child's
-          // Instance) so `session approve` can resolve it from the orchestrator's
-          // Instance. allow → succeed; deny → fail(RejectedError). Resolving an
-          // already-settled Deferred is a no-op (idempotent with a direct reply).
-          forwardRef.addPending(String(id), {
-            childSessionID: info.sessionID,
-            parentSessionID,
-            resolve: (decision) =>
-              bridge.fork(
-                decision === "allow"
-                  ? Deferred.succeed(deferred, void 0)
-                  : Deferred.fail(deferred, new RejectedError()),
-              ),
-          })
-          // Wake the orchestrator (inbox note to its main actor) so it learns a
-          // child needs approval, and toast the user (child may be unfocused).
-          // Best-effort: never fail the ask on a notify hiccup.
-          const inbox = inboxServiceRef.current
-          if (inbox) {
-            yield* inbox
-              .send({
-                receiverSessionID: parentSessionID as SessionID,
-                receiverActorID: "main",
-                senderSessionID: info.sessionID,
-                content: `<permission-request child="${info.sessionID}" requestID="${id}">Child session ${info.sessionID} needs approval to use "${info.permission}". Use \`session approve ${info.sessionID}\` to allow it once, or \`session grant-approval ${info.sessionID}\` (or \`all\`) to auto-approve future asks.</permission-request>`,
-              })
-              .pipe(Effect.ignore)
-          }
-          yield* Effect.promise(() =>
-            Bus.publish(TuiEvent.ToastShow, {
-              message: `Child session needs approval to use "${info.permission}"`,
-              variant: "warning",
-            }),
-          ).pipe(Effect.ignore)
-        }
-      }
 
       // Spec ③ P3: race against caller's abortSignal so a stranded ask
       // doesn't block forever when the surrounding scope is interrupted.
@@ -474,22 +397,7 @@ export const layer = Layer.effect(
           )
         : deferredAwait
 
-      // A forwarded ask that no approver resolves must still terminate (deny),
-      // never hang. Race the bounded timeout; the grant path above already
-      // resolved the Deferred, so it wins instantly when pre-authorized.
-      // raceFirst for the same reason as above: under `race` a forwarded ask
-      // that the approver DENIED failed the Deferred, which counted as no
-      // winner, so the caller waited out the whole FORWARD_DENY_TIMEOUT_MS
-      // before seeing the rejection it already had.
-      let guarded = input.forward
-        ? Effect.raceFirst(
-            main,
-            Effect.sleep(`${FORWARD_DENY_TIMEOUT_MS} millis`).pipe(
-              Effect.andThen(() => Deferred.fail(deferred, new RejectedError())),
-              Effect.andThen(() => Effect.fail(new RejectedError())),
-            ),
-          )
-        : main
+      let guarded = main
 
       // Permission ask timeout: when permissionAskTimeoutMs is set, any ask
       // that reaches the human-confirmation path (normal or forced-ask) is
@@ -527,7 +435,6 @@ export const layer = Layer.effect(
         guarded,
         Effect.sync(() => {
           pending.delete(id)
-          forwardRef.removePending(String(id))
         }),
       )
     })
@@ -550,8 +457,15 @@ export const layer = Layer.effect(
           input.message ? new CorrectedError({ feedback: input.message }) : new RejectedError(),
         )
 
+        // Cascade reject only within the same source (tool.messageID). Shared
+        // sessionID actor subagents must not see A's reject kill B's pending asks (R20).
+        const src = existing.info.tool?.messageID
         for (const [id, item] of pending.entries()) {
           if (item.info.sessionID !== existing.info.sessionID) continue
+          // Strict: cascade only when both sides carry the same source id.
+          // Missing messageID must not inherit another actor's reject (R20).
+          const itemSrc = item.info.tool?.messageID
+          if (!(src && itemSrc && src === itemSrc)) continue
           pending.delete(id)
           yield* bus.publish(Event.Replied, {
             sessionID: item.info.sessionID,

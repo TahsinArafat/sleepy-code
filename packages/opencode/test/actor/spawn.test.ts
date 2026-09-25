@@ -46,7 +46,8 @@ import { TaskRegistry } from "../../src/task/registry"
 import { defaultLayer as SchedulerDefaultLayer } from "../../src/cron/scheduler"
 import { Auth } from "../../src/auth"
 import { Database } from "../../src/storage"
-import { MessageTable } from "../../src/session/session.sql"
+import { MessageTable, PartTable } from "../../src/session/session.sql"
+import { InboxTable } from "../../src/inbox/inbox.sql"
 import { MessageV2 } from "../../src/session/message-v2"
 import { MessageID, PartID } from "../../src/session/schema"
 import { Instance } from "../../src/project/instance"
@@ -118,7 +119,9 @@ const lsp = Layer.succeed(
 )
 
 const status = SessionStatus.layer.pipe(Layer.provideMerge(Bus.layer))
-const run = SessionRunState.layer.pipe(Layer.provide(status))
+// Share ONE SessionStatus instance with SessionRunState (provideMerge exports it).
+// A second bare `status` in deps would be a separate InstanceState and hide busy/idle.
+const run = SessionRunState.layer.pipe(Layer.provideMerge(status))
 const infra = Layer.mergeAll(NodeFileSystem.layer, CrossSpawnSpawner.defaultLayer)
 
 function makeLayer(opts?: { settledError: () => NonNullable<MessageV2.Assistant["error"]> | undefined }) {
@@ -136,7 +139,7 @@ function makeLayer(opts?: { settledError: () => NonNullable<MessageV2.Assistant[
     lsp,
     mcp,
     AppFileSystem.defaultLayer,
-    status,
+    run,
   ).pipe(Layer.provideMerge(infra))
   const question = Question.layer.pipe(Layer.provideMerge(deps))
   const todo = Todo.layer.pipe(Layer.provideMerge(deps))
@@ -675,6 +678,202 @@ describe("Actor.cancel", () => {
   )
 })
 
+describe("SessionPrompt.cancel — process-group kill", () => {
+  // Product contract: session abort simulates a kill signal and must propagate
+  // to all same-session subagents (not only main). Independent of Orchestrator.
+  // Quiet abort: cancel notifications must not re-wake the aborted session.
+  it.live(
+    "session abort cascades running actors (registry cancelled, session idle, no wake)",
+    () =>
+      provideTmpdirServer(
+        Effect.fnUntraced(function* ({ llm }) {
+          const actor = yield* Actor.Service
+          const prompt = yield* SessionPrompt.Service
+          const reg = yield* ActorRegistry.Service
+          const status = yield* SessionStatus.Service
+          const session = yield* Session.Service
+          const runState = yield* SessionRunState.Service
+          const parent = yield* session.create({
+            title: "abort cascade",
+            permission: [{ permission: "*", pattern: "*", action: "allow" }],
+          })
+          // hang is a queued response per LLM request — enqueue one hang for
+          // main + actor A + actor B so all three model calls stay pending.
+          yield* llm.hang
+          yield* llm.hang
+          yield* llm.hang
+          // Real main turn (runLoop sets SessionStatus.busy for main) with hang LLM.
+          yield* prompt
+            .prompt({
+              sessionID: parent.id,
+              agent: "build",
+              agentID: "main",
+              parts: [{ type: "text", text: "main long turn" }],
+              model: ref,
+            })
+            .pipe(Effect.forkChild)
+          for (let i = 0; i < 80; i++) {
+            const st = yield* status.get(parent.id)
+            if (st.type === "busy") break
+            yield* Effect.sleep("50 millis")
+          }
+          expect((yield* status.get(parent.id)).type).toBe("busy")
+          const busyBefore = yield* runState.assertNotBusy(parent.id, "main").pipe(Effect.exit)
+          expect(busyBefore._tag).toBe("Failure")
+
+          const spawnOne = (task: string) =>
+            actor.spawn({
+              mode: "subagent",
+              sessionID: parent.id,
+              agentType: "build",
+              task,
+              context: "none",
+              tools: ["read"],
+              background: true,
+              model: ref,
+            })
+          const a = yield* spawnOne("long background task A")
+          const b = yield* spawnOne("long background task B")
+
+          // Wait until each actor is actually executing (running), not merely
+          // registered (pending). hang LLM keeps runTurn in running once entered.
+          const waitRunning = (sessionID: string, actorID: string) =>
+            Effect.gen(function* () {
+              let row = yield* reg.get(sessionID as never, actorID)
+              for (let i = 0; i < 80 && row?.status !== "running"; i++) {
+                yield* Effect.sleep("50 millis")
+                row = yield* reg.get(sessionID as never, actorID)
+              }
+              return row
+            })
+          const rowA = yield* waitRunning(a.sessionID, a.actorID)
+          const rowB = yield* waitRunning(b.sessionID, b.actorID)
+          expect(rowA?.status).toBe("running")
+          expect(rowB?.status).toBe("running")
+          // All three model requests must have actually arrived (hang-queued).
+          yield* llm.wait(3)
+
+          yield* prompt.cancel(parent.id)
+
+          const afterA = yield* reg.get(a.sessionID, a.actorID)
+          const afterB = yield* reg.get(b.sessionID, b.actorID)
+          expect(afterA?.status).toBe("idle")
+          expect(afterA?.lastOutcome).toBe("cancelled")
+          expect(afterB?.status).toBe("idle")
+          expect(afterB?.lastOutcome).toBe("cancelled")
+          expect((yield* status.get(parent.id)).type).toBe("idle")
+          const busyAfter = yield* runState.assertNotBusy(parent.id, "main").pipe(Effect.exit)
+          expect(busyAfter._tag).toBe("Success")
+
+          // Quiet abort: no wake — session stays idle, actors stay cancelled (not running).
+          yield* Effect.sleep("400 millis")
+          expect((yield* status.get(parent.id)).type).toBe("idle")
+          const laterA = yield* reg.get(a.sessionID, a.actorID)
+          const laterB = yield* reg.get(b.sessionID, b.actorID)
+          expect(laterA?.status).toBe("idle")
+          expect(laterA?.lastOutcome).toBe("cancelled")
+          expect(laterB?.status).toBe("idle")
+          expect(laterB?.lastOutcome).toBe("cancelled")
+          const busyLater = yield* runState.assertNotBusy(parent.id, "main").pipe(Effect.exit)
+          expect(busyLater._tag).toBe("Success")
+
+          // R14 terminal inline (TP-R14-14): quiet abort still materializes cancelled
+          // notifications into parent session history (synthetic message parts).
+          // wake:false only skips auto-fork — the part must exist for chat UI.
+          const parts = yield* Effect.sync(() =>
+            Database.use((db) =>
+              db
+                .select({ data: PartTable.data })
+                .from(PartTable)
+                .where(eq(PartTable.session_id, parent.id))
+                .all(),
+            ),
+          )
+          const notes = parts
+            .map((row) => row.data as { type?: string; synthetic?: boolean; text?: string })
+            .filter((d) => d?.type === "text" && d?.synthetic === true && typeof d.text === "string")
+            .map((d) => d.text as string)
+            .filter((text) => text.includes("<actor-notification>"))
+          expect(notes.length).toBeGreaterThanOrEqual(2)
+          expect(notes.filter((text) => text.includes("was cancelled")).length).toBeGreaterThanOrEqual(2)
+          // Drain consumed the quiet inbox rows — no leftover durable wake backlog.
+          const inboxLeft = yield* Effect.sync(() =>
+            Database.use((db) =>
+              db
+                .select({ id: InboxTable.id })
+                .from(InboxTable)
+                .where(and(eq(InboxTable.receiver_session_id, parent.id), eq(InboxTable.receiver_actor_id, "main")))
+                .all(),
+            ),
+          )
+          expect(inboxLeft.length).toBe(0)
+        }),
+        { git: true, config: providerCfg },
+      ),
+  )
+
+  // R006: registry-only quiet cancel (pending row, no live ActorExecution) must
+  // still materialize a cancelled inbox notification — wake:false only skips auto-fork.
+  it.live(
+    "registry-only quiet cancel materializes cancelled notification without wake",
+    () =>
+      provideTmpdirServer(
+        Effect.fnUntraced(function* () {
+          const actor = yield* Actor.Service
+          const reg = yield* ActorRegistry.Service
+          const sessions = yield* Session.Service
+          const parent = yield* sessions.create({
+            title: "registry-only abort",
+            permission: [{ permission: "*", pattern: "*", action: "allow" }],
+          })
+          yield* reg.register({
+            sessionID: parent.id,
+            actorID: "pending-1",
+            mode: "subagent",
+            agent: "build",
+            description: "pending child",
+            contextMode: "none",
+            parentActorID: "main",
+            background: true,
+            lifecycle: "ephemeral",
+          })
+          yield* reg.updateStatus(parent.id, "pending-1", { status: "pending" })
+
+          yield* actor.cancel(parent.id, "pending-1", "forced", { wake: false })
+
+          const after = yield* reg.get(parent.id, "pending-1")
+          expect(after?.status).toBe("idle")
+          expect(after?.lastOutcome).toBe("cancelled")
+          const rows = yield* Effect.sync(() =>
+            Database.use((db) =>
+              db
+                .select()
+                .from(InboxTable)
+                .where(and(eq(InboxTable.receiver_session_id, parent.id), eq(InboxTable.receiver_actor_id, "main")))
+                .all(),
+            ),
+          )
+          expect(rows.length).toBe(1)
+          const content = rows[0].content as { text?: string }
+          expect(content.text).toContain("cancelled")
+          // Second cancel is a no-op — no duplicate notify.
+          yield* actor.cancel(parent.id, "pending-1", "forced", { wake: false })
+          const again = yield* Effect.sync(() =>
+            Database.use((db) =>
+              db
+                .select()
+                .from(InboxTable)
+                .where(and(eq(InboxTable.receiver_session_id, parent.id), eq(InboxTable.receiver_actor_id, "main")))
+                .all(),
+            ),
+          )
+          expect(again.length).toBe(1)
+        }),
+        { git: true, config: providerCfg },
+      ),
+  )
+})
+
 describe("Actor.spawn agent_id persistence", () => {
   it.live("subagent's user message is persisted with agent_id = actorID", () =>
     provideTmpdirServer(
@@ -915,6 +1114,8 @@ describe("Actor forkContext lifecycle", () => {
         const session = yield* Session.Service
         const first = yield* session.create({ title: "first fork context" })
         const second = yield* session.create({ title: "second fork context" })
+        // Both executors must remain live while cancellation joins the first.
+        yield* llm.hang
         yield* llm.hang
 
         const firstResult = yield* actor.spawn({

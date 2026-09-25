@@ -53,21 +53,50 @@ describe("adapter declarations", () => {
     }
   })
 
-  test("openai-compatible declares audio supported only for wav/mp3/mpeg", () => {
+  test("openai-compatible declares audio supported for the Sleepy formats (wav/mp3/flac/m4a/ogg)", () => {
     const declaration = ModelCapability.adapterDeclaration("@ai-sdk/openai-compatible")
     expect(declaration.audio.support).toBe("supported")
-    expect(declaration.audio.mimeTypes).toEqual(["audio/wav", "audio/mp3", "audio/mpeg"])
+    expect(declaration.audio.mimeTypes).toEqual([
+      "audio/wav",
+      "audio/x-wav",
+      "audio/mp3",
+      "audio/mpeg",
+      "audio/flac",
+      "audio/x-flac",
+      "audio/mp4",
+      "audio/m4a",
+      "audio/x-m4a",
+      "audio/ogg",
+    ])
+  })
+
+  test("openai-compatible narrows video to the Sleepy formats (mp4/mov/avi/wmv)", () => {
+    const declaration = ModelCapability.adapterDeclaration("@ai-sdk/openai-compatible")
+    expect(declaration.video.support).toBe("supported")
+    expect(declaration.video.mimeTypes).toEqual(["video/mp4", "video/quicktime", "video/x-msvideo", "video/x-ms-wmv"])
+  })
+
+  test("google adapters declare video supported for any video MIME", () => {
+    for (const npm of ["@ai-sdk/google", "@ai-sdk/google-vertex"]) {
+      expect(ModelCapability.adapterDeclaration(npm).video).toEqual({
+        support: "supported",
+        mimeTypes: "any",
+        maxBytes: ModelCapability.DEFAULT_MAX_MEDIA_BYTES,
+      })
+    }
   })
 
   test("anthropic and bedrock adapters declare audio KNOWN-ABSENT, not unknown", () => {
     for (const npm of ["@ai-sdk/anthropic", "@ai-sdk/google-vertex/anthropic", "@ai-sdk/amazon-bedrock"]) {
       expect(ModelCapability.adapterDeclaration(npm).audio.support).toBe("unsupported")
+      expect(ModelCapability.adapterDeclaration(npm).video.support).toBe("unsupported")
     }
   })
 
-  test("an undeclared adapter reports audio as unknown rather than guessing", () => {
+  test("an undeclared adapter reports audio and video as unknown rather than guessing", () => {
     const declaration = ModelCapability.adapterDeclaration("@ai-sdk/some-future-provider")
     expect(declaration.audio.support).toBe("unknown")
+    expect(declaration.video.support).toBe("unknown")
     // Text and image stay usable so an unknown adapter is not locked out of
     // ordinary sampling.
     expect(declaration.text.support).toBe("supported")
@@ -110,9 +139,9 @@ describe("rejectionFor", () => {
   test("rejects an audio MIME the adapter does not accept", () => {
     const subject = model({ id: "sleepy-v2.5", audio: true })
     const reason = ModelCapability.rejectionFor(subject, [
-      { modality: "audio", mimeType: "audio/flac", bytes: 1000 },
+      { modality: "audio", mimeType: "audio/aac", bytes: 1000 },
     ])
-    expect(reason).toEqual({ kind: "mime-unsupported", modality: "audio", mimeType: "audio/flac" })
+    expect(reason).toEqual({ kind: "mime-unsupported", modality: "audio", mimeType: "audio/aac" })
   })
 
   test("rejects content over the declared byte cap", () => {

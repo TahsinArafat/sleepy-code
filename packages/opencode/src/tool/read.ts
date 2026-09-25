@@ -11,10 +11,70 @@ import { Instance } from "../project/instance"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { SessionCwd } from "./session-cwd"
 import { Instruction } from "../session/instruction"
-import { Provider } from "@/provider"
-import { isImageAttachment, isPdfAttachment, sniffAttachmentMime } from "@/util/media"
+import { ModelCapability, Provider } from "@/provider"
+import { shrinkAttachment } from "@/provider/image"
+import { builtinSkillRoot } from "@/skill/builtin/extract"
+import {
+  classifyAttachment,
+  fitsMediaBase64,
+  isReadAudioMime,
+  isReadImageMime,
+  isReadPdfMime,
+  isReadVideoMime,
+  looksLikeMediaMime,
+  oversizedAttachmentNotice,
+  oversizedMediaNotice,
+  READ_AUDIO_MIMES,
+  READ_IMAGE_MIMES,
+  READ_VIDEO_MIMES,
+  readMimeAllowlist,
+  sniffAttachmentMime,
+} from "@/util/media"
 
 const DEFAULT_READ_LIMIT = 2000
+
+// Format names for the finite read allowlists — what describeMedia advertises
+// and what the attachment branch will actually attach.
+const IMAGE_FORMAT_NAMES: Record<string, string> = {
+  "image/jpeg": "jpeg",
+  "image/png": "png",
+  "image/webp": "webp",
+  "image/gif": "gif",
+}
+const AUDIO_FORMAT_NAMES: Record<string, string> = {
+  "audio/wav": "wav",
+  "audio/x-wav": "wav",
+  "audio/mp3": "mp3",
+  "audio/mpeg": "mp3",
+}
+const VIDEO_FORMAT_NAMES: Record<string, string> = {
+  "video/mp4": "mp4",
+}
+
+function mediaFormatNames(kind: "image" | "audio" | "video") {
+  const names = kind === "image" ? IMAGE_FORMAT_NAMES : kind === "audio" ? AUDIO_FORMAT_NAMES : VIDEO_FORMAT_NAMES
+  const mimes = kind === "image" ? READ_IMAGE_MIMES : kind === "audio" ? READ_AUDIO_MIMES : READ_VIDEO_MIMES
+  return [...new Set([...mimes].map((mime) => names[mime] ?? mime))]
+}
+
+/**
+ * Model-dependent media paragraph for the tool description. Appended by the
+ * tool registry so a text-only model is never told it can attach media.
+ * Formats listed are the finite read allowlist, not the full adapter surface.
+ * PDF stays in the static read.txt line with a model-support caveat.
+ */
+export function describeMedia(model: Provider.Model | undefined) {
+  if (!model) return undefined
+  const image = model.capabilities.input.image ? `image (${mediaFormatNames("image").join(", ")})` : undefined
+  const audio = model.capabilities.input.audio ? `audio (${mediaFormatNames("audio").join(", ")})` : undefined
+  const video = model.capabilities.input.video ? `video (${mediaFormatNames("video").join(", ")})` : undefined
+  const kinds = [image, audio, video].filter((kind): kind is string => kind !== undefined)
+  if (kinds.length === 0) return undefined
+  return [
+    `- You can read and understand ${kinds.join(" and ")} files directly: this tool returns them as file attachments, and you can then describe, transcribe, summarize, or answer questions about their content yourself, without an external transcription or vision service.`,
+    `- Media is inlined when small enough (about 37 MB on disk, 50 MB once base64-encoded); otherwise the tool explains why the file was not read. Read the file first, then analyze its content in the same turn.`,
+  ].join("\n")
+}
 const MAX_LINE_LENGTH = 2000
 const MAX_LINE_SUFFIX = `... (line truncated to ${MAX_LINE_LENGTH} chars)`
 const MAX_BYTES = 50 * 1024
@@ -210,32 +270,92 @@ export const ReadTool = Tool.define(
       const sample = yield* readSample(filepath, Number(stat.size), SAMPLE_BYTES)
 
       const mime = sniffAttachmentMime(sample, AppFileSystem.mimeType(filepath))
-      if (isImageAttachment(mime)) {
-        // The active model is carried on ctx.extra.model (set on both the
-        // agent-call path and the @file resolution path, which passes messages: []).
-        // Fall back to resolving the last user message's model for any caller that
-        // doesn't populate extra. Mirrors tool/websearch/index.ts.
-        const extraModel = (ctx.extra as { model?: Provider.Model } | undefined)?.model
-        const messageModelRef = extraModel
-          ? undefined
-          : [...ctx.messages]
-              .reverse()
-              .map((m) => m.info)
-              .find((i): i is Extract<typeof i, { role: "user" }> => i.role === "user")?.model
-        const model =
-          extraModel ??
-          (messageModelRef
-            ? yield* provider
-                .getModel(messageModelRef.providerID, messageModelRef.modelID)
-                .pipe(Effect.catchDefect(() => Effect.succeed(undefined)))
-            : undefined)
+      // Finite allowlist only. mime-types maps code extensions such as .ts/.mts
+      // to video/mp2t; prefix matching must not send source files down the
+      // media path. Outside the list: binary media-like files still refuse with
+      // a convert hint; text-like payloads fall through to the text reader.
+      const inImage = isReadImageMime(mime)
+      const inPdf = isReadPdfMime(mime)
+      const inAudio = isReadAudioMime(mime)
+      const inVideo = isReadVideoMime(mime)
+      const inMedia = inImage || inPdf || inAudio || inVideo
+
+      if (!inMedia && looksLikeMediaMime(mime) && isBinaryFile(filepath, sample)) {
+        const allowlist = readMimeAllowlist(mime)
+        const kind = mime.startsWith("audio/") ? "audio" : mime.startsWith("video/") ? "video" : mime === "application/pdf" ? "PDF" : "image"
+        const accepted = allowlist ? [...allowlist].join(", ") : ""
+        const hintExt = kind === "audio" ? "wav" : kind === "video" ? "mp4" : kind === "PDF" ? "pdf" : "png"
+        const warning = [
+          `Cannot attach ${kind} "${path.basename(filepath)}" (${mime}) — read only attaches ${accepted || "a finite media MIME list"}, so the file was not read.`,
+          `Convert it first (e.g. ffmpeg -i "${filepath}" /tmp/example.${hintExt}) and read the converted file.`,
+        ].join("\n")
+        return {
+          title,
+          output: warning,
+          metadata: { preview: warning, truncated: false, loaded: loaded.map((item) => item.filepath) },
+        }
+      }
+
+      // Size gate on stat, before any bytes are read (see classifyAttachment):
+      // a rejected PDF or image is never read, an oversized image within the
+      // source ceiling is read and recompressed below. Either way nothing over
+      // the limit becomes base64 or reaches the session DB. Audio and video are
+      // not gated here: the provider bounds their ENCODED size, which the media
+      // branch below checks with fitsMediaBase64.
+      const verdict = inImage || inPdf ? classifyAttachment(mime, Number(stat.size)) : "fits"
+      if (verdict === "reject") {
+        const warning = oversizedAttachmentNotice({
+          label: `"${path.basename(filepath)}" (${mime})`,
+          size: Number(stat.size),
+          hint: "It was not read.",
+        })
+        return {
+          title,
+          output: warning,
+          metadata: { preview: warning, truncated: false, loaded: loaded.map((item) => item.filepath) },
+        }
+      }
+      // The active model is carried on ctx.extra.model (set on both the
+      // agent-call path and the @file resolution path, which passes messages: []).
+      // Fall back to resolving the last user message's model for any caller that
+      // doesn't populate extra. Mirrors tool/websearch/index.ts.
+      const extraModel = (ctx.extra as { model?: Provider.Model } | undefined)?.model
+      const messageModelRef = extraModel
+        ? undefined
+        : [...ctx.messages]
+            .reverse()
+            .map((m) => m.info)
+            .find((i): i is Extract<typeof i, { role: "user" }> => i.role === "user")?.model
+      const model =
+        extraModel ??
+        (messageModelRef
+          ? yield* provider
+              .getModel(messageModelRef.providerID, messageModelRef.modelID)
+              .pipe(Effect.catchDefect(() => Effect.succeed(undefined)))
+          : undefined)
+
+      if (inPdf && !(model?.capabilities.input.pdf ?? false)) {
+        // Same shape as the image gate below: the bytes are never read, so a
+        // PDF the model cannot take never becomes base64 and never reaches the
+        // session DB. The model is pointed at the bundled pdf skill instead.
+        const warning = [
+          `Cannot attach PDF "${path.basename(filepath)}" — the current model has no PDF input support, so the file was not read.`,
+          `To work with its contents, extract text (or render pages to images) with the bundled pdf skill: read ${path.join(builtinSkillRoot(), "pdf-official", "SKILL.md")} and follow it.`,
+        ].join("\n")
+        return {
+          title,
+          output: warning,
+          metadata: { preview: warning, truncated: false, loaded: loaded.map((item) => item.filepath) },
+        }
+      }
+      if (inImage) {
         const supportsImage = model?.capabilities.input.image ?? false
         if (!supportsImage) {
-        const preferred = yield* provider.getVisionModel().pipe(Effect.orElseSucceed(() => undefined))
-        const preferredRef = preferred ? `${preferred.providerID}/${preferred.id}` : undefined
-        const dispatch = preferredRef
-          ? `dispatch a vision-capable subagent: actor run <type> "<desc>" "analyze the image at ${filepath}" --model ${preferredRef} (run \`actor models --vision\` for the full list)`
-          : `no vision-capable model is configured — ask the user to configure one or use an OCR tool`
+          const preferred = yield* provider.getVisionModel().pipe(Effect.orElseSucceed(() => undefined))
+          const preferredRef = preferred ? `${preferred.providerID}/${preferred.id}` : undefined
+          const dispatch = preferredRef
+            ? `dispatch a vision-capable subagent: actor run <type> "<desc>" "analyze the image at ${filepath}" --model ${preferredRef} (run \`actor models --vision\` for the full list)`
+            : `no vision-capable model is configured — ask the user to configure one or use an OCR tool`
           const warning = [
             `Cannot read image "${path.basename(filepath)}" — the current model has no vision support, so its visual content is unavailable.`,
             `If you need to understand the image visually, ${dispatch}.`,
@@ -247,26 +367,44 @@ export const ReadTool = Tool.define(
             metadata: { preview: warning, truncated: false, loaded: [] as string[] },
           }
         }
-        const bytes = yield* fs.readFile(filepath)
+        const bytes = Buffer.from(yield* fs.readFile(filepath))
+        const fitted = verdict === "shrink" ? shrinkAttachment(mime, bytes) : { mime, base64: bytes.toString("base64") }
+        if (!fitted) {
+          const warning = oversizedAttachmentNotice({
+            label: `"${path.basename(filepath)}" (${mime})`,
+            size: bytes.byteLength,
+            compressed: true,
+            hint: "It was not attached.",
+          })
+          return {
+            title,
+            output: warning,
+            metadata: { preview: warning, truncated: false, loaded: loaded.map((item) => item.filepath) },
+          }
+        }
+        const output =
+          verdict === "shrink"
+            ? `Image read successfully (recompressed from ${bytes.byteLength} bytes to ${fitted.mime} to fit the attachment limit)`
+            : "Image read successfully"
         return {
           title,
-          output: "Image read successfully",
+          output,
           metadata: {
-            preview: "Image read successfully",
+            preview: output,
             truncated: false,
             loaded: loaded.map((item) => item.filepath),
           },
           attachments: [
             {
               type: "file" as const,
-              mime,
-              url: `data:${mime};base64,${Buffer.from(bytes).toString("base64")}`,
+              mime: fitted.mime,
+              url: `data:${fitted.mime};base64,${fitted.base64}`,
             },
           ],
         }
       }
 
-      if (isPdfAttachment(mime)) {
+      if (inPdf) {
         const bytes = yield* fs.readFile(filepath)
         return {
           title,
@@ -280,6 +418,69 @@ export const ReadTool = Tool.define(
             {
               type: "file" as const,
               mime,
+              url: `data:${mime};base64,${Buffer.from(bytes).toString("base64")}`,
+            },
+          ],
+        }
+      }
+
+      if (inAudio || inVideo) {
+        // Audio and video are opaque to the read tool: the bytes go to the model
+        // as an inline `data:` attachment, or nowhere. Gate on the model first,
+        // then on the encoded size, so a file the model cannot take is never
+        // read and an oversized one never becomes base64.
+        const kind = inAudio ? "audio" : "video"
+        const supported = model?.capabilities.input[kind] ?? false
+        if (!supported) {
+          const warning = [
+            `Cannot attach ${kind} "${path.basename(filepath)}" — the current model has no ${kind} input support, so the file was not read.`,
+            `Ask the user to switch to a model with ${kind} input, or use a shell tool (e.g. ffprobe) to inspect its metadata instead.`,
+          ].join("\n")
+          return {
+            title,
+            output: warning,
+            metadata: { preview: warning, truncated: false, loaded: loaded.map((item) => item.filepath) },
+          }
+        }
+        // The model may take the media kind while the finite read allowlist is still
+        // the outer gate. After that, the adapter declaration can narrow further
+        // (rare); refuse rather than attaching bytes tool-attachment.ts would
+        // later replace with a placeholder.
+        const declared = model ? ModelCapability.modelDeclaration(model, kind) : undefined
+        if (declared?.support === "supported" && declared.mimeTypes !== "any" && !declared.mimeTypes.includes(mime)) {
+          const warning = [
+            `Cannot attach ${kind} "${path.basename(filepath)}" (${mime}) — the current provider only accepts ${declared.mimeTypes.join(", ")}, so the file was not read.`,
+            `Convert it first (e.g. ffmpeg -i "${filepath}" /tmp/example.${kind === "audio" ? "wav" : "mp4"}) and read the converted file.`,
+          ].join("\n")
+          return {
+            title,
+            output: warning,
+            metadata: { preview: warning, truncated: false, loaded: loaded.map((item) => item.filepath) },
+          }
+        }
+        if (!fitsMediaBase64(Number(stat.size))) {
+          const warning = oversizedMediaNotice({
+            label: `"${path.basename(filepath)}" (${mime})`,
+            size: Number(stat.size),
+            hint: "It was not read.",
+          })
+          return {
+            title,
+            output: warning,
+            metadata: { preview: warning, truncated: false, loaded: loaded.map((item) => item.filepath) },
+          }
+        }
+        const bytes = yield* fs.readFile(filepath)
+        const output = `${kind === "audio" ? "Audio" : "Video"} read successfully and attached for the model to analyze`
+        return {
+          title,
+          output,
+          metadata: { preview: output, truncated: false, loaded: loaded.map((item) => item.filepath) },
+          attachments: [
+            {
+              type: "file" as const,
+              mime,
+              filename: path.basename(filepath),
               url: `data:${mime};base64,${Buffer.from(bytes).toString("base64")}`,
             },
           ],

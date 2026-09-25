@@ -126,7 +126,7 @@ SleepyCode は provider metadata をメッセージに書き込み、次のタ�
 - `view_image` の公開条件と実行時の image capability check が完全には一致していない
 - `files.readText` は path jail に依存し、通常の `read` permission ask を実行しない
 - QuickJS は Bash に OS レベルの分離を提供しない
-- [`registry-invocation-style.test.ts`](../../packages/opencode/test/tool/registry-invocation-style.test.ts#L17) では、GPT の `exec`、Bash description、`skill_search`、`multiedit` の profile テストが現在スキップされている
+- [`registry-toolset.test.ts`](../../packages/opencode/test/tool/registry-toolset.test.ts#L17) では、GPT の `exec`、Bash description、`skill_search`、`multiedit` の profile テストが現在スキップされている
 
 ## 主要ソースコード
 

@@ -131,6 +131,5 @@
     "solid-js@1.9.10": "patches/solid-js@1.9.10.patch",
     "@opentui/core@0.1.101": "patches/@opentui%2Fcore@0.1.101.patch",
     "@ai-sdk/openai-compatible@2.0.41": "patches/@ai-sdk%2Fopenai-compatible@2.0.41.patch"
-  },
-  "version": "0.0.1"
+  }
 }

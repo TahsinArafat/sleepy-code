@@ -10,7 +10,7 @@ import type { Provider } from "@/provider"
  *
  * Two independent gates are ANDed:
  *
- *  1. The MODEL gate — `model.capabilities.input.{text,image,audio}`, sourced
+ *  1. The MODEL gate — `model.capabilities.input.{text,image,audio,video}`, sourced
  *     from models.dev metadata or the user's own `/modalities` config.
  *  2. The ADAPTER gate — whether the ai-sdk package behind the model can
  *     actually serialize that media. A model may accept audio while the adapter
@@ -23,7 +23,7 @@ import type { Provider } from "@/provider"
  * distinctly so an operator can tell "this cannot work" from "we do not know".
  */
 
-export type Modality = "text" | "image" | "audio"
+export type Modality = "text" | "image" | "audio" | "video"
 
 export type Support = "supported" | "unsupported" | "unknown"
 
@@ -40,6 +40,7 @@ export interface AdapterDeclaration {
   readonly text: ModalityDeclaration
   readonly image: ModalityDeclaration
   readonly audio: ModalityDeclaration
+  readonly video: ModalityDeclaration
   /** Why this declaration reads the way it does. Surfaced in errors and docs. */
   readonly evidence: string
 }
@@ -58,8 +59,26 @@ export const DEFAULT_MAX_TEXT_BYTES = 1 * 1024 * 1024
 
 const SAFE_IMAGE_MIMES = ["image/jpeg", "image/png", "image/gif", "image/webp"]
 // Mirrors OPENAI_AUDIO_MIMES in src/session/tool-attachment.ts — the set the
-// OpenAI-compatible chat adapter can serialize as input_audio.
-const OPENAI_AUDIO_MIMES = ["audio/wav", "audio/mp3", "audio/mpeg"]
+// (repo-patched) OpenAI-compatible chat adapter can serialize as input_audio:
+// the Sleepy audio API's MP3, WAV, FLAC, M4A and OGG.
+const OPENAI_AUDIO_MIMES = [
+  "audio/wav",
+  "audio/x-wav",
+  "audio/mp3",
+  "audio/mpeg",
+  "audio/flac",
+  "audio/x-flac",
+  "audio/mp4",
+  "audio/m4a",
+  "audio/x-m4a",
+  "audio/ogg",
+]
+// Mirrors OPENAI_VIDEO_MIMES in src/session/tool-attachment.ts — the formats
+// the Sleepy video API documents (MP4, MOV, AVI, WMV), as the MIMEs a mime lookup
+// yields for them. The repo patch serializes ANY video/* as video_url, so this
+// list is what the API accepts, not what the adapter refuses: anything else
+// (e.g. video/webm, video/x-matroska) would be sent and fail server-side.
+const OPENAI_VIDEO_MIMES = ["video/mp4", "video/quicktime", "video/x-msvideo", "video/x-ms-wmv"]
 
 const TEXT_SUPPORTED: ModalityDeclaration = {
   support: "supported",
@@ -96,27 +115,35 @@ const ADAPTERS: Record<string, AdapterDeclaration> = {
     text: TEXT_SUPPORTED,
     image: IMAGE_SUPPORTED,
     audio: { support: "supported", mimeTypes: OPENAI_AUDIO_MIMES, maxBytes: DEFAULT_MAX_MEDIA_BYTES },
-    // Observed: wav/mp3/mpeg serialize to `input_audio`; flac and ogg throw
-    // "'audio media type ...' functionality not supported".
-    evidence: "@ai-sdk/openai-compatible@3 serializes wav/mp3/mpeg as input_audio and rejects other audio",
+    video: { support: "supported", mimeTypes: OPENAI_VIDEO_MIMES, maxBytes: DEFAULT_MAX_MEDIA_BYTES },
+    // Observed: the stock adapter serializes wav/mp3/mpeg to `input_audio` and
+    // throws "'audio media type ...' functionality not supported" for the rest;
+    // the repo patch extends the format map to flac/m4a/ogg. Anything outside
+    // that list (e.g. audio/aac) still throws.
+    evidence:
+      "@ai-sdk/openai-compatible@2 (repo-patched) serializes wav/mp3/flac/m4a/ogg as input_audio and rejects other audio; video is serialized as video_url and narrowed to the Sleepy video API's mp4/mov/avi/wmv",
   },
   "@ai-sdk/google": {
     text: TEXT_SUPPORTED,
     image: IMAGE_SUPPORTED,
     audio: { support: "supported", mimeTypes: "any", maxBytes: DEFAULT_MAX_MEDIA_BYTES },
-    // Observed: any audio/* passes through as `inlineData` with its MIME intact.
-    evidence: "@ai-sdk/google passes any audio/* through as inlineData",
+    video: { support: "supported", mimeTypes: "any", maxBytes: DEFAULT_MAX_MEDIA_BYTES },
+    // Observed: any audio/* passes through as `inlineData` with its MIME intact;
+    // video/* takes the same path.
+    evidence: "@ai-sdk/google passes any audio/* and video/* through as inlineData",
   },
   "@ai-sdk/google-vertex": {
     text: TEXT_SUPPORTED,
     image: IMAGE_SUPPORTED,
     audio: { support: "supported", mimeTypes: "any", maxBytes: DEFAULT_MAX_MEDIA_BYTES },
+    video: { support: "supported", mimeTypes: "any", maxBytes: DEFAULT_MAX_MEDIA_BYTES },
     evidence: "@ai-sdk/google-vertex shares the @ai-sdk/google content conversion",
   },
   "@ai-sdk/anthropic": {
     text: TEXT_SUPPORTED,
     image: IMAGE_SUPPORTED,
     audio: absent(),
+    video: absent(),
     // Observed: an audio/wav part throws "'media type: audio/wav' functionality
     // not supported" while image/png serializes fine. Known-absent, not unproven.
     evidence: "@ai-sdk/anthropic throws 'media type: audio/wav' functionality not supported",
@@ -125,13 +152,15 @@ const ADAPTERS: Record<string, AdapterDeclaration> = {
     text: TEXT_SUPPORTED,
     image: IMAGE_SUPPORTED,
     audio: absent(),
+    video: absent(),
     evidence: "@ai-sdk/google-vertex/anthropic shares the @ai-sdk/anthropic content conversion",
   },
   "@ai-sdk/amazon-bedrock": {
     text: TEXT_SUPPORTED,
     image: IMAGE_SUPPORTED,
     audio: absent(),
-    evidence: "tool-attachment.ts:49-53,69-71 exclude @ai-sdk/amazon-bedrock from every audio route",  // no direct wire probe; routing logic is the evidence
+    video: absent(),
+    evidence: "tool-attachment.ts:49-53,69-71 exclude @ai-sdk/amazon-bedrock from every audio and video route", // no direct wire probe; routing logic is the evidence
   },
 }
 
@@ -139,13 +168,15 @@ const ADAPTERS: Record<string, AdapterDeclaration> = {
  * Adapters with no entry above. Text and image are still declared supported
  * because every ai-sdk language model carries text, and image parts are a
  * baseline `LanguageModelV3` file part that adapters reject loudly rather than
- * silently mangle. Audio is `unknown`: we have no evidence, so we say so.
+ * silently mangle. Audio and video are `unknown`: we have no evidence, so we
+ * say so.
  */
 const UNDECLARED: AdapterDeclaration = {
   text: TEXT_SUPPORTED,
   image: IMAGE_SUPPORTED,
   audio: unknown(),
-  evidence: "no capability declaration for this adapter; audio support is unproven, not disproven",
+  video: unknown(),
+  evidence: "no capability declaration for this adapter; audio and video support is unproven, not disproven",
 }
 
 export function adapterDeclaration(npm: string | undefined): AdapterDeclaration {
@@ -161,6 +192,7 @@ export function declaredAdapters(): ReadonlyArray<string> {
 function modelGate(model: Provider.Model, modality: Modality): boolean {
   if (modality === "text") return model.capabilities.input.text
   if (modality === "image") return model.capabilities.input.image
+  if (modality === "video") return model.capabilities.input.video
   return model.capabilities.input.audio
 }
 

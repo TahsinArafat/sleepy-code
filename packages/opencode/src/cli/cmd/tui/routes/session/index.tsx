@@ -33,6 +33,11 @@ import type {
 } from "@sleepy-ai/sdk/v2"
 import { useLocal } from "@tui/context/local"
 import { Locale } from "@/util"
+import {
+  recoverErrorMessage,
+  runSessionRecover,
+  type RecoverCandidate,
+} from "./recover-flow"
 import { verifySessionRenderable, type SessionActorInput } from "@/session/visibility"
 import type { Tool } from "@/tool"
 import type { ReadTool } from "@/tool/read"
@@ -75,7 +80,10 @@ import { SubagentFooter } from "./subagent-footer.tsx"
 import { DialogSubagent } from "./dialog-subagent.tsx"
 import { isActorToolRunning } from "./actor-tool-state"
 import { Flag } from "@/flag/flag"
-import { parseActorNotification } from "@/inbox/render"
+import { parseActorNotification, parseAgentInboxPart } from "@/inbox/render"
+import { ActorNotificationWarnings } from "./actor-notification-warnings"
+import { AgentInboxMessages } from "./agent-inbox-messages"
+import { UserMessageBubble } from "./user-message-bubble"
 import { LANGUAGE_EXTENSIONS } from "@/lsp/language"
 import parsers from "../../../../../../parsers-config.ts"
 import * as Clipboard from "../../util/clipboard"
@@ -121,7 +129,7 @@ const GO_UPSELL_WINDOW = 86_400_000 // 24 hrs
 const QUEUE_TOKEN_PLAN_LAST_SEEN_AT = "queue_token_plan_last_seen_at"
 const QUEUE_TOKEN_PLAN_WINDOW = 86_400_000 // 24 hrs
 
-const context = createContext<{
+export const sessionViewContext = createContext<{
   width: number
   sessionID: string
   conceal: () => boolean
@@ -138,7 +146,7 @@ const context = createContext<{
 }>()
 
 function use() {
-  const ctx = useContext(context)
+  const ctx = useContext(sessionViewContext)
   if (!ctx) throw new Error("useContext must be used within a Session component")
   return ctx
 }
@@ -207,7 +215,7 @@ export function Session() {
     const message = lastAssistant()
     if (!message || currentAgentID() !== "main") return undefined
     return sync.data.session_recovery[route.sessionID]?.find(
-      (candidate) => candidate.assistantMessageID === message.id,
+      (candidate) => candidate.kind === "assistant" && candidate.assistantMessageID === message.id,
     )
   })
 
@@ -425,6 +433,7 @@ export function Session() {
             part.type === "text" &&
             !part.ignored &&
             (!part.synthetic ||
+              (currentAgentID() !== "main" && !!parseAgentInboxPart(part)) ||
               (part.metadata as { origin?: { kind?: string } } | undefined)?.origin?.kind === "cron"),
         )
       })
@@ -515,27 +524,58 @@ export function Session() {
   const language = useLanguage()
   const t = language.t
   const recoveryErrorMessage = (error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error)
-    return /busy|409/i.test(message) ? t("tui.toast.session.recover.busy") : message
+    const mapped = recoverErrorMessage(error)
+    return mapped.variant === "busy" ? t("tui.toast.session.recover.busy") : mapped.message
   }
 
   const recover = async (assistantMessageID?: string) => {
-    const candidates = await sdk.client.session.recovery(
-      { sessionID: route.sessionID },
-      { throwOnError: true },
-    )
-    const candidate = assistantMessageID
-      ? candidates.data?.find((item) => item.assistantMessageID === assistantMessageID)
-      : candidates.data?.at(-1)
-    if (!candidate) {
+    const outcome = await runSessionRecover({
+      status: sync.data.session_status[route.sessionID],
+      assistantMessageID,
+      listCandidates: async () => {
+        const candidates = await sdk.client.session.recovery({ sessionID: route.sessionID }, { throwOnError: true })
+        return (candidates.data ?? []) as RecoverCandidate[]
+      },
+      resumeUser: async ({ userMessageID }) => {
+        await sdk.client.session.resumeUser(
+          {
+            sessionID: route.sessionID,
+            userMessageID: userMessageID as never,
+            titleLocale: language.intl(),
+          },
+          { throwOnError: true },
+        )
+      },
+      resumeAssistant: async ({ assistantMessageID: id }) => {
+        await sdk.client.session.resume(
+          {
+            sessionID: route.sessionID,
+            assistantMessageID: id as never,
+            titleLocale: language.intl(),
+          },
+          { throwOnError: true },
+        )
+      },
+      setActive: (id) => sync.set("session_recovery_active", route.sessionID, id as never),
+    })
+    if (outcome.type === "none") {
       toast.show({ message: t("tui.toast.session.recover.none"), variant: "info" })
       return
     }
-    await sdk.client.session.resume(
-      { sessionID: route.sessionID, assistantMessageID: candidate.assistantMessageID, titleLocale: language.intl() },
-      { throwOnError: true },
-    )
-    sync.set("session_recovery_active", route.sessionID, candidate.assistantMessageID)
+    if (outcome.type === "busy") {
+      toast.show({ message: t("tui.toast.session.recover.busy"), variant: "info" })
+      return
+    }
+    if (outcome.type === "error") {
+      toast.show({
+        message: outcome.variant === "busy" ? t("tui.toast.session.recover.busy") : outcome.message,
+        variant: "error",
+      })
+      return
+    }
+    // 202 = engine accepted; both resume kinds start a run. Do not GET recovery here:
+    // recovery without allowBusy returns [] while busy, which would false-report "nothing to recover".
+    // Clearing relies on session.status→idle / session.error (see sync.tsx).
     toast.show({ message: t("tui.toast.session.recover.started"), variant: "info" })
   }
 
@@ -550,11 +590,8 @@ export function Session() {
       },
       onSelect: async (dialog) => {
         try {
-          const candidate = recoveryCandidate()
-          const status = sync.data.session_status[route.sessionID]
-          if (status?.type === "busy" || status?.type === "retry") {
-            toast.show({ message: t("tui.toast.session.recover.busy"), variant: "info" })
-          } else await recover(candidate?.assistantMessageID)
+          const c = recoveryCandidate()
+          await recover(c && c.kind === "assistant" ? c.assistantMessageID : undefined)
         } catch (error) {
           toast.show({
             message: recoveryErrorMessage(error),
@@ -1359,7 +1396,7 @@ export function Session() {
   )
 
   return (
-    <context.Provider
+    <sessionViewContext.Provider
       value={{
         get width() {
           return contentWidth()
@@ -1393,165 +1430,163 @@ export function Session() {
               />
             }
           >
-            <Show when={session()} fallback={loading() ? <Spinner /> : undefined}>
-              <scrollbox
-                ref={(r) => (scroll = r)}
-                viewportOptions={{
-                  paddingRight: 1,
-                }}
-                verticalScrollbarOptions={{
-                  paddingLeft: 1,
-                  visible: true,
-                  trackOptions: {
-                    backgroundColor: scrollbarVisible() ? theme.backgroundElement : theme.background,
-                    foregroundColor: scrollbarVisible() ? theme.border : theme.background,
-                  },
-                }}
-                stickyScroll={true}
-                stickyStart="bottom"
-                flexGrow={1}
-                scrollAcceleration={scrollAcceleration()}
-              >
-                <box height={1} />
-                <For each={messages()}>
-                  {(message, index) => (
-                    <Switch>
-                      <Match when={message.id === revert()?.messageID}>
-                        {(function () {
-                          const command = useCommandDialog()
-                          const [hover, setHover] = createSignal(false)
-                          const dialog = useDialog()
+          
+          <Show when={session()} fallback={loading() ? <Spinner /> : undefined}>
+            <scrollbox
+              ref={(r) => (scroll = r)}
+              viewportOptions={{
+                paddingRight: 1,
+              }}
+              verticalScrollbarOptions={{
+                paddingLeft: 1,
+                visible: true,
+                trackOptions: {
+                  backgroundColor: scrollbarVisible() ? theme.backgroundElement : theme.background,
+                  foregroundColor: scrollbarVisible() ? theme.border : theme.background,
+                },
+              }}
+              stickyScroll={true}
+              stickyStart="bottom"
+              flexGrow={1}
+              scrollAcceleration={scrollAcceleration()}
+            >
+              <box height={1} />
+              <For each={messages()}>
+                {(message, index) => (
+                  <Switch>
+                    <Match when={message.id === revert()?.messageID}>
+                      {(function () {
+                        const command = useCommandDialog()
+                        const [hover, setHover] = createSignal(false)
+                        const dialog = useDialog()
 
-                          const handleUnrevert = async () => {
-                            const confirmed = await DialogConfirm.show(
-                              dialog,
-                              "Confirm Redo",
-                              "Are you sure you want to restore the reverted messages?",
-                            )
-                            if (confirmed) {
-                              command.trigger("session.redo")
-                            }
-                          }
-
-                          return (
-                            <box
-                              onMouseOver={() => setHover(true)}
-                              onMouseOut={() => setHover(false)}
-                              onMouseUp={handleUnrevert}
-                              marginTop={1}
-                              flexShrink={0}
-                              border={["left"]}
-                              customBorderChars={SplitBorder.customBorderChars}
-                              borderColor={theme.backgroundPanel}
-                            >
-                              <box
-                                paddingTop={1}
-                                paddingBottom={1}
-                                paddingLeft={2}
-                                backgroundColor={hover() ? theme.backgroundElement : theme.backgroundPanel}
-                              >
-                                <text fg={theme.textMuted}>{revert()!.reverted.length} message reverted</text>
-                                <text fg={theme.textMuted}>
-                                  <span style={{ fg: theme.text }}>{keybind.print("messages_redo")}</span> or /redo to
-                                  restore
-                                </text>
-                                <Show when={revert()!.diffFiles?.length}>
-                                  <box marginTop={1}>
-                                    <For each={revert()!.diffFiles}>
-                                      {(file) => (
-                                        <text fg={theme.text}>
-                                          {file.filename}
-                                          <Show when={file.additions > 0}>
-                                            <span style={{ fg: theme.diffAdded }}> +{file.additions}</span>
-                                          </Show>
-                                          <Show when={file.deletions > 0}>
-                                            <span style={{ fg: theme.diffRemoved }}> -{file.deletions}</span>
-                                          </Show>
-                                        </text>
-                                      )}
-                                    </For>
-                                  </box>
-                                </Show>
-                              </box>
-                            </box>
+                        const handleUnrevert = async () => {
+                          const confirmed = await DialogConfirm.show(
+                            dialog,
+                            "Confirm Redo",
+                            "Are you sure you want to restore the reverted messages?",
                           )
-                        })()}
-                      </Match>
-                      <Match when={revert()?.messageID && message.id >= revert()!.messageID}>
-                        <></>
-                      </Match>
-                      <Match when={message.role === "user"}>
-                        <UserMessage
-                          index={index()}
-                          onMouseUp={() => {
-                            if (renderer.getSelection()?.getSelectedText()) return
-                            dialog.replace(() => (
-                              <DialogMessage
-                                messageID={message.id}
-                                sessionID={route.sessionID}
-                                setPrompt={(promptInfo) => prompt?.set(promptInfo)}
-                              />
-                            ))
-                          }}
-                          message={message as UserMessage}
-                          parts={sync.data.part[message.id] ?? []}
-                          pending={pending()}
-                        />
-                      </Match>
-                      <Match when={message.role === "assistant"}>
-                        <AssistantMessage
-                          last={lastAssistant()?.id === message.id}
-                          message={message as AssistantMessage}
-                          parts={sync.data.part[message.id] ?? []}
-                          recoverable={
-                            recoveryCandidate()?.assistantMessageID === message.id &&
-                            sync.session.status(route.sessionID) === "idle"
+                          if (confirmed) {
+                            command.trigger("session.redo")
                           }
-                          recovering={sync.data.session_recovery_active[route.sessionID] === message.id}
-                          onRecover={recover}
-                        />
-                      </Match>
-                    </Switch>
-                  )}
-                </For>
-              </scrollbox>
-              <box flexShrink={0}>
-                <Show when={permissions().length > 0}>
-                  <PermissionPrompt request={permissions()[0]} />
-                </Show>
-                <Show when={permissions().length === 0 && questions().length > 0}>
-                  <QuestionPrompt request={questions()[0]} />
-                </Show>
-                <Show when={currentAgentID() !== "main"}>
-                  <SubagentFooter />
-                </Show>
-                <Show when={sessionExpired().expired}>
-                  <BannerSessionExpired message={sessionExpired().message} />
-                </Show>
-                <Show when={visible()}>
-                  <TuiPluginRuntime.Slot
-                    name="session_prompt"
-                    mode="replace"
-                    session_id={route.sessionID}
+                        }
+
+                        return (
+                          <box
+                            onMouseOver={() => setHover(true)}
+                            onMouseOut={() => setHover(false)}
+                            onMouseUp={handleUnrevert}
+                            marginTop={1}
+                            flexShrink={0}
+                            border={["left"]}
+                            customBorderChars={SplitBorder.customBorderChars}
+                            borderColor={theme.backgroundPanel}
+                          >
+                            <box
+                              paddingTop={1}
+                              paddingBottom={1}
+                              paddingLeft={2}
+                              backgroundColor={hover() ? theme.backgroundElement : theme.backgroundPanel}
+                            >
+                              <text fg={theme.textMuted}>{revert()!.reverted.length} message reverted</text>
+                              <text fg={theme.textMuted}>
+                                <span style={{ fg: theme.text }}>{keybind.print("messages_redo")}</span> or /redo to
+                                restore
+                              </text>
+                              <Show when={revert()!.diffFiles?.length}>
+                                <box marginTop={1}>
+                                  <For each={revert()!.diffFiles}>
+                                    {(file) => (
+                                      <text fg={theme.text}>
+                                        {file.filename}
+                                        <Show when={file.additions > 0}>
+                                          <span style={{ fg: theme.diffAdded }}> +{file.additions}</span>
+                                        </Show>
+                                        <Show when={file.deletions > 0}>
+                                          <span style={{ fg: theme.diffRemoved }}> -{file.deletions}</span>
+                                        </Show>
+                                      </text>
+                                    )}
+                                  </For>
+                                </box>
+                              </Show>
+                            </box>
+                          </box>
+                        )
+                      })()}
+                    </Match>
+                    <Match when={revert()?.messageID && message.id >= revert()!.messageID}>
+                      <></>
+                    </Match>
+                    <Match when={message.role === "user"}>
+                      <UserMessageView
+                        index={index()}
+                        onMouseUp={() => {
+                          if (renderer.getSelection()?.getSelectedText()) return
+                          dialog.replace(() => (
+                            <DialogMessage
+                              messageID={message.id}
+                              sessionID={route.sessionID}
+                              setPrompt={(promptInfo) => prompt?.set(promptInfo)}
+                            />
+                          ))
+                        }}
+                        message={message as UserMessage}
+                        parts={sync.data.part[message.id] ?? []}
+                        pending={pending()}
+                      />
+                    </Match>
+                    <Match when={message.role === "assistant"}>
+                      <AssistantMessage
+                        last={lastAssistant()?.id === message.id}
+                        message={message as AssistantMessage}
+                        parts={sync.data.part[message.id] ?? []}
+                        recoverable={(() => {
+                          const c = recoveryCandidate()
+                          return !!(c && c.kind === "assistant" && c.assistantMessageID === message.id && sync.session.status(route.sessionID) === "idle")
+                        })()}
+                        recovering={sync.data.session_recovery_active[route.sessionID] === message.id}
+                        onRecover={recover}
+                      />
+                    </Match>
+                  </Switch>
+                )}
+              </For>
+            </scrollbox>
+            <box flexShrink={0}>
+              <Show when={permissions().length > 0}>
+                <PermissionPrompt request={permissions()[0]} />
+              </Show>
+              <Show when={permissions().length === 0 && questions().length > 0}>
+                <QuestionPrompt request={questions()[0]} />
+              </Show>
+              <Show when={currentAgentID() !== "main"}>
+                <SubagentFooter />
+              </Show>
+              <Show when={visible()}>
+                <TuiPluginRuntime.Slot
+                  name="session_prompt"
+                  mode="replace"
+                  session_id={route.sessionID}
+                  visible={visible()}
+                  disabled={disabled()}
+                  on_submit={toBottom}
+                  ref={bind}
+                >
+                  <Prompt
                     visible={visible()}
-                    disabled={disabled() || sessionExpired().expired}
-                    on_submit={toBottom}
                     ref={bind}
-                  >
-                    <Prompt
-                      visible={visible()}
-                      ref={bind}
-                      disabled={disabled() || sessionExpired().expired}
-                      onSubmit={() => {
-                        toBottom()
-                      }}
-                      sessionID={route.sessionID}
-                      right={<TuiPluginRuntime.Slot name="session_prompt_right" session_id={route.sessionID} />}
-                    />
-                  </TuiPluginRuntime.Slot>
-                </Show>
-              </box>
-            </Show>
+                    disabled={disabled()}
+                    onSubmit={() => {
+                      toBottom()
+                    }}
+                    sessionID={route.sessionID}
+                    right={<TuiPluginRuntime.Slot name="session_prompt_right" session_id={route.sessionID} />}
+                  />
+                </TuiPluginRuntime.Slot>
+              </Show>
+            </box>
+          </Show>
           </Show>
           <Toast />
         </box>
@@ -1583,7 +1618,7 @@ export function Session() {
           </Switch>
         </Show>
       </box>
-    </context.Provider>
+    </sessionViewContext.Provider>
   )
 }
 
@@ -1597,7 +1632,7 @@ const MIME_BADGE: Record<string, string> = {
   "application/x-directory": "dir",
 }
 
-function UserMessage(props: {
+export function UserMessageView(props: {
   message: UserMessage
   parts: Part[]
   onMouseUp: () => void
@@ -1606,6 +1641,7 @@ function UserMessage(props: {
 }) {
   const ctx = use()
   const local = useLocal()
+  const currentAgentID = useCurrentAgentID()
   const text = createMemo(() => props.parts.flatMap((x) => (x.type === "text" && !x.synthetic ? [x] : []))[0])
   // Cron-fired synthetic prompts: surface as a one-line clock row instead of
   // hiding them. Backend (cron-bridge.ts:onFire) stores the ISO timestamp at
@@ -1620,12 +1656,10 @@ function UserMessage(props: {
     })[0]
   })
   const files = createMemo(() => props.parts.flatMap((x) => (x.type === "file" ? [x] : [])))
-  // Orchestrator actor-notifications arrive as a synthetic user text part whose
-  // text is the pre-rendered <actor-notification> wrapper (inbox/render.ts).
-  // Detect + parse it into a compact status card instead of showing raw XML.
-  // Gated on the orchestrator flag so non-orchestrator sessions are untouched.
+  // Actor-notifications arrive as a synthetic user text part whose text is the
+  // pre-rendered <actor-notification> wrapper (inbox/render.ts). Detect + parse
+  // it into a compact status card instead of showing raw XML.
   const actorNotification = createMemo(() => {
-    if (!Flag.SLEEPYCODE_EXPERIMENTAL_ORCHESTRATOR) return undefined
     return props.parts.flatMap((x) => {
       if (x.type !== "text" || !x.synthetic) return []
       const parsed = parseActorNotification(x.text)
@@ -1652,7 +1686,6 @@ function UserMessage(props: {
   const rebuildBoundary = createMemo(() => props.parts.some((x) => x.type === "checkpoint"))
   const { theme } = useTheme()
   const t = useLanguage().t
-  const [hover, setHover] = createSignal(false)
   const queued = createMemo(() => props.pending && props.message.id > props.pending)
   const color = createMemo(() => local.agent.color(props.message.agent))
   const queuedFg = createMemo(() => selectedForeground(theme, color()))
@@ -1660,6 +1693,16 @@ function UserMessage(props: {
 
   return (
     <>
+      <AgentInboxMessages
+        agentID={currentAgentID()}
+        messageID={props.message.id}
+        parts={props.parts}
+        label={(from) => t("tui.session.inbox.from", { from })}
+        color={theme.text}
+        borderColor={color()}
+        backgroundColor={theme.backgroundPanel}
+        hoverColor={theme.backgroundElement}
+      />
       <Show when={cronFire()}>
         {(fire) => {
           // Strip the "[cron fire @ ISO] " prefix from part.text to get the
@@ -1696,23 +1739,24 @@ function UserMessage(props: {
           // structured rows rather than raw <actor-notification> XML.
           const style = createMemo(() => {
             const s = note().status
-            if (s === "completed") return { icon: "✓", fg: theme.success, label: "completed" }
-            if (s === "failed") return { icon: "✗", fg: theme.error, label: "failed" }
-            if (s === "stalled") return { icon: "⏳", fg: theme.warning, label: "stalled" }
-            if (s === "ended") return { icon: "⊙", fg: theme.textMuted, label: "ended" }
-            return { icon: "⊜", fg: theme.textMuted, label: "cancelled" }
+            if (s === "completed") return { icon: "✓", fg: theme.success, label: t("tui.session.actor_status.completed") }
+            if (s === "failed") return { icon: "✗", fg: theme.error, label: t("tui.session.actor_status.failed") }
+            if (s === "stalled") return { icon: "⏳", fg: theme.warning, label: t("tui.session.actor_status.stalled") }
+            if (s === "ended") return { icon: "⊙", fg: theme.textMuted, label: t("tui.session.actor_status.ended") }
+            return { icon: "⊜", fg: theme.textMuted, label: t("tui.session.actor_status.cancelled") }
           })
           return (
             <box id={props.message.id} marginTop={props.index === 0 ? 0 : 1} paddingLeft={2} flexDirection="row" gap={1}>
               <text fg={theme.textMuted}>
                 <span style={{ bg: theme.backgroundElement, fg: style().fg, bold: true }}>
                   {" "}
-                  {style().icon} sub-session {style().label}{" "}
+                  {style().icon} {style().label}{" "}
                 </span>
                 <span style={{ fg: theme.text }}> {note().description}</span>
                 <Show when={note().summary}>
                   <span style={{ fg: theme.textMuted }}> — {note().summary}</span>
                 </Show>
+                <ActorNotificationWarnings warnings={note().warnings} label={t("tui.session.actor_warning")} color={theme.warning} />
               </text>
             </box>
           )
@@ -1740,65 +1784,51 @@ function UserMessage(props: {
         </box>
       </Show>
       <Show when={text() && !actorNotification()}>
-        <box
+        <UserMessageBubble
           id={props.message.id}
-          border={["left"]}
           borderColor={color()}
-          customBorderChars={SplitBorder.customBorderChars}
           marginTop={props.index === 0 ? 0 : 1}
+          onMouseUp={props.onMouseUp}
+          backgroundColor={theme.backgroundPanel}
+          hoverColor={theme.backgroundElement}
         >
-          <box
-            onMouseOver={() => {
-              setHover(true)
-            }}
-            onMouseOut={() => {
-              setHover(false)
-            }}
-            onMouseUp={props.onMouseUp}
-            paddingTop={1}
-            paddingBottom={1}
-            paddingLeft={2}
-            backgroundColor={hover() ? theme.backgroundElement : theme.backgroundPanel}
-            flexShrink={0}
+          <text fg={theme.text}>{text()?.text}</text>
+          <Show when={files().length}>
+            <box flexDirection="row" paddingBottom={metadataVisible() ? 1 : 0} paddingTop={1} gap={1} flexWrap="wrap">
+              <For each={files()}>
+                {(file) => {
+                  const bg = createMemo(() => {
+                    if (file.mime.startsWith("image/")) return theme.accent
+                    if (file.mime === "application/pdf") return theme.primary
+                    return theme.secondary
+                  })
+                  return (
+                    <text fg={theme.text}>
+                      <span style={{ bg: bg(), fg: theme.background }}> {MIME_BADGE[file.mime] ?? file.mime} </span>
+                      <span style={{ bg: theme.backgroundElement, fg: theme.textMuted }}> {file.filename} </span>
+                    </text>
+                  )
+                }}
+              </For>
+            </box>
+          </Show>
+          <Show
+            when={queued()}
+            fallback={
+              <Show when={ctx.showTimestamps()}>
+                <text fg={theme.textMuted}>
+                  <span style={{ fg: theme.textMuted }}>
+                    {Locale.todayTimeOrDateTime(props.message.time.created)}
+                  </span>
+                </text>
+              </Show>
+            }
           >
-            <text fg={theme.text}>{text()?.text}</text>
-            <Show when={files().length}>
-              <box flexDirection="row" paddingBottom={metadataVisible() ? 1 : 0} paddingTop={1} gap={1} flexWrap="wrap">
-                <For each={files()}>
-                  {(file) => {
-                    const bg = createMemo(() => {
-                      if (file.mime.startsWith("image/")) return theme.accent
-                      if (file.mime === "application/pdf") return theme.primary
-                      return theme.secondary
-                    })
-                    return (
-                      <text fg={theme.text}>
-                        <span style={{ bg: bg(), fg: theme.background }}> {MIME_BADGE[file.mime] ?? file.mime} </span>
-                        <span style={{ bg: theme.backgroundElement, fg: theme.textMuted }}> {file.filename} </span>
-                      </text>
-                    )
-                  }}
-                </For>
-              </box>
-            </Show>
-            <Show
-              when={queued()}
-              fallback={
-                <Show when={ctx.showTimestamps()}>
-                  <text fg={theme.textMuted}>
-                    <span style={{ fg: theme.textMuted }}>
-                      {Locale.todayTimeOrDateTime(props.message.time.created)}
-                    </span>
-                  </text>
-                </Show>
-              }
-            >
-              <text fg={theme.textMuted}>
-                <span style={{ bg: color(), fg: queuedFg(), bold: true }}> QUEUED </span>
-              </text>
-            </Show>
-          </box>
-        </box>
+            <text fg={theme.textMuted}>
+              <span style={{ bg: color(), fg: queuedFg(), bold: true }}> QUEUED </span>
+            </text>
+          </Show>
+        </UserMessageBubble>
       </Show>
     </>
   )
@@ -3537,8 +3567,8 @@ function Task(props: ToolProps<typeof ActorTool>) {
       header = `${agent} Task — ${desc}`
     }
 
-    if (status === "cancelled" && action !== "cancel") {
-      header += " (cancelled)"
+    if ((status === "cancelled" && action !== "cancel") || status === "stopped") {
+      header += ` (${status})`
     }
 
     let content = [header]

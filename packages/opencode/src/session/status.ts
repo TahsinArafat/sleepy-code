@@ -4,6 +4,9 @@ import { InstanceState } from "@/effect"
 import { SessionID } from "./schema"
 import { Effect, Layer, Context } from "effect"
 import z from "zod"
+import { Log } from "@/util"
+
+const slog = Log.create({ service: "session.status" })
 
 export const Info = z
   .union([
@@ -18,6 +21,7 @@ export const Info = z
       next: z.number(),
       phase: z.enum(["request", "stream"]).optional(),
       scope: z.enum(["request", "live-step", "max-candidate", "max-judge"]).optional(),
+      hostCode: z.string().optional(),
     }),
     z.object({
       type: z.literal("notice"),
@@ -90,13 +94,33 @@ export const layer = Layer.effect(
               phaseAttempt: status.phaseAttempt ?? status.attempt,
             }
           : status
-      if (normalized.type === "retry") data.retryAttempts.set(sessionID, normalized.attempt + 1)
-      yield* bus.publish(Event.Status, { sessionID, status: normalized })
+      if (normalized.type === "retry") {
+        data.retryAttempts.set(sessionID, normalized.attempt + 1)
+        // Density telemetry (debug): UI reconnect streak is built from these frames.
+        // Keep waitMs for field incidents; debug avoids storm-time log flood.
+        slog.debug("session.status retry publish", {
+          sessionID,
+          attempt: normalized.attempt,
+          phaseAttempt: normalized.phaseAttempt,
+          phase: normalized.phase,
+          scope: normalized.scope,
+          message: normalized.message,
+          waitMs: Math.max(0, normalized.next - Date.now()),
+        })
+      }
       if (normalized.type === "idle") {
-        yield* bus.publish(Event.Idle, { sessionID })
+        // Orphan tool sweep is NOT done here. finishRun already flipped the
+        // Runner to Idle before onIdle → status.set, so this is not an
+        // execution-ownership boundary (RL-ORPHAN-D01). Primary sweep is
+        // SessionRunState's work ensuring (Runner still Running). Publish idle
+        // only — tool terminal states from that ensuring have already been
+        // persisted and emitted.
         data.statuses.delete(sessionID)
         data.retryAttempts.delete(sessionID)
+        yield* bus.publish(Event.Status, { sessionID, status: normalized })
+        yield* bus.publish(Event.Idle, { sessionID })
       } else {
+        yield* bus.publish(Event.Status, { sessionID, status: normalized })
         data.statuses.set(sessionID, normalized)
       }
       return normalized

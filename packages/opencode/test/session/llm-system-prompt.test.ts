@@ -330,7 +330,7 @@ describe("session.llm system prompt — memory-instructions guard", () => {
         const sysMsgs = messages.filter((m) => m.role === "system")
         const allSys = sysMsgs.map((m) => m.content).join("\n")
         expect(allSys).toContain("Active recall protocol")
-        expect(allSys).toContain("use Grep with a keyword pattern")
+        expect(allSys).toContain("use the Grep tool with a keyword pattern")
       },
     })
   })
@@ -396,9 +396,9 @@ describe("session.llm system prompt — memory-instructions guard", () => {
         expect(allSys).toContain("Active recall protocol")
         expect(allSys).toContain("already in your context")
 
-        // (3) Subagent return format hint mentioned
-        expect(allSys).toContain("Subagent return format")
-        expect(allSys).toContain("**Status**:")
+        // (3) Subagent return format lives on spawn task injection, not the main memory block
+        expect(allSys).not.toContain("Subagent return format")
+        expect(allSys).not.toContain("**Status**:")
 
         // (4) Agent's mid-task writing duties removed (v8.0 sections):
         expect(allSys).not.toContain("Maintaining task progress")
@@ -483,7 +483,7 @@ describe("session.llm system prompt — memory-instructions guard", () => {
     })
   })
 
-  test("SLEEPYCODE_DISABLE_CHECKPOINT=true — memory instructions are not appended", async () => {
+  test("SLEEPYCODE_DISABLE_CHECKPOINT=true — core memory instructions still appended; ckpt extras omitted", async () => {
     const previous = process.env.SLEEPYCODE_DISABLE_CHECKPOINT
     process.env.SLEEPYCODE_DISABLE_CHECKPOINT = "true"
     const server = queueState.server!
@@ -540,16 +540,25 @@ describe("session.llm system prompt — memory-instructions guard", () => {
             .map((m) => m.content)
             .join("\n")
 
-          expect(allSys).not.toContain("# Memory system")
-          expect(allSys).not.toContain("Notes scratchpad")
+          // Memory write/read contract is NOT gated on checkpoint.
+          expect(allSys).toContain("# Memory system")
+          expect(allSys).toContain("Notes scratchpad")
           expect(allSys).not.toContain("Subagent return format")
-          expect(allSys).not.toContain(
+          expect(allSys).toContain(
             path.join(Global.Path.data, "memory", "projects", Instance.current.project.id, "MEMORY.md"),
           )
-          expect(allSys).not.toContain("checkpoint.md")
+          expect(allSys).toContain(path.join(Global.Path.data, "memory", "global", "MEMORY.md"))
+          expect(allSys).toContain("Two file types")
+          expect(allSys).toContain("When to edit MEMORY.md directly")
+          expect(allSys).toContain("search first via the Grep and Read tools")
+
+          // Checkpoint-write ownership extras stay off when the flag is on.
+          // (Base agent.prompt may mention the checkpoint-writer agent name;
+          // assert on memory-system-specific copy instead.)
           expect(allSys).not.toContain("Active recall protocol")
           expect(allSys).not.toContain("sole curator")
           expect(allSys).not.toContain("Session checkpoint")
+          expect(allSys).not.toContain(path.join(Global.Path.data, "memory", "sessions", "current_session_id", "checkpoint.md"))
         },
       })
     } finally {

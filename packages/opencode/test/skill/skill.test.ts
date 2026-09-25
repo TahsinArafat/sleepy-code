@@ -8,7 +8,16 @@ import { withEnv } from "../lib/env"
 import path from "path"
 import fs from "fs/promises"
 
-withEnv({ SLEEPYCODE_DISABLE_COMPOSE_SKILLS: "true", SLEEPYCODE_DISABLE_BUILTIN_SKILLS: "true" })
+// Compose/builtin off for a tiny skill universe. Brand roots opt-in so the
+// existing .claude/.codex discovery cases stay meaningful; default-surface and
+// dotted-dir negatives live in skill-external-roots.test.ts.
+withEnv({
+  SLEEPYCODE_DISABLE_COMPOSE_SKILLS: "true",
+  SLEEPYCODE_DISABLE_BUILTIN_SKILLS: "true",
+  SLEEPYCODE_ENABLE_CLAUDE_CODE_SKILLS: "true",
+  SLEEPYCODE_ENABLE_CODEX_SKILLS: "true",
+  SLEEPYCODE_ENABLE_OPENCODE_SKILLS: "true",
+})
 
 const node = CrossSpawnSpawner.defaultLayer
 
@@ -31,7 +40,7 @@ This skill is loaded from the global home directory.
   )
 }
 
-async function createSkill(root: string, source: ".claude" | ".agents", name: string, description: string) {
+async function createSkill(root: string, source: ".claude" | ".agents" | ".codex", name: string, description: string) {
   await Bun.write(
     path.join(root, source, "skills", name, "SKILL.md"),
     `---
@@ -315,6 +324,7 @@ description: A skill in the .claude/skills directory.
             Promise.all([
               createSkill(tmp.path, ".claude", "duplicate-global", "Claude copy"),
               createSkill(tmp.path, ".agents", "duplicate-global", "Agents copy"),
+              createSkill(tmp.path, ".codex", "duplicate-global", "Codex copy"),
             ]),
           )
           const skill = yield* Skill.Service

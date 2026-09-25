@@ -4,7 +4,6 @@ import z from "zod"
 import { ProviderID, ModelID } from "@/provider/schema"
 import { ToolRegistry } from "@/tool"
 import { Worktree } from "@/worktree"
-import { checkConflict, type ConflictResult } from "@/tool/conflict-detection"
 import { Instance } from "@/project/instance"
 import { Project } from "@/project"
 import { MCP } from "@/mcp"
@@ -52,6 +51,7 @@ const GenTitleBody = z
     text: z.string().max(20_000).optional(),
     parts: z.array(GenTitlePart).min(1).max(8).optional(),
     locale: z.string().optional(),
+    model: z.object({ providerID: ProviderID.zod, modelID: ModelID.zod }).optional(),
   })
   .superRefine((value, ctx) => {
     const meaningful = Boolean(value.text?.trim()) || value.parts?.some((part) => part.type === "image" || part.text.trim())
@@ -66,7 +66,7 @@ const GenTitleBody = z
 const GenTitleResult = z.object({ title: z.string(), status: z.enum(["generated", "fallback", "untitled"]) })
 const GenTitleRequestBody = {
   required: true,
-  content: { "application/json": { schema: z.toJSONSchema(GenTitleBody) } },
+  content: { "application/json": { schema: z.toJSONSchema(GenTitleBody, { io: "input" }) } },
 } as unknown as NonNullable<Parameters<typeof describeRoute>[0]["requestBody"]>
 export const ExperimentalRoutes = lazy(() =>
   new Hono()
@@ -355,29 +355,9 @@ export const ExperimentalRoutes = lazy(() =>
           return true
         }),
     )
-    .post(
-      "/worktree/auto",
-      describeRoute({
-        summary: "Auto-create worktree on conflict",
-        description: "Check for conflicts and auto-create a worktree if needed.",
-        operationId: "worktree.auto",
-        responses: {
-          200: { description: "Worktree info or null", content: { "application/json": { schema: resolver(z.union([Worktree.Info, z.null()])) } } },
-          ...errors(400),
-        },
-      }),
-      async (c) =>
-        jsonRequest("ExperimentalRoutes.worktree.auto", c, function* () {
-          const body = yield* Effect.promise(() => c.req.json().catch(() => ({})))
-          const sessionID = typeof body?.sessionID === "string" ? body.sessionID : undefined
-          const conflict = (yield* Effect.promise(() => checkConflict(Instance.directory, sessionID))) as ConflictResult
-          if (!conflict.hasConflict) return null
-          return yield* (yield* Worktree.Service).create()
-        }),
-    )
     .post("/title", describeRoute({
       summary: "Generate conversation title",
-      description: "Generate a short conversation title with the configured lite model and deterministic fallback.",
+      description: "Generate a short conversation title with the configured lite model, optional source model, and deterministic fallback.",
       operationId: "experimental.title.generate",
       requestBody: GenTitleRequestBody,
       responses: { 200: { description: "Generated conversation title", content: { "application/json": { schema: resolver(GenTitleResult) } } }, ...errors(400) },

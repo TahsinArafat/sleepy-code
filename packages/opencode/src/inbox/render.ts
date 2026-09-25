@@ -21,11 +21,17 @@ export function renderInboxRow(row: InboxRow): string {
   // the LLM can route by sender; the wrapper format mirrors the
   // <actor-notification> convention from the legacy completion.ts.
   const content = row.content as { text?: string }
-  const sender = row.sender_session_id
-    ? `${row.sender_session_id}:${row.sender_actor_id ?? "?"}`
-    : "system"
+  const sender = row.sender_session_id ? `${row.sender_session_id}:${row.sender_actor_id ?? "?"}` : "system"
   const sentAt = new Date(row.created_at).toISOString()
   return `<inbox from="${sender}" sent_at="${sentAt}">\n${blankTo(content.text, "(empty)")}\n</inbox>`
+}
+
+// Display-only decoding; keep the persisted synthetic part unchanged for model context.
+export function parseAgentInboxPart(part: { type: string; synthetic?: boolean; ignored?: boolean; text?: string }) {
+  if (part.type !== "text" || !part.synthetic || part.ignored || typeof part.text !== "string") return undefined
+  const match = /^<inbox from="([^"<>\s:]+:[^"<>\s:]+)" sent_at="(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)">\n([\s\S]*)\n<\/inbox>$/.exec(part.text)
+  if (!match || !Number.isFinite(Date.parse(match[2]!))) return undefined
+  return { from: match[1]!, sentAt: match[2]!, text: match[3]! }
 }
 
 export function renderActorNotification(event: {
@@ -36,6 +42,7 @@ export function renderActorNotification(event: {
   error?: string
   reportedStatus?: string
   reportedSummary?: string
+  warnings?: string[]
   // For a stalled notification: how long (ms) the child has been SILENT — nothing
   // has landed for its slice. NOT time since the last completed step: the T40
   // watchdog classifies on last_activity_time (actor/schema.ts deriveLiveness),
@@ -51,7 +58,8 @@ export function renderActorNotification(event: {
     // outcome so we never imply a success the sub-session didn't claim.
     const reported = event.reportedStatus?.toLowerCase()
     const summaryLine = event.reportedSummary ? `\nSummary: ${event.reportedSummary}` : ""
-    const resultLine = `\nResult: ${event.result ?? "(no output)"}`
+    const warningLines = event.warnings?.map((warning) => `\nWarning: ${warning}`).join("") ?? ""
+    const resultLine = `${warningLines}\nResult: ${event.result ?? "(no output)"}`
     // success/partial (or absent → treat as a plain completion) keep the
     // affirmative "completed" verb.
     if (!reported || reported === "success" || reported === "partial") {
@@ -68,7 +76,8 @@ export function renderActorNotification(event: {
     return `<actor-notification>\n${header} ended (status not reported).${summaryLine}${resultLine}\n</actor-notification>`
   }
   if (event.status === "failed") {
-    return `<actor-notification>\n${header} failed.\nError: ${event.error ?? "unknown"}\n</actor-notification>`
+    const partial = event.result === undefined ? "" : `\nPartial result: ${event.result}`
+    return `<actor-notification>\n${header} failed.\nError: ${event.error ?? "unknown"}${partial}\n</actor-notification>`
   }
   if (event.status === "stalled") {
     // "no activity", not "no turn advance". The quantity is silence since the last
@@ -92,12 +101,28 @@ export type ParsedActorNotification = {
   status: "completed" | "failed" | "cancelled" | "stalled" | "ended"
   description: string
   summary?: string
+  warnings?: string[]
 }
 
 // Inverse of renderActorNotification: recover the structured fields from the
 // pre-rendered <actor-notification> text so the TUI can show a card instead of
 // the raw wrapper. Pure + exported so it's unit-testable without the renderer.
 // Returns null for any text that isn't an actor notification.
+//
+// TUI-facing fields (summary/warnings) are compacted: stack frames and long
+// dumps are noise on a terminal card. The raw XML stays on the synthetic
+// message part for the main agent / transcript.
+const CARD_LINE_LIMIT = 160
+
+function compactForCard(raw: string): string {
+  const first = raw
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length > 0 && !/^\s*at\s+\S/.test(line) && !/^\s*\.{3}\s/.test(line))
+  const text = (first ?? raw.trim()).replace(/\s+/g, " ")
+  return text.length > CARD_LINE_LIMIT ? `${text.slice(0, CARD_LINE_LIMIT - 1)}…` : text
+}
+
 export function parseActorNotification(text: string): ParsedActorNotification | null {
   if (!text.trimStart().startsWith("<actor-notification>")) return null
   // The verb reflects the *task* outcome, not just the process lifecycle:
@@ -127,9 +152,25 @@ export function parseActorNotification(text: string): ParsedActorNotification | 
   // line, so restrict the Summary match to the region before the first
   // "Result:" line — otherwise a `Summary:`-prefixed line inside the Result
   // body would be mistaken for the notification's own summary.
-  const resultIdx = text.search(/^Result:/m)
+  const resultIdx = text.search(/^(?:Result|Partial result):/m)
   const beforeResult = resultIdx === -1 ? text : text.slice(0, resultIdx)
   const line = (label: string, scope: string) => scope.match(new RegExp(`^${label}:\\s*(.+)$`, "m"))?.[1]?.trim()
-  const summary = line("Summary", beforeResult) ?? line("Result", text) ?? line("Error", text)
-  return summary ? { status, description, summary } : { status, description }
+  const resultSummary =
+    resultIdx !== -1 && text.slice(resultIdx).startsWith("Result:") ? line("Result", text.slice(resultIdx)) : undefined
+  const warningIdx = beforeResult.search(/^Warning:/m)
+  const metadataHeader = warningIdx === -1 ? beforeResult : beforeResult.slice(0, warningIdx)
+  const summaryRaw = line("Summary", metadataHeader) ?? resultSummary ?? line("Error", metadataHeader)
+  const warnings = beforeResult
+    .split(/^Warning:[ \t]*/m)
+    .slice(1)
+    .map((warning) => warning.replace(/\n<\/actor-notification>\s*$/, "").trim())
+    .filter(Boolean)
+    .map(compactForCard)
+    .filter(Boolean)
+  return {
+    status,
+    description,
+    ...(summaryRaw ? { summary: compactForCard(summaryRaw) } : {}),
+    ...(warnings.length ? { warnings } : {}),
+  }
 }

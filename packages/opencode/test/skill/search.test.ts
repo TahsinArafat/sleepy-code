@@ -75,7 +75,7 @@ describe("skill.search", () => {
   test("uses Chinese bigrams for natural-language BM25 matching", () => {
     const results = searchSkills("请分析一下这些业务数据", [
       { ...skill("data-analytics", "Analyze product metrics."), bundled: true },
-      { ...skill("frontend-design", "Design visual interfaces."), bundled: true },
+      { ...skill("product-design", "Design visual interfaces."), bundled: true },
     ])
 
     expect(results[0].skill_id).toBe("data-analytics")

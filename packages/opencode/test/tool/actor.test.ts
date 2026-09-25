@@ -604,6 +604,10 @@ describe("Actor tool subagent_type enum (F36)", () => {
         // reaching for it gets a validation error instead of a silently fresh actor.
         expect(wrap({ operation: { action: "run", description: "x", prompt: "y", subagent_type: "general", actor_id: "general-1" } }).success).toBe(false)
         expect(wrap({ operation: { action: "spawn", description: "x", prompt: "y", subagent_type: "general", actor_id: "general-1" } }).success).toBe(false)
+        // Model-facing spawn/run cannot request fork/context inheritance (system-only).
+        expect(wrap({ operation: { action: "run", description: "x", prompt: "y", subagent_type: "general", context: "full" } }).success).toBe(false)
+        expect(wrap({ operation: { action: "spawn", description: "x", prompt: "y", subagent_type: "general", context: "state" } }).success).toBe(false)
+        expect(wrap({ operation: { action: "run", description: "x", prompt: "y", subagent_type: "general", context: "none" } }).success).toBe(false)
         expect(wrap({ operation: { action: "run", description: "x", prompt: "y" } }).success).toBe(false) // missing subagent_type
         expect(wrap({ operation: { action: "run", prompt: "y", subagent_type: "general" } }).success).toBe(false) // missing description
         expect(wrap({ description: "x", prompt: "y", subagent_type: "general" }).success).toBe(false) // missing operation envelope

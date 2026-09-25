@@ -4,7 +4,7 @@ import fs from "fs/promises"
 import os from "os"
 import path from "path"
 import { Shell } from "../../src/shell/shell"
-import { BashTool } from "../../src/tool/bash"
+import { BashTool, DEFAULT_MAX_OUTPUT_TOKENS } from "../../src/tool/bash"
 import { Instance } from "../../src/project/instance"
 import { Filesystem } from "../../src/util"
 import { tmpdir } from "../fixture/fixture"
@@ -248,25 +248,35 @@ describe("tool.bash git identity floor", () => {
       GIT_COMMITTER_EMAIL: undefined,
     })
     try {
-      // outsideGit -> a truly non-git project -> Instance.worktree === "/".
-      await using tmp = await tmpdir({ outsideGit: true })
-      await Instance.provide({
-        directory: tmp.path,
-        fn: async () => {
-          expect(Instance.worktree).toBe("/")
-          const bash = await initBash()
-          const result = await Effect.runPromise(
-            bash.execute({ command: printGitEnv, description: "print git env" }, ctx),
-          )
-          // There is no project repo to inherit from, so injecting anything would
-          // override the config of whatever repo the command actually runs in
-          // (GIT_AUTHOR_*/GIT_COMMITTER_* env outrank `user.name`/`user.email`).
-          for (const key of ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"]) {
-            const line = result.metadata.output.split("\n").find((l) => l.trim().startsWith(`${key}=`))
-            expect(line?.trim()).toBe(`${key}=`)
-          }
-        },
-      })
+      // A truly non-git project outside ANY git tree. `outsideGit` alone is not
+      // enough on machines where /tmp itself is a git repo (Instance.worktree
+      // then becomes that repo root, not "/"). HOME is isolated by test/preload
+      // and is not a git worktree.
+      const fs = await import("fs/promises")
+      const path = await import("path")
+      const os = await import("os")
+      const dir = await fs.mkdtemp(path.join(process.env.HOME || os.homedir(), "bash-nongit-"))
+      try {
+        await Instance.provide({
+          directory: dir,
+          fn: async () => {
+            expect(Instance.worktree).toBe("/")
+            const bash = await initBash()
+            const result = await Effect.runPromise(
+              bash.execute({ command: printGitEnv, description: "print git env" }, ctx),
+            )
+            // There is no project repo to inherit from, so injecting anything would
+            // override the config of whatever repo the command actually runs in
+            // (GIT_AUTHOR_*/GIT_COMMITTER_* env outrank `user.name`/`user.email`).
+            for (const key of ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"]) {
+              const line = result.metadata.output.split("\n").find((l) => l.trim().startsWith(`${key}=`))
+              expect(line?.trim()).toBe(`${key}=`)
+            }
+          },
+        })
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true })
+      }
     } finally {
       restoreEnv(saved)
     }
@@ -1474,34 +1484,33 @@ describe("tool.bash abort", () => {
 })
 
 describe("tool.bash truncation", () => {
-  test("truncates output exceeding line limit", async () => {
+  test("does not truncate many short lines within the token budget", async () => {
     await Instance.provide({
       directory: projectRoot,
       fn: async () => {
         const bash = await initBash()
-        const lineCount = Truncate.MAX_LINES + 500
+        const lineCount = 5000
         const result = await Effect.runPromise(
           bash.execute(
             {
               command: fill("lines", lineCount),
-              description: "Generate lines exceeding limit",
+              description: "Generate many short lines",
             },
             ctx,
           ),
         )
-        mustTruncate(result)
-        expect(result.output).toMatch(/\.\.\.output truncated\.\.\./)
-        expect(result.output).toMatch(/Full output saved to:\s+\S+/)
+        expect((result.metadata as { truncated?: boolean }).truncated).toBe(false)
+        expect(result.output).toContain(String(lineCount))
       },
     })
   })
 
-  test("truncates output exceeding byte limit", async () => {
+  test("truncates output exceeding the default token limit", async () => {
     await Instance.provide({
       directory: projectRoot,
       fn: async () => {
         const bash = await initBash()
-        const byteCount = Truncate.MAX_BYTES + 10000
+        const byteCount = DEFAULT_MAX_OUTPUT_TOKENS * 4 + 10000
         const result = await Effect.runPromise(
           bash.execute(
             {
@@ -1512,7 +1521,10 @@ describe("tool.bash truncation", () => {
           ),
         )
         mustTruncate(result)
-        expect(result.output).toMatch(/\.\.\.output truncated\.\.\./)
+        expect(result.output).toContain(
+          `Warning: truncated output (original token count: ${Math.ceil(byteCount / 4)})`,
+        )
+        expect(result.output).toContain("tokens truncated…")
         expect(result.output).toMatch(/Full output saved to:\s+\S+/)
       },
     })
@@ -1570,7 +1582,7 @@ describe("tool.bash truncation", () => {
       directory: projectRoot,
       fn: async () => {
         const bash = await initBash()
-        const lineCount = Truncate.MAX_LINES + 100
+        const lineCount = 30_000
         const result = await Effect.runPromise(
           bash.execute(
             {

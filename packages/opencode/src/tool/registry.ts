@@ -8,12 +8,11 @@ import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
 import { HistoryTool } from "./history"
 import { MemoryTool } from "./memory"
-import { ReadTool } from "./read"
+import { ReadTool, describeMedia } from "./read"
 import { ViewImageTool } from "./view-image"
 import { ActorTool } from "./actor"
 import { TaskTool } from "./task"
 import { CronTool } from "./cron"
-import { SessionTool } from "./session"
 import { WorkflowTool } from "./workflow"
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
@@ -35,13 +34,9 @@ import { WebSearchTool } from "./websearch"
 import { CodeSearchTool } from "./codesearch"
 import { Flag } from "@/flag/flag"
 import { Log } from "@/util"
-import { errorMessage } from "@/util/error"
 import { LspTool } from "./lsp"
 import * as Truncate from "./truncate"
 import { ApplyPatchTool } from "./apply_patch"
-import { Glob } from "@sleepy-ai/shared/util/glob"
-import path from "path"
-import { pathToFileURL } from "url"
 import { Effect, Layer, Context } from "effect"
 import { FetchHttpClient, HttpClient } from "effect/unstable/http"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
@@ -68,9 +63,7 @@ import { SessionCheckpoint } from "@/session/checkpoint"
 import { TaskRegistry } from "@/task/registry"
 import { defaultLayer as SchedulerDefaultLayer } from "@/cron/scheduler"
 import { Auth } from "@/auth"
-import { shellWrap } from "./shell-wrap"
 import * as BashInteractive from "./bash-interactive"
-import { resolveInvocationStyle } from "./invocation-style"
 import { BuiltinWorkflow } from "@/workflow/builtin"
 import { ToolScriptTool, renderToolScriptDeclarations } from "./tool-script"
 import { GPT_TOP_LEVEL_TOOLS, TOOL_SCRIPT_EXCLUDED, toolScriptRegistry } from "./tool-script-ref"
@@ -97,13 +90,7 @@ export function renderWorkflowCatalog(): string {
   ].join("\n")
 }
 
-const fallbackWarned = new Set<string>()
 const reservedConflictWarned = new Set<string>()
-function warnShellFallbackOnce(id: string) {
-  if (fallbackWarned.has(id)) return
-  fallbackWarned.add(id)
-  log.warn(`tool '${id}' configured with invocation_style='shell' but has no shell field; falling back to JSON`)
-}
 
 type ActorDef = Tool.InferDef<typeof ActorTool>
 type ReadDef = Tool.InferDef<typeof ReadTool>
@@ -140,10 +127,8 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/ToolRegistry") { }
 
-// SessionTool's `dashboard` verb correlates worktrees via Git.Service. Git is a
-// leaf layer (needs only ChildProcessSpawner) with no shared state, so the
-// registry self-provides it rather than leaking Git.Service as an external
-// requirement onto every consumer (production wiring + ~20 test harnesses).
+// Registry self-provides leaf layers (e.g. Git) rather than leaking them as
+// external requirements onto every consumer (production wiring + test harnesses).
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -152,6 +137,7 @@ export const layer = Layer.effect(
     const agents = yield* Agent.Service
     const skill = yield* Skill.Service
     const truncate = yield* Truncate.Service
+    const provider = yield* Provider.Service
 
     const invalid = yield* InvalidTool
     const actor = yield* ActorTool
@@ -178,7 +164,6 @@ export const layer = Layer.effect(
     const memorytool = yield* MemoryTool
     const tasktool = yield* TaskTool
     const crontool = yield* CronTool
-    const sessiontool = yield* SessionTool
     const workflowtool = yield* WorkflowTool
     const toolscript = yield* ToolScriptTool
     const agent = yield* Agent.Service
@@ -215,28 +200,6 @@ export const layer = Layer.effect(
                   },
                 }
               }),
-          }
-        }
-
-        const dirs = yield* config.directories()
-        const matches = dirs.flatMap((dir) =>
-          Glob.scanSync("{tool,tools}/*.{js,ts}", { cwd: dir, absolute: true, dot: true, symlink: true }),
-        )
-        if (matches.length) yield* config.waitForDependencies()
-        for (const match of matches) {
-          const namespace = path.basename(match, path.extname(match))
-          // `match` is an absolute filesystem path from `Glob.scanSync(..., { absolute: true })`.
-          // Import it as `file://` so Node on Windows accepts the dynamic import.
-          const mod = yield* Effect.tryPromise({
-            try: () => import(`${pathToFileURL(match).href}?v=${Date.now()}`),
-            catch: (err) => err,
-          }).pipe(Effect.catch((err) => {
-            log.error("failed to load file tool, skipping", { path: match, error: errorMessage(err) })
-            return Effect.succeed(undefined)
-          }))
-          if (!mod) continue
-          for (const [id, def] of Object.entries<ToolDefinition>(mod)) {
-            custom.push(fromPlugin(id === "default" ? namespace : `${namespace}_${id}`, def))
           }
         }
 
@@ -277,7 +240,6 @@ export const layer = Layer.effect(
           history: Tool.init(historytool),
           task: Tool.init(tasktool),
           cron: Tool.init(crontool),
-          session: Tool.init(sessiontool),
           workflow: Tool.init(workflowtool),
           toolscript: Tool.init(toolscript),
         })
@@ -311,7 +273,6 @@ export const layer = Layer.effect(
             tool.task,
             tool.toolscript,
             ...(Flag.SLEEPYCODE_EXPERIMENTAL_CRON ? [tool.cron] : []),
-            ...(Flag.SLEEPYCODE_EXPERIMENTAL_ORCHESTRATOR ? [tool.session] : []),
             ...(Flag.SLEEPYCODE_EXPERIMENTAL_WORKFLOW_TOOL ? [tool.workflow] : []),
           ],
           actor: tool.actor,
@@ -415,12 +376,6 @@ export const layer = Layer.effect(
         )
       }
 
-      // The `session` tool is orchestrator-only. Orchestrator is a
-      // full-capability agent (no toolAllowlist), so gate on the agent name
-      // rather than an allowlist: every other agent — primaries without an
-      // allowlist (build/plan/compose) and subagents — must not see `session`.
-      filtered = filtered.filter((tool) => tool.id !== "session" || input.agent.name === "orchestrator")
-
       // No subagent may spawn further subagents. `actor` is the only tool that
       // spawns/runs child agents, so mask it out for every `mode: "subagent"`
       // agent — native (general/explore) AND user-config-defined, which default
@@ -450,6 +405,17 @@ export const layer = Layer.effect(
     toolScriptRegistry.current = (input) =>
       input ? available(input).pipe(Effect.map((result) => result.filtered)) : all()
 
+    // The read tool's media paragraph depends on the model the turn runs on.
+    const describeReadMedia = Effect.fn("ToolRegistry.describeReadMedia")(function* (input: {
+      providerID: ProviderID
+      modelID: ModelID
+    }) {
+      const model = yield* provider
+        .getModel(input.providerID, input.modelID)
+        .pipe(Effect.catchDefect(() => Effect.succeed(undefined)))
+      return describeMedia(model)
+    })
+
     const definitions = Effect.fn("ToolRegistry.definitions")(function* (
       input: {
         providerID: ProviderID
@@ -466,9 +432,6 @@ export const layer = Layer.effect(
         ? availableTools.filtered.filter((tool) => GPT_TOP_LEVEL_TOOLS.has(tool.id))
         : availableTools.filtered
 
-      const cfg = yield* config.get()
-      const resolveStyle = (toolId: string): "json" | "shell" => resolveInvocationStyle(cfg.tool, toolId)
-
       return yield* Effect.forEach(
         selected,
         Effect.fnUntraced(function* (tool: Tool.Def) {
@@ -478,26 +441,20 @@ export const layer = Layer.effect(
             parameters: tool.parameters,
           }
           yield* plugin.trigger("tool.definition", { toolID: tool.id }, output)
-          const style = resolveStyle(tool.id)
-          const useShell = style === "shell" && tool.shell !== undefined
-          if (style === "shell" && !tool.shell) {
-            warnShellFallbackOnce(tool.id)
-          }
-          const effective: Tool.Def = useShell ? shellWrap(tool) : tool
-          const description = useShell ? tool.shell!.description : output.description
           return {
             id: tool.id,
             description: [
-              description,
+              output.description,
+              tool.id === ReadTool.id ? yield* describeReadMedia(input) : undefined,
               tool.id === ActorTool.id ? yield* describeTask(input.agent) : undefined,
               tool.id === WorkflowTool.id ? yield* describeWorkflow() : undefined,
               tool.id === ToolScriptTool.id ? yield* describeToolScript(availableTools.filtered) : undefined,
             ]
               .filter(Boolean)
               .join("\n"),
-            parameters: useShell ? effective.parameters : output.parameters,
-            execute: effective.execute,
-            formatValidationError: effective.formatValidationError,
+            parameters: output.parameters,
+            execute: tool.execute,
+            formatValidationError: tool.formatValidationError,
           }
         }),
         { concurrency: "unbounded" },

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
-import { jsonSchema, tool, type Tool as AITool } from "ai"
+import type { Tool as AITool } from "ai"
+import { jsonSchema, tool } from "ai"
 import { asSchema } from "@ai-sdk/provider-utils"
 import { Effect } from "effect"
 import { and, Database, eq } from "@/storage"
@@ -51,7 +52,9 @@ export function toolsHash(tools: Record<string, AITool>, activeTools: string[]) 
   return hash(
     activeTools.toSorted().flatMap((name) => {
       const item = tools[name]
-      return item ? [{ name, description: item.description, inputSchema: item.inputSchema }] : []
+      return item
+        ? [{ name, description: item.description, inputSchema: item.inputSchema }]
+        : []
     }),
   )
 }
@@ -63,7 +66,11 @@ export async function snapshotTools(tools: Record<string, AITool>, activeTools: 
       if (!item) return []
       return [
         Promise.resolve(asSchema(item.inputSchema).jsonSchema).then(
-          (input_schema): SessionPrefixToolSnapshot => ({ name, description: item.description, input_schema }),
+          (input_schema): SessionPrefixToolSnapshot => ({
+            name,
+            description: item.description,
+            input_schema,
+          }),
         ),
       ]
     }),
@@ -89,10 +96,7 @@ export const get = Effect.fn("SessionPrefixSnapshot.get")(function* (sessionID: 
         .select()
         .from(SessionPrefixSnapshotTable)
         .where(
-          and(
-            eq(SessionPrefixSnapshotTable.session_id, sessionID),
-            eq(SessionPrefixSnapshotTable.profile_key, key),
-          ),
+          and(eq(SessionPrefixSnapshotTable.session_id, sessionID), eq(SessionPrefixSnapshotTable.profile_key, key)),
         )
         .get(),
     ),

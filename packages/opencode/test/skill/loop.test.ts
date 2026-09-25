@@ -10,7 +10,10 @@ import { withEnv } from "../lib/env"
 // the builtin bundle ON so the /loop skill is discoverable.
 withEnv({
   SLEEPYCODE_DISABLE_COMPOSE_SKILLS: "true",
-  SLEEPYCODE_DISABLE_EXTERNAL_SKILLS: "true",
+  SLEEPYCODE_DISABLE_AGENTS_SKILLS: "true",
+  SLEEPYCODE_ENABLE_CLAUDE_CODE_SKILLS: undefined,
+  SLEEPYCODE_ENABLE_CODEX_SKILLS: undefined,
+  SLEEPYCODE_ENABLE_OPENCODE_SKILLS: undefined,
   SLEEPYCODE_DISABLE_BUILTIN_SKILLS: undefined,
 })
 

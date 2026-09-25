@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "version": "0.1.13",
+  "version": "0.1.15",
   "name": "@sleepy-ai/shared",
   "type": "module",
   "license": "MIT",

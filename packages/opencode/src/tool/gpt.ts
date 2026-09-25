@@ -29,15 +29,6 @@ export function isMcpToolSearchEnabled(
   return enabled || usesCodexMode(harness, ...modelIDs)
 }
 
-export function isSleepyModel(...values: Array<string | undefined>) {
-  return values.some((value) => value && /(?:^|[/_-])sleepy(?:$|[/_.-])/i.test(value))
-}
-
-export function usesSleepyResponsesApi(...values: Array<string | undefined>) {
-  const ids = values.flatMap((value) => (value ? [value.toLowerCase()] : []))
-  return isSleepyModel(...ids) && ids.some((id) => /(?:^|[/_.-])ptc(?:$|[/_.-])/.test(id))
-}
-
 export function usesGPTToolset(
   modelID: string,
   harness?: HarnessMode,

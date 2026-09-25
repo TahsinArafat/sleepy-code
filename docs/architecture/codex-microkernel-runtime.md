@@ -126,7 +126,7 @@ SleepyCode 将 provider metadata 写入消息并在下一轮回放，使无状�
 - `view_image` 的暴露条件与执行期 image capability check 不完全一致；
 - `files.readText` 依赖路径 jail，不执行普通 `read` permission ask；
 - QuickJS 不能让 Bash 获得 OS 级隔离；
-- [`registry-invocation-style.test.ts`](../../packages/opencode/test/tool/registry-invocation-style.test.ts#L17) 中 GPT `exec`、Bash description、`skill_search` 和 `multiedit` profile 用例目前被跳过。
+- [`registry-toolset.test.ts`](../../packages/opencode/test/tool/registry-toolset.test.ts#L17) 中 GPT `exec`、Bash description、`skill_search` 和 `multiedit` profile 用例目前被跳过。
 
 ## 关键源码
 

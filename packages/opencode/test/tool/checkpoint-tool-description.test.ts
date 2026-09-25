@@ -1,11 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import ACTOR_DESCRIPTION from "../../src/tool/actor.txt"
 import ACTOR_CHECKPOINT from "../../src/tool/actor.checkpoint.txt"
-import ACTOR_SHELL from "../../src/tool/actor.shell.txt"
 import MEMORY_DESCRIPTION from "../../src/tool/memory.txt"
 import MEMORY_CHECKPOINT from "../../src/tool/memory.checkpoint.txt"
 import TASK_DESCRIPTION from "../../src/tool/task.txt"
-import TASK_SHELL from "../../src/tool/task.shell.txt"
 import { withCheckpointClause, withCheckpointDescription } from "../../src/tool/checkpoint-description"
 
 const original = process.env.SLEEPYCODE_DISABLE_CHECKPOINT
@@ -20,15 +18,14 @@ afterEach(() => set(original))
 describe("tool schema checkpoint copy is composed, not always-on", () => {
   test("base actor/memory/task descriptions do not mention checkpoint", () => {
     expect(ACTOR_DESCRIPTION).not.toMatch(/checkpoint/i)
-    expect(ACTOR_SHELL).not.toMatch(/checkpoint/i)
     expect(MEMORY_DESCRIPTION).not.toMatch(/checkpoint/i)
     expect(TASK_DESCRIPTION).not.toMatch(/checkpoint/i)
-    expect(TASK_SHELL).not.toMatch(/checkpoint/i)
   })
 
   test("checkpoint fragments teach the disabled lifecycle", () => {
     expect(ACTOR_CHECKPOINT).toMatch(/checkpoint/i)
-    expect(ACTOR_CHECKPOINT).toContain('context="state"')
+    expect(ACTOR_CHECKPOINT).not.toContain('context="state"')
+    expect(ACTOR_CHECKPOINT).toContain("progress.md")
     expect(MEMORY_CHECKPOINT).toMatch(/checkpoint/i)
   })
 
@@ -48,14 +45,20 @@ describe("tool schema checkpoint copy is composed, not always-on", () => {
     expect(memory).toContain("Session checkpoints")
   })
 
-  test("actor context clause mentions state only when checkpointing is on", () => {
-    const base =
-      "(optional) Context inheritance. 'none' (default): child sees only prompt. 'full': child sees parent conversation (prefix cache sharing)."
-    const extra = "'state': child gets checkpoint summary."
+  test("withCheckpointClause helper still gates optional copy on the flag", () => {
+    const base = "(optional) example clause."
+    const extra = "extra checkpoint sentence."
     set("true")
     expect(withCheckpointClause(base, extra)).toBe(base)
     expect(withCheckpointClause(base, extra)).not.toMatch(/checkpoint/i)
     set("false")
-    expect(withCheckpointClause(base, extra)).toContain("checkpoint summary")
+    expect(withCheckpointClause(base, extra)).toContain("checkpoint sentence")
+  })
+
+  test("actor tool descriptions do not advertise a model-facing context parameter", () => {
+    expect(ACTOR_DESCRIPTION).not.toContain('context="full"')
+    expect(ACTOR_DESCRIPTION).not.toContain('context="state"')
+    expect(ACTOR_DESCRIPTION).not.toMatch(/context inheritance/i)
+    expect(ACTOR_DESCRIPTION).not.toContain("## Context")
   })
 })

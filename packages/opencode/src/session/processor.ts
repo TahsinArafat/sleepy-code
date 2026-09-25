@@ -21,6 +21,7 @@ import { ProviderError } from "@/provider"
 import type { Provider } from "@/provider"
 import { Question } from "@/question"
 import { errorMessage } from "@/util/error"
+import { ToolGate, FAIL_CASCADE_MESSAGE } from "@/tool/gate"
 import { isRecoverableError } from "@/tool/recoverable"
 import { getToolResultAttachments, getToolResultMetadata } from "@/tool/result-error"
 import { Log } from "@/util"
@@ -69,6 +70,39 @@ function describeTryBest(incident: TryBestIncident) {
 export type Result = "overflow" | "stop" | "continue" | "text-repeat"
 
 export type Event = LLM.Event
+
+/**
+ * Codex-style auto-resume gate: after tools have fully completed, a retryable
+ * transport failure should continue the outer step (tool results stay in
+ * history) instead of stamping a terminal error. Replaying this stream is
+ * unsafe; the next sampling call is not.
+ */
+export function shouldAutoResumeAfterTools(input: {
+  retrySafe: boolean
+  decision: { retryable: boolean }
+  toolParts: readonly { state: { status: string } }[]
+  /** User/agent abort — never reopen the step. */
+  aborted?: boolean
+  /** Current assistant finish reason (provider). Terminal reasons must not be rewritten. */
+  finish?: string | undefined
+  /** Non-empty user-visible final text already on this assistant message. */
+  hasFinalText?: boolean
+}): boolean {
+  if (input.aborted) return false
+  if (input.retrySafe) return false
+  if (!input.decision.retryable) return false
+  // Already-delivered answer: finish=stop/other (or content-filter/error) is terminal.
+  // Overwriting it to "tool-calls" reopens a finished turn and the runLoop never idles
+  // (classify keeps returning continue on the completed tools). Trailing transport
+  // noise after a good final must leave the answer intact.
+  if (input.finish === "stop" || input.finish === "other") {
+    if (input.hasFinalText) return false
+  }
+  if (input.finish === "content-filter" || input.finish === "error") return false
+  const hasCompleted = input.toolParts.some((p) => p.state.status === "completed")
+  const hasInFlight = input.toolParts.some((p) => p.state.status === "running" || p.state.status === "pending")
+  return hasCompleted && !hasInFlight
+}
 
 /**
  * A proposed tool call captured from a candidate stream (max mode), before
@@ -123,6 +157,7 @@ export type ReplayInput = {
 }
 
 export interface Handle {
+  readonly toolGate: ToolGate
   readonly message: MessageV2.Assistant
   readonly updateToolCall: (
     toolCallID: string,
@@ -223,6 +258,7 @@ export const layer: Layer.Layer<
       // may execute tools internally before emitting start-step events,
       // so capturing inside the event handler can be too late.
       const initialSnapshot = yield* snapshot.track()
+      const toolGate = new ToolGate()
       const ctx: ProcessorContext = {
         assistantMessage: input.assistantMessage,
         sessionID: input.sessionID,
@@ -253,7 +289,7 @@ export const layer: Layer.Layer<
       const slog = log.clone().tag("session.id", input.sessionID).tag("messageID", input.assistantMessage.id)
 
       const parse = (e: unknown) =>
-        MessageV2.fromError(e, {
+        MessageV2.fromLiveError(e, {
           providerID: input.model.providerID,
           aborted,
           allow404Retry: ProviderError.allowsModelNotFoundRetry(input.model),
@@ -762,7 +798,10 @@ export const layer: Layer.Layer<
           if (!match) continue
           yield* session.updatePart({
             ...match.part,
-            state: MessageV2.abortedToolState(match.part.state),
+            state: MessageV2.abortedToolState(
+              match.part.state,
+              toolGate.wasCancelled(toolCallID) ? FAIL_CASCADE_MESSAGE : undefined,
+            ),
           })
         }
         ctx.toolcalls = {}
@@ -779,7 +818,10 @@ export const layer: Layer.Layer<
           if (part.state.status !== "pending" && part.state.status !== "running") continue
           yield* session.updatePart({
             ...part,
-            state: MessageV2.abortedToolState(part.state),
+            state: MessageV2.abortedToolState(
+              part.state,
+              toolGate.wasCancelled(part.callID) ? FAIL_CASCADE_MESSAGE : undefined,
+            ),
           })
         }
         // 有 error = 没完成 = 留在 /recovery 候选集里。不管错误类型(瞬态/终态/用户中止),
@@ -804,7 +846,12 @@ export const layer: Layer.Layer<
           sessionID: ctx.assistantMessage.sessionID,
           error: ctx.assistantMessage.error,
         })
-        if (isMain) yield* status.set(ctx.sessionID, { type: "idle" })
+        // Do NOT status.set(idle) here. halt runs before cleanup and the outer
+        // work ensuring (orphan sweep). Publishing idle first lets the Desktop
+        // finish/unsubscribe, then the sweep's part.updated lands on the NEXT
+        // turn's subscription (RL-ORPHAN-D01). Idle is published by
+        // SessionRunState onIdle after the work Effect (including ensuring)
+        // exits.
       })
 
       const process = Effect.fn("SessionProcessor.process")(function* (streamInput: LLM.StreamInput) {
@@ -823,10 +870,10 @@ export const layer: Layer.Layer<
             ctx.retrySafe = true
             ctx.textNgramRepeat = false
             ctx.textNgramMonitor = createTextNgramMonitor()
-            const stream = llm.stream(streamInput)
+            const stream = llm.stream({ ...streamInput, assistantMessageID: ctx.assistantMessage.id })
 
             yield* stream.pipe(
-              Stream.tap((event) => handleEvent(event)),
+              Stream.tap(handleEvent),
               Stream.takeUntil(() => ctx.needsOverflowHandling || ctx.textNgramRepeat || ctx.blocked),
               Stream.runDrain,
             )
@@ -880,6 +927,7 @@ export const layer: Layer.Layer<
                         next: info.next,
                         phase: info.phase,
                         scope: info.scope,
+                        hostCode: info.hostCode,
                       })
                     }
                     yield* bus
@@ -894,12 +942,88 @@ export const layer: Layer.Layer<
                         scope: info.scope,
                         reason: info.message,
                         nextDelayMs: Math.max(0, info.next - Date.now()),
+                        hostCode: info.hostCode,
                       })
                       .pipe(Effect.ignore)
                   }),
               }),
             ),
-            Effect.catch(halt),
+            Effect.catch((e) =>
+              Effect.gen(function* () {
+                // Codex-style auto-resume: after tools have fully completed, a
+                // retryable transport failure (timeout / disconnect / 5xx) must NOT
+                // stamp a terminal ErrorCard. Replaying this stream is unsafe
+                // (tools already ran), but the outer runLoop can start the next
+                // step from session history that already carries tool results —
+                // equivalent to an automatic Resume of the next sampling call.
+                // User abort (cancel / interrupt) is terminal: never auto-resume.
+                if (aborted) {
+                  yield* halt(e)
+                  return
+                }
+                if (!ctx.retrySafe) {
+                  const decision = SessionRetry.decide(parse(e), "stream", "live-step")
+                  const parts = MessageV2.parts(ctx.assistantMessage.id)
+                  const toolParts = parts.filter((p) => p.type === "tool")
+                  const hasFinalText = parts.some(
+                    (p) => p.type === "text" && !p.synthetic && !p.ignored && p.text.trim().length > 0,
+                  )
+                  if (
+                    shouldAutoResumeAfterTools({
+                      retrySafe: ctx.retrySafe,
+                      decision,
+                      toolParts,
+                      aborted,
+                      finish: ctx.assistantMessage.finish,
+                      hasFinalText,
+                    })
+                  ) {
+                    slog.info("auto-resume after tools", {
+                      kind: decision.kind,
+                      message: decision.message,
+                      tools: toolParts.length,
+                    })
+                    if (isMain) {
+                      yield* status
+                        .setRetry(ctx.sessionID, {
+                          type: "retry",
+                          attempt: 1,
+                          phaseAttempt: 1,
+                          message: decision.message,
+                          next: Date.now(),
+                          phase: "stream",
+                          scope: "live-step",
+                          hostCode: decision.hostCode,
+                        })
+                        .pipe(Effect.ignore)
+                    }
+                    // Keep tool parts; mark the step as tool-calls so classify
+                    // continues. Do NOT write assistant.error (that is terminal).
+                    ctx.assistantMessage.finish = "tool-calls"
+                    ctx.assistantMessage.error = undefined
+                    yield* session.updateMessage(ctx.assistantMessage)
+                    return
+                  }
+                  // Trailing transport failure after a completed answer (finish=stop/other
+                  // + final text): keep the answer, do not stamp an ErrorCard, do not
+                  // reopen. Fall through to a clean "stop" via the tail below.
+                  if (
+                    (ctx.assistantMessage.finish === "stop" || ctx.assistantMessage.finish === "other") &&
+                    hasFinalText
+                  ) {
+                    slog.info("ignore trailing transport error after finished turn", {
+                      kind: decision.kind,
+                      message: decision.message,
+                      finish: ctx.assistantMessage.finish,
+                    })
+                    ctx.assistantMessage.error = undefined
+                    yield* session.updateMessage(ctx.assistantMessage)
+                    return
+                  }
+                }
+                yield* halt(e)
+              }),
+            ),
             Effect.ensuring(cleanup()),
           )
 
@@ -1110,6 +1234,7 @@ export const layer: Layer.Layer<
       })
 
       return {
+        toolGate,
         get message() {
           return ctx.assistantMessage
         },

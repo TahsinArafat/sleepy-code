@@ -42,9 +42,9 @@ const SLEEPYCODE_EXPERIMENTAL = truthy("SLEEPYCODE_EXPERIMENTAL")
 const SLEEPYCODE_DISABLE_CLAUDE_CODE_ENV = truthy("SLEEPYCODE_DISABLE_CLAUDE_CODE")
 const SLEEPYCODE_DISABLE_CLAUDE_CODE = SLEEPYCODE_DISABLE_CLAUDE_CODE_ENV
 
-const SLEEPYCODE_DISABLE_EXTERNAL_SKILLS = truthy("SLEEPYCODE_DISABLE_EXTERNAL_SKILLS")
-const SLEEPYCODE_DISABLE_CLAUDE_CODE_SKILLS =
-  SLEEPYCODE_DISABLE_EXTERNAL_SKILLS || SLEEPYCODE_DISABLE_CLAUDE_CODE || truthy("SLEEPYCODE_DISABLE_CLAUDE_CODE_SKILLS")
+// External skill roots:
+//   .agents                       default on  — SLEEPYCODE_DISABLE_AGENTS_SKILLS
+//   .claude / .codex / .opencode  default off — SLEEPYCODE_ENABLE_*_SKILLS
 const copy = process.env["SLEEPYCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT"]
 
 /**
@@ -138,6 +138,10 @@ export const Flag = {
   get SLEEPYCODE_DISABLE_CHECKPOINT() {
     return truthy("SLEEPYCODE_DISABLE_CHECKPOINT")
   },
+  // Defaults to protection on. Opt out to continue a batch after tool failure.
+  get SLEEPYCODE_DISABLE_FAIL_CASCADE() {
+    return truthy("SLEEPYCODE_DISABLE_FAIL_CASCADE")
+  },
   SLEEPYCODE_DISABLE_AUTOCOMPACT: truthy("SLEEPYCODE_DISABLE_AUTOCOMPACT"),
   // Default compaction trigger, used when `compaction.max_context` is not set in
   // config. Same grammar as that config field: an absolute token count
@@ -196,11 +200,34 @@ export const Flag = {
   // placeholder when they can't be compressed. Values must be positive integers.
   SLEEPYCODE_MAX_PROMPT_IMAGES: number("SLEEPYCODE_MAX_PROMPT_IMAGES"),
   SLEEPYCODE_MAX_PROMPT_IMAGE_SIZE: number("SLEEPYCODE_MAX_PROMPT_IMAGE_SIZE"),
+  // Upper bound, in bytes, on a single inline attachment (image, PDF, audio,
+  // MCP blob). Enforced where the attachment is produced — the read tool, user
+  // prompt attachments, and MCP result normalization — with the size taken
+  // from stat or the base64 length so an under-limit payload costs nothing
+  // extra. Over the limit, an image is read and recompressed to fit; anything
+  // that still cannot fit (PDFs, audio, video, undecodable images) is replaced
+  // by a notice, so nothing oversized ever becomes a stored part. Defaults to
+  // 50 MB. Provider limits are lower (the Claude API takes 10 MB per image,
+  // Bedrock and Vertex 5 MB) and are still enforced at send time by the
+  // SLEEPYCODE_MAX_PROMPT_IMAGE_SIZE / provider cap in provider/transform.ts.
+  // Read lazily so tests can flip it at runtime.
+  get SLEEPYCODE_MAX_ATTACHMENT_SIZE() {
+    return number("SLEEPYCODE_MAX_ATTACHMENT_SIZE") ?? 50 * 1024 * 1024
+  },
+  // Ceiling, in bytes, above which an oversized image is refused outright
+  // instead of being read and recompressed. Defaults to 150 MB: compressImage
+  // already refuses anything over MAX_DECODE_IMAGE_PIXELS (64 MP), and a PNG
+  // that decodes within that budget is at most ~150-200 MB on disk, so a
+  // larger file would only be read into memory to fail the pixel guard.
+  // Read lazily so tests can flip it at runtime.
+  get SLEEPYCODE_MAX_ATTACHMENT_SOURCE_SIZE() {
+    return number("SLEEPYCODE_MAX_ATTACHMENT_SOURCE_SIZE") ?? 150 * 1024 * 1024
+  },
   SLEEPYCODE_DISABLE_PROVIDER_ENV: truthy("SLEEPYCODE_DISABLE_PROVIDER_ENV"),
   SLEEPYCODE_DISABLE_CLAUDE_CODE,
   get SLEEPYCODE_DISABLE_CLAUDE_CODE_MCP() {
     // MCP compatibility stays on in sleepy-only mode so users can reuse Claude Code
-    // MCP servers without inheriting prompts, skills, or provider env keys.
+    // MCP servers without inheriting prompts or provider env keys.
     return SLEEPYCODE_DISABLE_CLAUDE_CODE_ENV || truthy("SLEEPYCODE_DISABLE_CLAUDE_CODE_MCP")
   },
   SLEEPYCODE_DISABLE_CLAUDE_CODE_PROMPT: SLEEPYCODE_DISABLE_CLAUDE_CODE || truthy("SLEEPYCODE_DISABLE_CLAUDE_CODE_PROMPT"),
@@ -208,11 +235,19 @@ export const Flag = {
   // {project}/.claude/commands load as slash commands. Independent of the
   // sleepy-only master switch. Set SLEEPYCODE_DISABLE_CLAUDE_CODE_COMMANDS=true to disable.
   SLEEPYCODE_DISABLE_CLAUDE_CODE_COMMANDS: truthy("SLEEPYCODE_DISABLE_CLAUDE_CODE_COMMANDS"),
-  SLEEPYCODE_DISABLE_CLAUDE_CODE_SKILLS,
-  SLEEPYCODE_DISABLE_EXTERNAL_SKILLS,
-  SLEEPYCODE_DISABLE_AGENTS_SKILLS: SLEEPYCODE_DISABLE_EXTERNAL_SKILLS || truthy("SLEEPYCODE_DISABLE_AGENTS_SKILLS"),
-  SLEEPYCODE_DISABLE_CODEX_SKILLS: SLEEPYCODE_DISABLE_EXTERNAL_SKILLS || truthy("SLEEPYCODE_DISABLE_CODEX_SKILLS"),
-  SLEEPYCODE_DISABLE_OPENCODE_SKILLS: SLEEPYCODE_DISABLE_EXTERNAL_SKILLS || truthy("SLEEPYCODE_DISABLE_OPENCODE_SKILLS"),
+  // External skill-root switches. Read lazily so tests can flip env.
+  get SLEEPYCODE_DISABLE_AGENTS_SKILLS() {
+    return truthy("SLEEPYCODE_DISABLE_AGENTS_SKILLS")
+  },
+  get SLEEPYCODE_ENABLE_CLAUDE_CODE_SKILLS() {
+    return truthy("SLEEPYCODE_ENABLE_CLAUDE_CODE_SKILLS")
+  },
+  get SLEEPYCODE_ENABLE_CODEX_SKILLS() {
+    return truthy("SLEEPYCODE_ENABLE_CODEX_SKILLS")
+  },
+  get SLEEPYCODE_ENABLE_OPENCODE_SKILLS() {
+    return truthy("SLEEPYCODE_ENABLE_OPENCODE_SKILLS")
+  },
 
   // Skill-search ranking and loading policy. Exact mentions stay above BM25;
   // the BM25/coverage blend has a 0.90 ceiling, and near-max results auto-load.
@@ -345,11 +380,6 @@ export const Flag = {
   // function-calling model.
   SLEEPYCODE_EXPERIMENTAL_MCP_TOOL_SEARCH:
     SLEEPYCODE_EXPERIMENTAL || truthy("SLEEPYCODE_EXPERIMENTAL_MCP_TOOL_SEARCH"),
-  // Defaults to OFF (opt-in): the Orchestrator primary mode — a general
-  // coordinator that delegates to child sessions via the `session` tool, with a
-  // global singleton workspace and child permission-approval routing. Enable with
-  // SLEEPYCODE_EXPERIMENTAL_ORCHESTRATOR=true (or the umbrella SLEEPYCODE_EXPERIMENTAL).
-  SLEEPYCODE_EXPERIMENTAL_ORCHESTRATOR: SLEEPYCODE_EXPERIMENTAL || truthy("SLEEPYCODE_EXPERIMENTAL_ORCHESTRATOR"),
   // Defaults to OFF (opt-in): dynamic workflows and built-in workflows.
   // Enable with SLEEPYCODE_EXPERIMENTAL_WORKFLOW_TOOL=true (or the umbrella
   // SLEEPYCODE_EXPERIMENTAL flag).
@@ -400,7 +430,7 @@ export const Flag = {
     return truthy("SLEEPYCODE_DISABLE_COMPOSE_SKILLS")
   },
   // Disables user-facing builtin skills shipped with the binary (e.g.
-  // evolve). Does not affect compose skills — the two sets are
+  // sleepycode-docs). Does not affect compose skills — the two sets are
   // independent and non-overlapping.
   get SLEEPYCODE_DISABLE_BUILTIN_SKILLS() {
     return truthy("SLEEPYCODE_DISABLE_BUILTIN_SKILLS")

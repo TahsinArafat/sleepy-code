@@ -1,5 +1,5 @@
 import { describe, expect } from "bun:test"
-import { Effect, Exit, Fiber, Scope } from "effect"
+import { Deferred, Effect, Exit, Fiber, Scope } from "effect"
 import { Runner } from "../../src/effect"
 import { it } from "../lib/effect"
 
@@ -71,28 +71,30 @@ describe("SessionRunState tuple key — independent Runners per (sid, agentID)",
         onInterrupt: Effect.succeed("sub-interrupted"),
       })
 
-      // Start main with long work
+      const mainStarted = yield* Deferred.make<void>()
+      const subStarted = yield* Deferred.make<void>()
+      const finishMain = yield* Deferred.make<string>()
       const mainFiber = yield* mainRunner
         .ensureRunning(
           Effect.gen(function* () {
-            yield* Effect.sleep("200 millis")
-            return "main-complete"
+            yield* Deferred.succeed(mainStarted, undefined)
+            return yield* Deferred.await(finishMain)
           }),
         )
         .pipe(Effect.forkChild)
-
-      // Start sub with long work
       const subFiber = yield* subRunner
         .ensureRunning(
           Effect.gen(function* () {
-            yield* Effect.sleep("10 seconds")
-            return "sub-complete"
+            yield* Deferred.succeed(subStarted, undefined)
+            return yield* Effect.never
           }),
         )
         .pipe(Effect.forkChild)
 
-      // Let both start
-      yield* Effect.sleep("10 millis")
+      yield* Deferred.await(mainStarted)
+      yield* Deferred.await(subStarted)
+      expect(mainRunner.busy).toBe(true)
+      expect(subRunner.busy).toBe(true)
 
       // Cancel only the subagent
       yield* subRunner.cancel
@@ -101,7 +103,8 @@ describe("SessionRunState tuple key — independent Runners per (sid, agentID)",
       expect(Exit.isSuccess(subExit)).toBe(true)
       if (Exit.isSuccess(subExit)) expect(subExit.value).toBe("sub-interrupted")
 
-      // Main should complete normally
+      expect(mainRunner.busy).toBe(true)
+      yield* Deferred.succeed(finishMain, "main-complete")
       const mainExit = yield* Fiber.await(mainFiber)
       expect(Exit.isSuccess(mainExit)).toBe(true)
       if (Exit.isSuccess(mainExit)) expect(mainExit.value).toBe("main-complete")
@@ -123,28 +126,29 @@ describe("SessionRunState tuple key — independent Runners per (sid, agentID)",
           }),
       })
 
-      // Start first run
+      // Start first run; signal once the run body is actually executing so the
+      // reentry path does not race a cold fiber under CI load.
+      const started = yield* Deferred.make<void>()
       const fiber1 = yield* runner
         .ensureRunning(
           Effect.gen(function* () {
-            yield* Effect.sleep("50 millis")
+            yield* Deferred.succeed(started, void 0)
+            yield* Effect.sleep("80 millis")
             return "first"
           }),
         )
         .pipe(Effect.forkChild)
+      yield* Deferred.await(started)
 
-      // Give first run time to start
-      yield* Effect.sleep("5 millis")
-
-      // Second call triggers reentry warn
+      // Second call triggers reentry warn and attaches pending work
       const fiber2 = yield* runner.ensureRunning(Effect.succeed("second")).pipe(Effect.forkChild)
 
       const [exit1, exit2] = yield* Effect.all([Fiber.await(fiber1), Fiber.await(fiber2)])
-      // Both get the first run's result (reentry attaches to existing deferred)
       expect(Exit.isSuccess(exit1)).toBe(true)
       expect(Exit.isSuccess(exit2)).toBe(true)
       if (Exit.isSuccess(exit1)) expect(exit1.value).toBe("first")
-      if (Exit.isSuccess(exit2)) expect(exit2.value).toBe("first")
+      // Pending work runs after the live run; not dropped.
+      if (Exit.isSuccess(exit2)) expect(exit2.value).toBe("second")
       expect(warnings.length).toBe(1)
       expect(warnings[0].label).toBe("session-1:main")
     }),

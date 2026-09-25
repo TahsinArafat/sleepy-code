@@ -1,3 +1,6 @@
+import type { ModelMessage } from "ai"
+import { Flag } from "../../src/flag/flag"
+import { ProviderTest } from "../fake/provider"
 import { describe, expect, test } from "bun:test"
 import { PNG } from "pngjs"
 import { ProviderTransform, type Provider } from "../../src/provider"
@@ -1469,7 +1472,7 @@ describe("ProviderTransform.message - oversized image handling", () => {
     const result = ProviderTransform.message(msgs, mockModel, {})
     const part = (result[0].content as any[])[0]
     expect(part.type).toBe("text")
-    expect(part.text).toContain("Image omitted")
+    expect(part.text).toContain("was not sent to the model")
   })
 
   test("strips an oversized undecodable tool-result image to a placeholder", () => {
@@ -1494,7 +1497,7 @@ describe("ProviderTransform.message - oversized image handling", () => {
     const result = ProviderTransform.message(msgs, mockModel, {})
     const entry = (result[0].content[0] as any).output.value[0]
     expect(entry.type).toBe("text")
-    expect(entry.text).toContain("Image omitted")
+    expect(entry.text).toContain("was not sent to the model")
   })
 
   test("leaves a small image untouched (default cap applies by default)", () => {
@@ -1541,8 +1544,18 @@ describe("ProviderTransform.message - provider-aware image size cap", () => {
 
   // 6 MB of raw base64 bytes. Not a decodable jpeg/png, so if it ever hit the
   // cap path it would be STRIPPED to a placeholder — which makes "left untouched"
-  // an unambiguous signal that no cap was applied.
-  const sixMbJunk = Buffer.alloc(6_000_000, 0x42).toString("base64")
+  // an unambiguous signal that no cap was applied. Prefixed with a valid WebP
+  // header so sniff/verify treat it as image/webp rather than corrupt junk.
+  const sixMbJunk = (() => {
+    const bytes = Buffer.alloc(6_000_000, 0x42)
+    bytes.write("RIFF", 0, "ascii")
+    bytes.writeUInt32LE(5_999_992, 4)
+    bytes.write("WEBP", 8, "ascii")
+    bytes.write("VP8X", 12, "ascii")
+    bytes.writeUIntLE(99, 24, 3)
+    bytes.writeUIntLE(99, 27, 3)
+    return bytes.toString("base64")
+  })()
   const wrappedSixMbJunk = sixMbJunk.replace(/.{76}/g, "$&\n")
   const widePng = (() => {
     const png = new PNG({ width: 2_100, height: 10 })
@@ -1617,7 +1630,7 @@ describe("ProviderTransform.message - provider-aware image size cap", () => {
       )[0].content as any[]
     )[0]
     expect(part.type).toBe("text")
-    expect(part.text).toContain("Image omitted")
+    expect(part.text).toContain("was not sent to the model")
   })
 
   test.each([
@@ -1781,6 +1794,141 @@ describe("ProviderTransform.message - provider-aware image size cap", () => {
     )
     const part = (ProviderTransform.message(userMsgs(), model, {})[0].content as any[])[0]
     expect(part).toEqual({ type: "image", image: `data:image/webp;base64,${sixMbJunk}` })
+  })
+})
+
+describe("ProviderTransform.message - image sniff, transcode, and ImageInputError", () => {
+  const jpeg = require("jpeg-js")
+  const vision = {
+    id: "gpt-4o",
+    providerID: "openai",
+    api: { id: "gpt-4o", url: "https://api.openai.com", npm: "@ai-sdk/openai" },
+    name: "gpt-4o",
+    capabilities: {
+      temperature: true,
+      reasoning: false,
+      attachment: true,
+      toolcall: true,
+      input: { text: true, audio: false, image: true, video: false, pdf: false },
+      output: { text: true, audio: false, image: false, video: false, pdf: false },
+      interleaved: false,
+    },
+    cost: { input: 1, output: 1, cache: { read: 0, write: 0 } },
+    limit: { context: 8000, output: 2000 },
+    status: "active",
+    options: {},
+    headers: {},
+  } as any
+
+  function tinyJpeg() {
+    const width = 2
+    const height = 2
+    const data = Buffer.alloc(width * height * 4, 80)
+    for (let i = 3; i < data.length; i += 4) data[i] = 255
+    return Buffer.from(jpeg.encode({ data, width, height }, 90).data)
+  }
+
+  function tinyBmp() {
+    const width = 2
+    const height = 1
+    const rowSize = Math.floor((24 * width + 31) / 32) * 4
+    const bytes = Buffer.alloc(54 + rowSize)
+    bytes.write("BM", 0, "ascii")
+    bytes.writeUInt32LE(bytes.length, 2)
+    bytes.writeUInt32LE(54, 10)
+    bytes.writeUInt32LE(40, 14)
+    bytes.writeInt32LE(width, 18)
+    bytes.writeInt32LE(height, 22)
+    bytes.writeUInt16LE(1, 26)
+    bytes.writeUInt16LE(24, 28)
+    bytes.writeUInt32LE(rowSize, 34)
+    bytes[54] = 0
+    bytes[55] = 128
+    bytes[56] = 255
+    bytes[57] = 255
+    bytes[58] = 128
+    bytes[59] = 0
+    return bytes
+  }
+
+  test("rewrites a JPEG labeled as PNG to the sniffed MIME", () => {
+    const bytes = tinyJpeg()
+    const part = (
+      ProviderTransform.message(
+        [
+          {
+            role: "user",
+            content: [{ type: "image", image: `data:image/png;base64,${bytes.toString("base64")}` }],
+          },
+        ] as any[],
+        vision,
+        {},
+      )[0].content as any[]
+    )[0]
+    expect(part.type).toBe("image")
+    expect(part.mediaType).toBe("image/jpeg")
+    expect(String(part.image).startsWith("data:image/jpeg;base64,")).toBe(true)
+  })
+
+  test("transcodes BMP to PNG before send", () => {
+    const bytes = tinyBmp()
+    const part = (
+      ProviderTransform.message(
+        [
+          {
+            role: "user",
+            content: [{ type: "file", mediaType: "image/bmp", filename: "shot.bmp", data: bytes.toString("base64") }],
+          },
+        ] as any[],
+        vision,
+        {},
+      )[0].content as any[]
+    )[0]
+    expect(part.type).toBe("file")
+    expect(part.mediaType).toBe("image/png")
+    const decoded = PNG.sync.read(Buffer.from(part.data, "base64"))
+    expect(decoded.width).toBe(2)
+    expect(decoded.height).toBe(1)
+    expect(decoded.data[0]).toBe(255)
+    expect(decoded.data[1]).toBe(128)
+    expect(decoded.data[2]).toBe(0)
+  })
+
+  test("corrupt image becomes ImageInputError text and is not forwarded", () => {
+    const part = (
+      ProviderTransform.message(
+        [{ role: "user", content: [{ type: "image", image: "data:image/png;base64,bm90YSBwbmc=" }] }] as any[],
+        vision,
+        {},
+      )[0].content as any[]
+    )[0]
+    expect(part.type).toBe("text")
+    expect(part.text).toContain("was not sent to the model")
+    expect(part.text).not.toContain("bm90YSBwbmc=")
+  })
+
+  test("corrupt tool-result image is not forwarded to the provider", () => {
+    const entry = (
+      ProviderTransform.message(
+        [
+          {
+            role: "tool",
+            content: [
+              {
+                type: "tool-result",
+                toolCallId: "call_1",
+                toolName: "read",
+                output: { type: "content", value: [{ type: "media", mediaType: "image/png", data: "bm90YSBwbmc=" }] },
+              },
+            ],
+          },
+        ] as any[],
+        vision,
+        {},
+      )[0].content[0] as any
+    ).output.value[0]
+    expect(entry.type).toBe("text")
+    expect(entry.text).toContain("was not sent to the model")
   })
 })
 
@@ -5156,4 +5304,66 @@ describe("ProviderTransform.message - end-to-end through the AI SDK's own wire c
     expect(empty).toEqual([])
     expect(wire[wire.length - 1].role).not.toBe("assistant")
   })
+})
+
+describe("prompt image count across user and native tool results", () => {
+  test.each(["tool", "assistant"] as const)(
+    "drops oldest images on %s while preserving result IDs and non-image content",
+    (role) => {
+      const previous = Flag.SLEEPYCODE_MAX_PROMPT_IMAGES
+      Flag.SLEEPYCODE_MAX_PROMPT_IMAGES = 2
+      try {
+        const model = ProviderTest.model()
+        model.capabilities.input.image = true
+        model.capabilities.input.pdf = true
+        const messages: ModelMessage[] = [
+          { role: "user", content: [{ type: "image", image: "https://example.com/old.png" }] },
+          {
+            role,
+            content: [
+              {
+                type: "tool-result",
+                toolCallId: "call-image",
+                toolName: "screenshot",
+                output: {
+                  type: "content",
+                  value: [
+                    { type: "text", text: "Screenshot result" },
+                    { type: "image-data", mediaType: "image/png", data: "AQID" },
+                    { type: "file-data", mediaType: "image/png", data: "AQID" },
+                    { type: "file-data", mediaType: "application/pdf", data: "JVBERg==" },
+                    { type: "image-url", url: "https://example.com/recent.png" },
+                  ],
+                },
+              },
+            ],
+          },
+          { role: "user", content: [{ type: "image", image: "https://example.com/new.png" }] },
+        ]
+        const result = ProviderTransform.message(messages, model, {})
+        expect(result[0]!.content).toEqual([
+          { type: "text", text: "[Image omitted: exceeds the configured limit of 2 prompt image(s).]" },
+        ])
+        const part = result[1]!.content[0]
+        expect(part).toMatchObject({
+          type: "tool-result",
+          toolCallId: "call-image",
+          output: {
+            type: "content",
+            value: [
+              { type: "text", text: "Screenshot result" },
+              { type: "text", text: "[Image omitted: exceeds the configured limit of 2 prompt image(s).]" },
+              { type: "text", text: "[Image omitted: exceeds the configured limit of 2 prompt image(s).]" },
+              { type: "file-data", mediaType: "application/pdf", data: "JVBERg==" },
+              { type: "image-url", url: "https://example.com/recent.png" },
+            ],
+          },
+        })
+        expect(result[2]).toEqual(messages[2])
+        expect(JSON.stringify(messages)).not.toContain("Image omitted")
+      } finally {
+        Flag.SLEEPYCODE_MAX_PROMPT_IMAGES = previous
+      }
+    },
+  )
 })

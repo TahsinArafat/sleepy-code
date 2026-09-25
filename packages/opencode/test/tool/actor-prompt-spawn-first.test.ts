@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test"
 import ACTOR_DESCRIPTION from "../../src/tool/actor.txt"
-import ACTOR_SHELL_DESCRIPTION from "../../src/tool/actor.shell.txt"
 
 // Agents kept reaching for the BLOCKING `run` action because the tool prompt
 // listed it first and used it in nearly every example, which silently killed
@@ -9,7 +8,6 @@ import ACTOR_SHELL_DESCRIPTION from "../../src/tool/actor.shell.txt"
 describe("actor tool prompt steers to spawn first", () => {
   for (const [name, prompt] of [
     ["actor.txt", ACTOR_DESCRIPTION],
-    ["actor.shell.txt", ACTOR_SHELL_DESCRIPTION],
   ] as const) {
     describe(name, () => {
       test("names spawn as the default", () => {
@@ -56,10 +54,4 @@ describe("actor tool prompt steers to spawn first", () => {
     expect(spawnExamples).toBeGreaterThanOrEqual(3)
   })
 
-  test("actor.shell.txt demonstrates a parallel spawn fan-out", () => {
-    const spawnCommands = ACTOR_SHELL_DESCRIPTION.match(/^\s*actor spawn /gm)?.length ?? 0
-    const runCommands = ACTOR_SHELL_DESCRIPTION.match(/^\s*actor run /gm)?.length ?? 0
-    expect(spawnCommands).toBeGreaterThan(runCommands)
-    expect(spawnCommands).toBeGreaterThanOrEqual(3)
-  })
 })

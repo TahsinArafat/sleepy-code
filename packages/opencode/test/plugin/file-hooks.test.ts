@@ -1,14 +1,19 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test"
-import { Effect } from "effect"
+import { Effect, Layer } from "effect"
 import fs from "fs"
 import path from "path"
-import { tmpdir } from "../fixture/fixture"
+import { provideTmpdirInstance, tmpdir } from "../fixture/fixture"
+import { testEffect } from "../lib/effect"
+import { Global } from "../../src/global"
+import * as CrossSpawnSpawner from "../../src/effect/cross-spawn-spawner"
 
 const disableDefault = process.env.SLEEPYCODE_DISABLE_DEFAULT_PLUGINS
 process.env.SLEEPYCODE_DISABLE_DEFAULT_PLUGINS = "1"
 
 const { Plugin } = await import("../../src/plugin/index")
 const { Instance } = await import("../../src/project/instance")
+
+const it = testEffect(Layer.mergeAll(Plugin.defaultLayer, CrossSpawnSpawner.defaultLayer))
 
 afterEach(async () => {
   await Instance.disposeAll()
@@ -46,11 +51,49 @@ const triggerTransform = () =>
   })
 
 describe("plugin file hooks", () => {
+  for (const folder of ["hook", "hooks"]) {
+    it.live(`does not import home ${folder} on startup, external edits, or reload`, () =>
+      provideTmpdirInstance((dir) =>
+        Effect.gen(function* () {
+          const directory = path.join(Global.Path.home, ".sleepycode", folder)
+          const sink = path.join(dir, "imports.log")
+          const files = ["example.ts", "example_js.js", "late.ts"].map((name) => path.join(directory, name))
+          const source = [
+            'import fs from "node:fs"',
+            `fs.appendFileSync(${JSON.stringify(sink)}, "imported\\n")`,
+            hookSource("home"),
+          ].join("\n")
+          yield* Effect.acquireRelease(
+            Effect.promise(() => fs.promises.mkdir(directory, { recursive: true })),
+            () => Effect.promise(() => Promise.all(files.map((file) => fs.promises.rm(file, { force: true })))),
+          )
+          yield* Effect.promise(() => Promise.all(files.slice(0, 2).map((file) => Bun.write(file, source))))
+
+          const plugin = yield* Plugin.Service
+          yield* plugin.init()
+          expect(yield* Effect.promise(() => Bun.file(sink).exists())).toBe(false)
+          expect((yield* triggerTransform()).system).toEqual([])
+
+          yield* Effect.promise(() => Bun.write(files[0], source + "\n// updated"))
+          yield* Effect.promise(() => Bun.write(files[2], source))
+          yield* Effect.promise(() => Bun.sleep(600))
+          expect((yield* triggerTransform()).system).toEqual([])
+          expect(yield* Effect.promise(() => Bun.file(sink).exists())).toBe(false)
+
+          yield* plugin.reloadFileHooks()
+          yield* plugin.init()
+          expect((yield* triggerTransform()).system).toEqual([])
+          expect(yield* Effect.promise(() => Bun.file(sink).exists())).toBe(false)
+        }),
+      ),
+    )
+  }
+
   test("loads hooks from .sleepycode/hooks and picks up external edits without reload call", async () => {
     await using tmp = await tmpdir({
       init: async (dir) => {
         await Bun.write(path.join(dir, ".sleepycode", "hooks", "greet.ts"), hookSource("v1"))
-        await Bun.write(path.join(dir, "sleepycode.json"), '{}')
+        await Bun.write(path.join(dir, "sleepycode.json"), "{}")
       },
     })
     const hookFile = path.join(tmp.path, ".sleepycode", "hooks", "greet.ts")
@@ -80,7 +123,7 @@ describe("plugin file hooks", () => {
     await using tmp = await tmpdir({
       init: async (dir) => {
         await fs.promises.mkdir(path.join(dir, ".sleepycode", "hooks"), { recursive: true })
-        await Bun.write(path.join(dir, "sleepycode.json"), '{}')
+        await Bun.write(path.join(dir, "sleepycode.json"), "{}")
       },
     })
 
@@ -109,7 +152,7 @@ describe("plugin file hooks", () => {
     await using tmp = await tmpdir({
       init: async (dir) => {
         const sink = path.join(dir, "events.log")
-        await Bun.write(path.join(dir, "sleepycode.json"), '{}')
+        await Bun.write(path.join(dir, "sleepycode.json"), "{}")
         await Bun.write(
           path.join(dir, ".sleepycode", "hooks", "listener.ts"),
           [

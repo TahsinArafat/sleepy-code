@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url"
 import { BusEvent } from "@/bus/bus-event"
 import { SessionID, MessageID, PartID } from "./schema"
 import z from "zod"
@@ -17,6 +18,7 @@ import { Database, NotFoundError, and, desc, eq, inArray, lt, or } from "@/stora
 import { MessageTable, PartTable, SessionTable } from "./session.sql"
 import { ProviderError } from "@/provider"
 import { errorMessage } from "@/util/error"
+import { HostErrorRegistry } from "@/error/host-registry"
 import { isMedia } from "@/util/media"
 import type { Provider } from "@/provider"
 import { ModelID, ProviderID } from "@/provider/schema"
@@ -25,6 +27,7 @@ import { EffectLogger } from "@/effect"
 import {
   inlineToolAttachment,
   routeToolAttachment,
+  supportsResponsesToolContent,
   toolAttachmentFilename,
   toolAttachmentPlaceholder,
 } from "./tool-attachment"
@@ -39,20 +42,41 @@ interface FetchDecompressionError extends Error {
 }
 
 function causeMetadata(error: unknown): Record<string, string> | undefined {
+  if (error === null || typeof error !== "object") return undefined
+  const source = error as { cause?: unknown; errors?: unknown }
+  if (source.cause === undefined && !Array.isArray(source.errors)) return undefined
   const causeChain = ProviderError.summarizeCause(error)
-  return causeChain.length > 1 ? { causeChain: JSON.stringify(causeChain) } : undefined
+  const history = ProviderError.summarizeCause(error, { includeRetryHistory: true })
+  const retryHistory = JSON.stringify(history) !== JSON.stringify(causeChain) ? JSON.stringify(history) : undefined
+  const metadata = {
+    ...(causeChain.length > 0 ? { causeChain: JSON.stringify(causeChain) } : {}),
+    ...(retryHistory ? { retryHistory } : {}),
+  }
+  return Object.keys(metadata).length > 0 ? metadata : undefined
 }
 
 export const SYNTHETIC_ATTACHMENT_PROMPT = "Attached file(s) from tool result:"
 export { isMedia }
 
-export const OutputLengthError = NamedError.create("MessageOutputLengthError", z.object({}))
-export const AbortedError = NamedError.create("MessageAbortedError", z.object({ message: z.string() }))
+export const OutputLengthError = NamedError.create(
+  "MessageOutputLengthError",
+  z.object({
+    ...HostErrorRegistry.hostFieldShape,
+  }),
+)
+export const AbortedError = NamedError.create(
+  "MessageAbortedError",
+  z.object({
+    message: z.string(),
+    ...HostErrorRegistry.hostFieldShape,
+  }),
+)
 export const StructuredOutputError = NamedError.create(
   "StructuredOutputError",
   z.object({
     message: z.string(),
     retries: z.number(),
+    ...HostErrorRegistry.hostFieldShape,
   }),
 )
 export const AuthError = NamedError.create(
@@ -60,6 +84,7 @@ export const AuthError = NamedError.create(
   z.object({
     providerID: z.string(),
     message: z.string(),
+    ...HostErrorRegistry.hostFieldShape,
   }),
 )
 export const APIError = NamedError.create(
@@ -70,7 +95,7 @@ export const APIError = NamedError.create(
     isRetryable: z.boolean(),
     responseHeaders: z.record(z.string(), z.string()).optional(),
     responseBody: z.string().optional(),
-    metadata: z.record(z.string(), z.string()).optional(),
+    ...HostErrorRegistry.hostFieldShape,
   }),
 )
 export type APIError = z.infer<typeof APIError.Schema>
@@ -89,12 +114,28 @@ export function isAuthError(error: unknown): boolean {
 }
 export const ContextOverflowError = NamedError.create(
   "ContextOverflowError",
-  z.object({ message: z.string(), responseBody: z.string().optional() }),
+  z.object({
+    message: z.string(),
+    responseBody: z.string().optional(),
+    ...HostErrorRegistry.hostFieldShape,
+  }),
 )
-export const InvalidOutputError = NamedError.create("InvalidOutputError", z.object({ message: z.string() }))
-export const TextToolCallError = NamedError.create("TextToolCallError", z.object({ message: z.string() }))
-export const ContentFilterError = NamedError.create("ContentFilterError", z.object({ message: z.string() }))
-export const ModelError = NamedError.create("ModelError", z.object({ message: z.string() }))
+export const InvalidOutputError = NamedError.create(
+  "InvalidOutputError",
+  z.object({
+    message: z.string(),
+    ...HostErrorRegistry.hostFieldShape,
+  }),
+)
+export const TextToolCallError = NamedError.create("TextToolCallError", z.object({ message: z.string(), ...HostErrorRegistry.hostFieldShape }))
+export const ContentFilterError = NamedError.create(
+  "ContentFilterError",
+  z.object({
+    message: z.string(),
+    ...HostErrorRegistry.hostFieldShape,
+  }),
+)
+export const ModelError = NamedError.create("ModelError", z.object({ message: z.string(), ...HostErrorRegistry.hostFieldShape }))
 
 export const OutputFormatText = z
   .object({
@@ -456,14 +497,30 @@ const Base = z.object({
   agentID: z.string().optional(),
 })
 
-export const Provenance = z
+/** Plugin hook envelope: actor/spawn pre/post hook sends. */
+export const HookProvenance = z
   .object({
     hookPhase: z.enum(["pre", "post"]),
     hookIteration: z.number().int().nonnegative(),
     pluginNames: z.array(z.string()),
     hookIDs: z.array(z.string()),
   })
-  .meta({ ref: "Provenance" })
+  .meta({ ref: "HookProvenance" })
+export type HookProvenance = z.infer<typeof HookProvenance>
+
+/**
+ * Root-session machine/host envelope (desktop automation, system, scheduled host).
+ * Present provenance on source=hook allows non-text parts and does not force
+ * text parts synthetic; absence still fail-closes those checks.
+ */
+export const MachineProvenance = z
+  .object({
+    machine: z.string().min(1),
+  })
+  .meta({ ref: "MachineProvenance" })
+export type MachineProvenance = z.infer<typeof MachineProvenance>
+
+export const Provenance = z.union([HookProvenance, MachineProvenance]).meta({ ref: "Provenance" })
 export type Provenance = z.infer<typeof Provenance>
 
 export const User = Base.extend({
@@ -562,6 +619,13 @@ export const Assistant = Base.extend({
     }),
   }),
   structured: z.any().optional(),
+  actorResult: z.object({
+    finalText: z.string().optional(),
+    structured: z.unknown().optional(),
+    reportedStatus: z.enum(["success", "partial", "failed", "blocked"]).optional(),
+    reportedSummary: z.string().optional(),
+    warnings: z.array(z.string()).optional(),
+  }).optional(),
   variant: z.string().optional(),
   finish: z.string().optional(),
 }).meta({
@@ -723,6 +787,30 @@ const part = (row: typeof PartTable.$inferSelect) =>
     messageID: row.message_id,
   }) as Part
 
+/** Stable substring for the compose-agent synthetic protocol (request-order head). */
+export const COMPOSE_REMINDER_MARKER = "SleepyCode Compose Agent"
+
+/**
+ * DB orders parts by `PartTable.id` (ascending). Compose protocol must sit at the
+ * head of the user message for every consumer (runLoop request, checkpoint fork
+ * capture, trajectory) or parent/fork prompt prefixes diverge. Promote on hydrate
+ * so position is a load-time invariant, not a request-layer compensating projection.
+ *
+ * Mutates `parts` in place (splice/unshift) and returns the same array. Callers
+ * must not share the array with a consumer that requires PartID-asc order.
+ */
+export function promoteComposeProtocolFirst(parts: Part[]): Part[] {
+  const idx = parts.findIndex(
+    (p) => p.type === "text" && p.synthetic === true && !p.ignored && p.text.includes(COMPOSE_REMINDER_MARKER),
+  )
+  if (idx <= 0) return parts
+  const found = parts[idx]
+  if (!found) return parts
+  parts.splice(idx, 1)
+  parts.unshift(found)
+  return parts
+}
+
 const older = (row: Cursor) =>
   or(lt(MessageTable.time_created, row.time), and(eq(MessageTable.time_created, row.time), lt(MessageTable.id, row.id)))
 
@@ -748,7 +836,7 @@ function hydrate(rows: (typeof MessageTable.$inferSelect)[]) {
 
   return rows.map((row) => ({
     info: info(row),
-    parts: partByMessage.get(row.id) ?? [],
+    parts: promoteComposeProtocolFirst(partByMessage.get(row.id) ?? []),
   }))
 }
 
@@ -766,7 +854,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
    * a single activity-log user message (see tail-digest.ts). Off by default so
    * checkpoint writers / compaction / title generation keep full fidelity.
    */
-  options?: { stripMedia?: boolean; collapseCheckpointTail?: boolean },
+  options?: { stripMedia?: boolean; collapseCheckpointTail?: boolean; languageProvider?: string },
 ) {
   const result: UIMessage[] = []
   const toolNames = new Set<string>()
@@ -864,7 +952,9 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
         }
         // text/plain and directory files are converted into text parts, ignore them
         if (part.type === "file" && part.mime !== "text/plain" && part.mime !== "application/x-directory") {
-          if (options?.stripMedia && isMedia(part.mime)) {
+          if (part.url.startsWith("file:") && part.mime !== "application/pdf" && !/^(?:image|audio|video)\//.test(part.mime)) {
+            userMessage.parts.push({ type: "text", text: `[Attached local file: ${fileURLToPath(part.url)}]` })
+          } else if (options?.stripMedia && isMedia(part.mime)) {
             userMessage.parts.push({
               type: "text",
               text: `[Attached ${part.mime}: ${part.filename ?? "file"}]`,
@@ -920,7 +1010,12 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
         const native: FilePart[] = []
         const parts: (typeof syntheticGroups)[number]["parts"] = []
         for (const attachment of input.attachments) {
-          const route = routeToolAttachment({ model, attachment, allowNative: input.allowNative })
+          const route = routeToolAttachment({
+            model,
+            attachment,
+            allowNative: input.allowNative,
+            languageProvider: options?.languageProvider,
+          })
           if (route === "native") native.push(attachment)
           if (route === "synthetic") {
             parts.push({
@@ -1009,21 +1104,29 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
           }
           if (part.state.status === "error") {
             const attachments = options?.stripMedia ? [] : (part.state.attachments ?? [])
-            routeAttachments({
+            const finalAttachments = routeAttachments({
               tool: part.tool,
               callID: part.callID,
               status: "error",
               attachments,
-              allowNative: false,
+              allowNative: supportsResponsesToolContent(model, options?.languageProvider),
             })
             const output = part.state.metadata?.interrupted === true ? part.state.metadata.output : undefined
-            if (typeof output === "string") {
+            if (finalAttachments.length > 0 || typeof output === "string") {
               assistantMessage.parts.push({
                 type: ("tool-" + part.tool) as `tool-${string}`,
                 state: "output-available",
                 toolCallId: part.callID,
                 input: part.state.input,
-                output,
+                // Responses has no separate error-image output variant. Keep the
+                // failure explicit in text and its images under the same call ID.
+                output:
+                  finalAttachments.length > 0
+                    ? {
+                        text: `Tool failed: ${part.state.error}${typeof output === "string" ? `\n${output}` : ""}`,
+                        attachments: finalAttachments,
+                      }
+                    : output,
                 ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
                 ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
               })
@@ -1101,7 +1204,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
 export function toModelMessages(
   input: WithParts[],
   model: Provider.Model,
-  options?: { stripMedia?: boolean; collapseCheckpointTail?: boolean },
+  options?: { stripMedia?: boolean; collapseCheckpointTail?: boolean; languageProvider?: string },
 ): Promise<ModelMessage[]> {
   return Effect.runPromise(toModelMessagesEffect(input, model, options).pipe(Effect.provide(EffectLogger.layer)))
 }
@@ -1175,14 +1278,16 @@ export function parts(message_id: MessageID) {
   const rows = Database.use((db) =>
     db.select().from(PartTable).where(eq(PartTable.message_id, message_id)).orderBy(PartTable.id).all(),
   )
-  return rows.map(
-    (row) =>
-      ({
-        ...row.data,
-        id: row.id,
-        sessionID: row.session_id,
-        messageID: row.message_id,
-      }) as Part,
+  return promoteComposeProtocolFirst(
+    rows.map(
+      (row) =>
+        ({
+          ...row.data,
+          id: row.id,
+          sessionID: row.session_id,
+          messageID: row.message_id,
+        }) as Part,
+    ),
   )
 }
 
@@ -1259,15 +1364,50 @@ function fromParsedStreamError(
   ).toObject()
 }
 
-export function fromError(
- e: unknown,
+type ErrorContext = { providerID: ProviderID; aborted?: boolean; allow404Retry?: boolean }
+
+export function fromError(e: unknown, ctx: ErrorContext): NonNullable<Assistant["error"]> {
+  return normalizeError(e, ctx, false)
+}
+
+export function fromLiveError(e: unknown, ctx: ErrorContext): NonNullable<Assistant["error"]> {
+  return normalizeError(e, ctx, true)
+}
+
+function normalizeError(e: unknown, ctx: ErrorContext, requireBinding: boolean): NonNullable<Assistant["error"]> {
+  HostErrorRegistry.inheritHostError(e, ctx)
+  const error = fromErrorCore(e, ctx)
+  const metadata = causeMetadata(e)
+  if (metadata) error.data.metadata = { ...error.data.metadata, ...metadata }
+  if (HostErrorRegistry.isSafetyTerminal(e) && !HostErrorRegistry.isSafetyTerminal(error)) {
+    error.data.metadata = { ...error.data.metadata, causeChain: JSON.stringify(ProviderError.summarizeCause(e)) }
+  }
+  return HostErrorRegistry.copyHostError(error, e, ctx, { requireBinding })
+}
+
+function fromErrorCore(
+  e: unknown,
   ctx: { providerID: ProviderID; aborted?: boolean; allow404Retry?: boolean },
+  original: unknown = e,
 ): NonNullable<Assistant["error"]> {
+  if (!ctx.aborted && !ProviderError.isAbortError(e)) {
+    const candidate = e instanceof NamedError ? e.toObject() : e
+    const hostClass = HostErrorRegistry.hostRetryClass(candidate)
+    const parsed = Assistant.shape.error.safeParse(hostClass && APIError.isInstance(candidate)
+      ? { ...candidate, data: { ...candidate.data, hostRetryClass: hostClass } }
+      : candidate)
+    if (parsed.success && parsed.data) return parsed.data
+  }
   switch (true) {
     case e instanceof DOMException && e.name === "AbortError":
-      return new AbortedError({ message: e.message }, { cause: e }).toObject()
+      return new AbortedError({ message: e.message }, { cause: original }).toObject()
     case ProviderError.isAbortError(e):
-      return new AbortedError({ message: errorMessage(e) }, { cause: e }).toObject()
+      return new AbortedError({ message: errorMessage(e) }, { cause: original }).toObject()
+    // Session-level abort (user stop / cancel): any residual stream error — including
+    // undici UND_ERR_ABORTED which is otherwise transport-retryable — is user abort.
+    // Without this, stop is reclassified as network and auto-resume reopens the turn.
+    case ctx.aborted === true:
+      return new AbortedError({ message: errorMessage(e) || "Aborted" }, { cause: original }).toObject()
     // The AI SDK wraps the real failure in AI_RetryError after exhausting its
     // own maxRetries. Unwrap to the underlying error (.lastError) so the
     // APICallError branch below can extract statusCode/isRetryable/responseBody.
@@ -1278,20 +1418,18 @@ export function fromError(
     case RetryError.isInstance(e): {
       const errors = Array.isArray(e.errors) ? e.errors : []
       const inner = e.lastError ?? errors[errors.length - 1]
-      if (inner !== undefined && inner !== e) return fromError(inner, ctx)
-      return new NamedError.Unknown({ message: e.message }, { cause: e }).toObject()
+      if (inner !== undefined && inner !== e) return fromErrorCore(inner, ctx, original)
+      return new NamedError.Unknown({ message: e.message }, { cause: original }).toObject()
     }
-    case OutputLengthError.isInstance(e):
-      return e
     case LoadAPIKeyError.isInstance(e):
       return new AuthError(
         {
           providerID: ctx.providerID,
           message: e.message,
         },
-        { cause: e },
+        { cause: original },
       ).toObject()
-    case e instanceof Error && ProviderError.isRetryableNetworkError(e): {
+    case e instanceof Error && !APICallError.isInstance(e) && !HostErrorRegistry.isTerminalError(e) && ProviderError.isRetryableNetworkError(e): {
       const code = ProviderError.networkErrorCode(e)
       const message =
         code === "ECONNRESET"
@@ -1302,19 +1440,20 @@ export function fromError(
       return new APIError(
         {
           message,
+          statusCode: ProviderError.summarizeCause(e)[0]?.statusCode,
           isRetryable: true,
           metadata: {
             ...(code ? { code } : {}),
             message: e.message,
-            ...causeMetadata(e),
+            ...causeMetadata(original),
           },
         },
-        { cause: e },
+        { cause: original },
       ).toObject()
     }
     case e instanceof Error && (e as FetchDecompressionError).code === "ZlibError":
       if (ctx.aborted) {
-        return new AbortedError({ message: e.message }, { cause: e }).toObject()
+        return new AbortedError({ message: e.message }, { cause: original }).toObject()
       }
       return new APIError(
         {
@@ -1323,10 +1462,10 @@ export function fromError(
           metadata: {
             code: (e as FetchDecompressionError).code,
             message: e.message,
-            ...causeMetadata(e),
+            ...causeMetadata(original),
           },
         },
-        { cause: e },
+        { cause: original },
       ).toObject()
     case APICallError.isInstance(e):
       const parsed = ProviderError.parseAPICallError({
@@ -1340,7 +1479,7 @@ export function fromError(
             message: parsed.message,
             responseBody: parsed.responseBody,
           },
-          { cause: e },
+          { cause: original },
         ).toObject()
       }
 
@@ -1352,11 +1491,11 @@ export function fromError(
           responseHeaders: parsed.responseHeaders,
           responseBody: parsed.responseBody,
           metadata: (() => {
-            const metadata = { ...parsed.metadata, ...causeMetadata(e) }
+            const metadata = { ...parsed.metadata, ...causeMetadata(original) }
             return Object.keys(metadata).length > 0 ? metadata : undefined
           })(),
         },
-        { cause: e },
+        { cause: original },
       ).toObject()
     // A TypeError (e.g. "j.map is not a function" from non-array content)
     // is a programming defect, not a transient API failure. Surface it as a
@@ -1364,14 +1503,52 @@ export function fromError(
     case e instanceof TypeError:
     case e instanceof Error: {
       const parsed = ProviderError.parseStreamError(e)
-      if (parsed) return fromParsedStreamError(parsed, e)
+      if (parsed) return fromParsedStreamError(parsed, original)
       const message = e instanceof TypeError ? `TypeError: ${errorMessage(e)}` : errorMessage(e)
-      return new NamedError.Unknown({ message }, { cause: e }).toObject()
+      // Preserve HTTP status on plain Errors (mock SDK / undici shapes carry
+      // `.status`). Dropping it collapses a 400 into UnknownError, which
+      // SessionRetry then treats as uncatalogued and retries forever.
+      const rawStatus =
+        (e as { statusCode?: unknown }).statusCode ?? (e as { status?: unknown }).status ??
+        (e as { response?: { status?: unknown } }).response?.status
+      const statusCode =
+        typeof rawStatus === "number" && Number.isFinite(rawStatus)
+          ? rawStatus
+          : typeof rawStatus === "string" && /^\d+$/.test(rawStatus)
+            ? Number.parseInt(rawStatus, 10)
+            : undefined
+      if (statusCode != null) {
+        return new APIError(
+          {
+            message,
+            statusCode,
+            isRetryable: statusCode >= 500 && statusCode !== 501 && statusCode !== 505,
+            metadata: causeMetadata(original),
+          },
+          { cause: original },
+        ).toObject()
+      }
+      return new NamedError.Unknown({ message }, { cause: original }).toObject()
     }
     default: {
       const parsed = ProviderError.parseStreamError(e)
-      if (parsed) return fromParsedStreamError(parsed, e)
-      return new NamedError.Unknown({ message: JSON.stringify(e) ?? String(e) }, { cause: e }).toObject()
+      if (parsed) return fromParsedStreamError(parsed, original)
+      const response = HostErrorRegistry.boundAPIResponse(original, ctx)
+      const stream = response && ProviderError.parseStreamError(response.responseBody)
+      if (stream) return fromParsedStreamError(stream, original)
+      if (response) return new APIError({
+        message: errorMessage(e) || response.responseBody || "Provider API error",
+        isRetryable: false,
+        ...response,
+      }, { cause: original }).toObject()
+      // 字符串直接用原文:JSON.stringify("Internal Server Error") 会多包一层引号,
+      // 让 SessionRetry/desktop isOpaqueError 精确匹配失效,错误卡把带引号原文吐给用户。
+      // 对象仍 stringify 保诊断;undefined/null 走 String()。
+      const message =
+        typeof e === "string"
+          ? e
+          : (JSON.stringify(e) ?? String(e))
+      return new NamedError.Unknown({ message }, { cause: original }).toObject()
     }
   }
 }

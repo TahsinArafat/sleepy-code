@@ -27,6 +27,7 @@ export const Actor = z
     parentActorID: z.string().optional(),
     status: ActorStatus,
     lastOutcome: ActorOutcome.optional(),
+    resultMessageID: MessageID.zod.optional(),
     lifecycle: Lifecycle,
     agent: z.string(),
     description: z.string(),
@@ -75,7 +76,8 @@ export type Liveness = z.infer<typeof Liveness>
 
 // Default staleness threshold: a running child with no ACTIVITY for this long is
 // reported `stalled` (still routable — a display distinction, not a verdict) and
-// is the condition the T40 watchdog notifies the child's parent about.
+// is exposed only when callers explicitly inspect liveness. It does not
+// schedule scans, send notifications, or wake the parent.
 //
 // 6 minutes, not the 90s this was. 90s was picked against the per-step cadence,
 // where it meant "no COMPLETED STEP for 90s". Read against activity the same
@@ -103,20 +105,18 @@ export type Liveness = z.infer<typeof Liveness>
 //
 // 360_000 is 1.21x p99.9, clears p99.9 + coalesce by 58.2s (11.6 coalesce
 // intervals), is 72x ACTIVITY_COALESCE_MS, and is 0.6x the abandonment bound —
-// leaving a 240s `stalled` band, ~5 scans at WATCHDOG_SCAN_INTERVAL_MS (45s).
+// leaving a 240s `stalled` band for explicit liveness queries.
 // The cost is accepted deliberately: a genuine stall now surfaces within ~6
-// minutes instead of ~90 seconds. The abandonment bound still catches a row whose
-// owner is actually gone, and a signal believed late beats one not believed.
+// minutes instead of ~90 seconds. The abandonment bound limits routing eligibility;
+// neither threshold establishes a terminal execution outcome.
 export const DEFAULT_LIVENESS_STALL_MS = 6 * 60_000
 
 // Abandonment bound: how long a row may keep CLAIMING `running`/`pending` before
 // we stop believing it. `progressing` and `stalled` both read as "in progress" to
-// every consumer (the orchestrator roster, `session list`, the fleet table) — they
-// mark a child as routable and imply something is already in flight. That claim
-// needs an upper bound, because the only repair for a row whose owner died is
-// ActorRegistry's orphan sweep, and that sweep runs ONCE at process init and only
-// for rows carrying a DIFFERENT instance_id; until it runs — and for any row it
-// cannot reach — the row asserts progress with nothing behind it.
+// every consumer (session lists, subagent panels) — they mark a child as routable
+// and imply something is already in flight. That claim needs an upper bound for
+// routing. This derived inactivity signal neither changes the persisted outcome
+// nor proves the executor has terminated.
 //
 // 10 minutes. This replaces a 30-minute bound that existed only because the old
 // signal was step-grained: a single legitimate step in this repo can run 20+

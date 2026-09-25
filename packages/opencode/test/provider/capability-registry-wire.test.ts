@@ -82,22 +82,41 @@ async function sendAudio(
 }
 
 describe("@ai-sdk/openai-compatible audio behaviour matches the registry", () => {
-  test.each(["audio/wav", "audio/mp3", "audio/mpeg"])("%s is serialized as input_audio", async (mediaType) => {
-    // The registry declares exactly this MIME set as supported.
-    expect(ModelCapability.adapterDeclaration("@ai-sdk/openai-compatible").audio.mimeTypes).toContain(mediaType)
-    const outcome = await sendAudio("openai-compatible", mediaType)
-    expect(outcome).not.toHaveProperty("error")
-    if ("error" in outcome) throw new Error("unreachable")
-    expect(outcome.parts).toEqual([{ type: "input_audio", input_audio: { data: AUDIO, format: expect.any(String) } }])
-  })
+  test.each(["audio/wav", "audio/mp3", "audio/mpeg", "audio/flac", "audio/x-flac", "audio/mp4", "audio/ogg"])(
+    "%s is serialized as input_audio",
+    async (mediaType) => {
+      // The registry declares exactly this MIME set as supported. wav/mp3 are
+      // stock adapter behaviour; flac/m4a/ogg come from the repo patch that
+      // extends the input_audio format map to the Sleepy audio API's formats.
+      expect(ModelCapability.adapterDeclaration("@ai-sdk/openai-compatible").audio.mimeTypes).toContain(mediaType)
+      const outcome = await sendAudio("openai-compatible", mediaType)
+      expect(outcome).not.toHaveProperty("error")
+      if ("error" in outcome) throw new Error("unreachable")
+      expect(outcome.parts).toEqual([{ type: "input_audio", input_audio: { data: AUDIO, format: expect.any(String) } }])
+    },
+  )
 
-  test.each(["audio/flac", "audio/ogg"])("%s is refused by the adapter, so the registry excludes it", async (mediaType) => {
+  test.each(["audio/aac", "audio/webm"])("%s is refused by the adapter, so the registry excludes it", async (mediaType) => {
     const declaration = ModelCapability.adapterDeclaration("@ai-sdk/openai-compatible").audio
     expect(declaration.mimeTypes).not.toContain(mediaType)
     const outcome = await sendAudio("openai-compatible", mediaType)
     expect(outcome).toHaveProperty("error")
     if (!("error" in outcome)) throw new Error("unreachable")
     expect(outcome.error).toMatch(/not supported/)
+  })
+})
+
+describe("@ai-sdk/openai-compatible video is serialized by the repo patch", () => {
+  // Not stock adapter behaviour: patches/@ai-sdk%2Fopenai-compatible@2.0.41.patch
+  // adds the `video_url` branch the Sleepy video API expects, with the payload
+  // inlined as a `data:` URL and no per-part tuning fields (the API defaults
+  // fps and media_resolution). A dependency upgrade that drops the patch fails here.
+  test.each(["video/mp4", "video/quicktime"])("%s is serialized as video_url", async (mediaType) => {
+    expect(ModelCapability.adapterDeclaration("@ai-sdk/openai-compatible").video.mimeTypes).toContain(mediaType)
+    const outcome = await sendAudio("openai-compatible", mediaType)
+    expect(outcome).not.toHaveProperty("error")
+    if ("error" in outcome) throw new Error("unreachable")
+    expect(outcome.parts).toEqual([{ type: "video_url", video_url: { url: `data:${mediaType};base64,${AUDIO}` } }])
   })
 })
 

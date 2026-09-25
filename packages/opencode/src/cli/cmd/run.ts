@@ -277,7 +277,7 @@ export const RunCommand = cmd({
       })
       .option("attach", {
         type: "string",
-        describe: "attach to a running sleepycode server (e.g., http://localhost:4096)",
+        describe: "attach to a running sleepycode server (use the URL printed by `sleepy serve`)",
       })
       .option("password", {
         alias: ["p"],

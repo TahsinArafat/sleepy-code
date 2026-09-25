@@ -73,7 +73,7 @@ export const WebSearchTool = Tool.define(
                       model.api.url,
                       info.key,
                       params.query,
-                      "sleepy-v2.5",
+                      model.api.id,
                       timeout ?? "30 seconds",
                     )
                   }),

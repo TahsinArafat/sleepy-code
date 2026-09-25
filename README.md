@@ -14,6 +14,22 @@
 
 SleepyCode is a terminal-native AI coding assistant. It can read and write code, run commands, manage Git, and use a persistent memory system to keep a deep understanding of your project across sessions while continuously improving itself.
 
+<p align="center"><strong>Sleepy Desktop Beta Invitation</strong>: <a href="https://sleepy-ai.xiaomimimo.com/desktop/invite/">Apply for the international beta</a></p>
+
+## Xiaomi Sleepy Desktop Beta
+
+<p align="center"><img src="assets/readme/sleepy-desktop-en.jpg" alt="Xiaomi Sleepy Desktop English interface: starting a new task" width="900"></p>
+
+Xiaomi Sleepy Desktop is built for real-world work: one conversation can handle office work, design, coding, and multimodal creation, while multiple conversations can divide work and collaborate. The desktop app is powered by **Sleepy Code as its core engine**, bringing its terminal-native intelligence to desktop workflows.
+
+- **Smart orchestration**: evaluates task type and cost, then dynamically selects models, frameworks, and tools; complex tasks can run across multiple agents in parallel.
+- **Continuous iteration**: drag in files in multiple formats, create PPTs, webpages, 3D assets, and apps, preview and operate on results in-session, edit selected regions precisely, and roll back versions.
+- **Controlled long-task cost**: routes between standard and flagship models, edits only the required regions, and supports up to 99% same-session and 95% cross-session cache hit rates.
+- **Browser control**: opens webpages, retrieves information, fills forms, and checks key interactions after generating webpages.
+- **Computer control (international version only)**: reads the screen and operates mouse and keyboard across apps; Record & Replay lets you reuse recorded workflows with natural language.
+
+After beta approval, users can access limited-time, limited-quantity trials of the new **Sleepy-X-Pro-Preview** and **Sleepy-X-Flash-Preview** models.
+
 SleepyCode supports connecting to any mainstream LLM provider API.
 
 ---
@@ -218,7 +234,7 @@ The `/goal` command sets a stopping condition for a session. When the agent trie
 
 Compose is SleepyCode's structured workflow for specs-driven development, orchestrating the full lifecycle from spec to shipped code.
 
-The recommended way to use it is the **`/compose-next`** skill on the **build** agent: a single self-contained contract covering grill → spec → workspace → implement → verify → review → finalize → finish, with feature documents at `docs/compose/spec/<feature>.md`. It is designed for frontier models (Fable/Sol-class), which internalize most of the workflow and work best from one compact contract.
+The recommended way to use it is the **`/compose-next`** skill on the **build** agent: a single self-contained contract covering grill → workspace → spec → implement → verify → review → finalize → finish, with feature documents at `docs/compose/spec/<feature>.md` under the workspace root. It is designed for frontier models (Fable/Sol-class), which internalize most of the workflow and work best from one compact contract.
 
 The legacy path is the dedicated **compose agent** (switch with `Tab`), which orchestrates fourteen built-in skills for planning, execution, code review, TDD, debugging, verification, and merging — a step-by-step curriculum that remains useful for weaker models.
 
@@ -253,10 +269,7 @@ SleepyCode bundles the following builtin skills:
 | `compose-next` | Recommended spec→ship feature delivery workflow; invoke only when explicitly requested by the user |
 | `data-analytics` | Analyze product and business data through reusable workflows for data quality, KPIs, dashboards, reports, notebooks, and market sizing |
 | `deep-research` | Produce cited, multi-source research reports with parallel subagents and built-in web tools |
-| `design-blueprint` | Produce a design blueprint (DESIGN.md + Decision Trace) before mocking up visuals |
 | `docx-official` | Produce, read, and transform Word (.docx) files |
-| `evolve` | Total self-modification — rewrite any layer of the agent: tools, behavior hooks, knowledge, workflows, even the UI |
-| `frontend-design` | Visual design guidance for UI work |
 | `html-to-video-pipeline` | HTML-to-MP4 rendering via headless browser + ffmpeg |
 | `learn-everything` | Turn documents, URLs, or topics into adaptive courses with exercises, feedback, and progress tracking |
 | `loop` | Schedule recurring prompts on a fixed cadence |
@@ -273,10 +286,10 @@ SleepyCode bundles the following builtin skills:
 
 `claude-code` and `codex` are exposed only when the `claude` and `codex` executables, respectively, are installed. Other skills may still require task-specific tools described in their instructions.
 
-**Overriding a builtin skill:** Create a skill with the same `name` in your project (`.sleepycode/skills/<name>/SKILL.md`) or personal skill directory (`~/.claude/skills/`, `~/.opencode/skills/`, etc.). User skills discovered later in the scan order override builtins with the same name.
+**Overriding a builtin skill:** Create a skill with the same `name` under the project (`.sleepycode/skills/<name>/SKILL.md`) or personal (for example `~/.config/sleepycode/skills/<name>/SKILL.md`) SleepyCode skills directory. Open-standard `.agents/skills/` in the project and `~/.agents/skills/` are compatible discovery roots. User skills discovered later in the scan order override builtins with the same name.
 
 <details>
-<summary><strong>Disabling builtin skills via environment variables</strong></summary>
+<summary><strong>Configuring skills via environment variables</strong></summary>
 
 | Variable | Effect |
 |----------|--------|
@@ -284,7 +297,18 @@ SleepyCode bundles the following builtin skills:
 | `SLEEPYCODE_DISABLE_OFFICIAL_SKILLS=true` | Disable only the office/media skills: `docx-official`, `pdf-official`, `pptx-official`, `xlsx-official`, `html-to-video-pipeline` |
 | `SLEEPYCODE_DISABLE_SLASH_SKILLS=true` | Hide skills from TUI `/` autocomplete without disabling them |
 
-The first two options remove the corresponding skills from the agent's available skill list entirely — they will not appear in context and cannot be invoked. `SLEEPYCODE_DISABLE_SLASH_SKILLS` affects only TUI autocomplete; the skills remain available to agents.
+**External skill roots** (default surface is `.sleepycode` + open-standard `.agents`):
+
+| Env | Default | Effect |
+| --- | --- | --- |
+| `SLEEPYCODE_DISABLE_AGENTS_SKILLS=true` | unset = on | Turn off `~/.agents/skills` and project `.agents/skills` |
+| `SLEEPYCODE_ENABLE_CLAUDE_CODE_SKILLS=true` | unset = off | Opt in `.claude/skills` |
+| `SLEEPYCODE_ENABLE_CODEX_SKILLS=true` | unset = off | Opt in `.codex/skills` (user skills only; Codex `skills/.system` is never loaded) |
+| `SLEEPYCODE_ENABLE_OPENCODE_SKILLS=true` | unset = off | Opt in `.opencode/skills` |
+
+External scans never match dotted path segments under `skills/`.
+
+`SLEEPYCODE_DISABLE_BUILTIN_SKILLS` and `SLEEPYCODE_DISABLE_OFFICIAL_SKILLS` remove the corresponding skills from the agent's available skill list entirely — they will not appear in context and cannot be invoked. `SLEEPYCODE_DISABLE_SLASH_SKILLS` affects only TUI autocomplete; the skills remain available to agents.
 
 </details>
 

@@ -124,12 +124,19 @@ export const extractBuiltinBundle = Effect.fn("Skill.extractBuiltinBundle")(func
   )
     return root
 
+  // Retired skills must not remain discoverable from a previous extraction.
+  yield* fsys.ensureDir(skillsRoot)
+  yield* Effect.forEach(
+    (yield* fsys.readDirectoryEntries(skillsRoot)).filter(
+      (entry) => entry.type === "directory" && !enabled.has(entry.name),
+    ),
+    (entry) => fsys.remove(path.join(skillsRoot, entry.name), { recursive: true }),
+    { discard: true },
+  )
+
   for (const [skillName, files] of Object.entries(BUILTIN_BUNDLE)) {
+    if (!enabled.has(skillName)) continue
     const skillDir = path.join(skillsRoot, skillName)
-    if (!enabled.has(skillName)) {
-      if (yield* fsys.existsSafe(skillDir)) yield* fsys.remove(skillDir, { recursive: true })
-      continue
-    }
     for (const [relPath, content] of Object.entries(files)) {
       yield* fsys.writeWithDirs(path.join(skillDir, relPath), content)
     }

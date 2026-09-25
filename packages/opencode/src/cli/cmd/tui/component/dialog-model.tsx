@@ -167,8 +167,8 @@ export function DialogModel(props: { providerID?: string }) {
 
     const providerOptions = pipe(
       sync.data.provider,
-      // Exclude xiaomi/sleepy from regular list only when pinned section is shown
-      filter((provider) => !showPinned || (provider.id !== "xiaomi" && provider.id !== "sleepy")),
+      // All xiaomi models are pinned; other sleepy models still belong in their provider group.
+      filter((provider) => !showPinned || provider.id !== "xiaomi"),
       sortBy(
         (provider) => provider.id !== "opencode",
         (provider) => PROVIDER_PRIORITY[provider.id] ?? 99,
@@ -179,6 +179,7 @@ export function DialogModel(props: { providerID?: string }) {
           provider.models,
           entries(),
           filter(([_, info]) => info.status !== "deprecated"),
+          filter(([model]) => !showPinned || provider.id !== "sleepy" || model !== "sleepy-auto"),
           // Scoped views ("you just connected provider X, pick a model from X")
           // intentionally show only that provider's own models. The free
           // sleepy-auto belongs to the `sleepy` provider, so it is NOT surfaced

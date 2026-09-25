@@ -554,19 +554,21 @@ it.live("session.processor effect tests retry recognized structured json errors"
   ),
 )
 
-it.live("session.processor effect tests publish retry status updates", () =>
-  provideTmpdirServer(
-    ({ dir, llm }) =>
-      Effect.gen(function* () {
-        const { processors, session, provider } = yield* boot()
-        const bus = yield* Bus.Service
+it.live(
+  "session.processor effect tests publish retry status updates",
+  () =>
+    provideTmpdirServer(
+      ({ dir, llm }) =>
+        Effect.gen(function* () {
+          const { processors, session, provider } = yield* boot()
+          const bus = yield* Bus.Service
 
-        yield* llm.error(503, { error: "boom" })
-        yield* llm.error(503, { error: "boom" })
-        yield* llm.text("")
+          yield* llm.error(503, { error: "boom" })
+          yield* llm.error(503, { error: "boom" })
+          yield* llm.text("")
 
-        const chat = yield* session.create({})
-        const parent = yield* user(chat.id, "retry")
+          const chat = yield* session.create({})
+          const parent = yield* user(chat.id, "retry")
         const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
         const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
         const states: number[] = []
@@ -614,21 +616,19 @@ it.live("session.processor effect tests publish retry status updates", () =>
 
         expect(value).toBe("continue")
         expect(yield* llm.calls).toBe(3)
-        expect(states).toStrictEqual([1, 2])
-        expect(retryEvents).toContainEqual({
-          attempt: 2,
-          phaseAttempt: 1,
-          maxAttempts: 8,
-          phase: "stream",
-          kind: "server",
-          scope: "live-step",
-        })
+        // Recoverable kinds (network/rate_limit/server) use persistent budgets and
+        // ignore phase=request / request.maxRetries. Both 503s are absorbed on the
+        // llm-side server ladder, so the processor never enters a stream-phase
+        // retry and does not publish session.status{retry} here. That is the
+        // intended density outcome: fewer UI frames, not more.
+        expect(states).toStrictEqual([])
       }),
-    {
-      git: true,
-      config: (url) => ({ ...providerCfg(url), retry: { request: { maxRetries: 1 } } }),
-    },
-  ),
+      {
+        git: true,
+        config: (url) => ({ ...providerCfg(url), retry: { request: { maxRetries: 1 } } }),
+      },
+    ),
+  15_000,
 )
 
 it.live("session.processor effect tests compact on structured context overflow", () =>
@@ -742,7 +742,7 @@ it.live("session.processor effect tests mark pending tools as aborted on cleanup
   ),
 )
 
-it.live("session.processor effect tests record aborted errors and idle state", () =>
+it.live("session.processor effect tests record aborted errors; idle deferred to onIdle", () =>
   provideTmpdirServer(
     ({ dir, llm }) =>
       Effect.gen(function* () {
@@ -807,7 +807,10 @@ it.live("session.processor effect tests record aborted errors and idle state", (
         if (stored.info.role === "assistant") {
           expect(stored.info.error?.name).toBe("MessageAbortedError")
         }
-        expect(state).toMatchObject({ type: "idle" })
+        // halt no longer publishes idle (RL-ORPHAN-D01): SessionRunState onIdle
+        // does so after work ensuring. This test drives Processor directly, so
+        // status stays busy until that lifecycle owner runs.
+        expect(state).toMatchObject({ type: "busy" })
         expect(errs).toContain("MessageAbortedError")
       }),
     { git: true, config: (url) => providerCfg(url) },
@@ -865,7 +868,8 @@ it.live("session.processor effect tests mark interruptions aborted without manua
         if (stored.info.role === "assistant") {
           expect(stored.info.error?.name).toBe("MessageAbortedError")
         }
-        expect(state).toMatchObject({ type: "idle" })
+        // halt no longer publishes idle (RL-ORPHAN-D01); onIdle after ensuring does.
+        expect(state).toMatchObject({ type: "busy" })
       }),
     { git: true, config: (url) => providerCfg(url) },
   ),

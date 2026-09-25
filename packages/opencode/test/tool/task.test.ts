@@ -9,7 +9,6 @@ import { MessageID, SessionID } from "../../src/session/schema"
 import { TaskRegistry } from "../../src/task/registry"
 import { Truncate } from "../../src/tool"
 import { TaskTool } from "../../src/tool/task"
-import { shellWrap } from "../../src/tool/shell-wrap"
 import { provideTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
@@ -335,22 +334,4 @@ describe("task tool: independent lifecycle verbs", () => {
     ),
   )
 
-  it.live("shell-wrapped task create does not crash and renders operation=create", () =>
-    provideTmpdirInstance(() =>
-      Effect.gen(function* () {
-        const session = yield* Session.Service
-        const sess = yield* session.create({ title: "Test" })
-        const info = yield* TaskTool
-        const def = yield* info.init()
-        const wrapped = shellWrap({ ...def, id: info.id })
-        const result = yield* wrapped.execute({ script: 'task create "x"' }, ctx(sess.id) as any)
-        // Regression: nested discriminator { operation: { action } } used to crash
-        // shell-wrap with "H.replace is not a function". The XML attribute must
-        // reflect the action verb, not "[object Object]".
-        expect(result.output).toContain('operation="create"')
-        expect(result.output).not.toContain("[object Object]")
-        expect(result.metadata.success).toBe(1)
-      }),
-    ),
-  )
 })

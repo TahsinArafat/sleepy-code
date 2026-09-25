@@ -44,7 +44,7 @@ Memory files root: `<DATA>/memory/`
 
 1. Use memory search with broad queries such as "workflow", "repeat", "every
    time", "rule", and "decision".
-2. Use Glob/Read to inspect the memory paths from the system memory instructions.
+2. Use `glob`/`read` to inspect the memory paths from the system memory instructions.
 3. Use bash to locate the database:
    - Infer `<DATA>/sleepycode.db` from the resolved memory root.
    - If `SLEEPYCODE_DB` is visible in the shell environment, account for its
@@ -179,8 +179,8 @@ source-aware, and easy to validate.
 - Reuse the project's existing conventions and tone; match the structure of
   comparable assets already present.
 - Keep each asset focused on one workflow with a clear stopping condition.
-- After writing, verify referenced file paths with Glob and referenced
-  function/class names with Grep.
+- After writing, verify referenced file paths with the `glob` tool and referenced
+  function/class names with the `grep` tool.
 - Do not create accounts, send messages, change permissions, or take any
   irreversible external action; assets only describe procedures.
 

@@ -30,7 +30,7 @@ MEMORY_PATH structure (4 sections):
 
 PROCEDURE:
 
-Turn 1 - Read all sources in parallel:
+Turn 1 - Read all sources:
   Read CHECKPOINT_PATH
   Read MEMORY_PATH
   Read NOTES_PATH (file may not exist for v8.1-era sessions; treat as empty if so)
@@ -80,9 +80,9 @@ For §4 Task tree, pull from the task tool only:
 
 (Then proceed to Turn 2 final Edit pass.)
 
-Turn 2 - Issue Edits in parallel (single message), then stop:
+Turn 2 - Issue Edits (single message), then stop:
   For checkpoint.md:
-    For each of §1..§11, issue an Edit that updates ONLY the content under the italic _instruction_ line.
+    For each of §1..§11, issue an `edit` that updates ONLY the content under the italic _instruction_ line.
     NEVER modify "## §N <title>" headers.
     NEVER modify "_..._" italic instruction lines.
     Update the body text below each instruction.
@@ -111,7 +111,7 @@ Turn 2 - Issue Edits in parallel (single message), then stop:
         🔵 <TID> <summary> (progress: tasks/<TID>/progress.md, last-reconciled-written-at: <written-at from the diff block>)
       - When no SUBAGENT PROGRESS block is present, do not read any tasks/*/progress.md
         on your own — there is nothing new to reconcile.
-  For notes.md: Use Write tool to overwrite notes.md with the NOTES_TEMPLATE byte-for-byte (you Read it in Turn 1 — write the same header back). Rationale: every entry in notes.md was considered during Turn 2a reconcile; whether routed or not, your judgment is applied. Agent re-appends fresh entries in subsequent turns. Do NOT use Edit — use Write with the full template body. Do not invent template text — use what you Read in Turn 1 verbatim.
+  For notes.md: Use `write` to overwrite notes.md with the NOTES_TEMPLATE byte-for-byte (you Read it in Turn 1 — write the same header back). Rationale: every entry in notes.md was considered during Turn 2a reconcile; whether routed or not, your judgment is applied. Agent re-appends fresh entries in subsequent turns. Do NOT use `edit` — use `write` with the full template body. Do not invent template text — use what you Read in Turn 1 verbatim.
 
 CRITICAL CONSTRAINTS:
 
@@ -149,9 +149,9 @@ CRITICAL CONSTRAINTS:
 
    The index line is preserved across all rebuilds; do not nest spillovers (don't spill from a spillover).
 
-6. Do not call Read on source files (no /tmp/.../src/lexer.ts type reads). The conversation already contains everything you need. Reading source files wastes turns.
+6. Do not call `read` on source files (no /tmp/.../src/lexer.ts type reads). The conversation already contains everything you need. Reading source files wastes turns.
 
-7. Available tools (runtime-enforced whitelist): read, write, edit, apply_patch, glob, grep, task. The LLM tool schema you see is parent's full set (so prompt cache hits); calls to tools outside this list are rejected by the runtime with a "tool not permitted" error. Use Edit/Write on Claude models, apply_patch on GPT-5+ models — both are conceptually file editing.
+7. Available tools (runtime-enforced whitelist): read, write, edit, apply_patch, glob, grep, task. The LLM tool schema you see is parent's full set (so prompt cache hits); calls to tools outside this list are rejected by the runtime with a "tool not permitted" error. Tool names are exact — use `edit` / `write` / `apply_patch` as registered, not `Edit`/`Write` or other casing.
 
 8. After turn 2's Edits, your response is complete. Do not summarize what you wrote.
 

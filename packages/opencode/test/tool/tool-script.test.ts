@@ -1008,7 +1008,7 @@ describe("exec MCP dispatch", () => {
   // Mimics the SessionPrompt-wrapped MCP execute: resolves with the normalized
   // {output, metadata, attachments} shape (permission/hooks/truncation already
   // applied by the wrapper), rejects on tool failure.
-  function fakeMcpTool(execute: (args: any) => Promise<any>) {
+  function fakeMcpTool(execute: (args: any, options?: any) => Promise<any>) {
     return {
       description: "fake mcp tool",
       inputSchema: z.object({}),
@@ -1034,7 +1034,7 @@ describe("exec MCP dispatch", () => {
     expect(result.output).toContain("found: hello")
   })
 
-  test("MCP aliases dispatch to the registered catalog tool", async () => {
+  test("MCP tools dispatch only by exact catalog name", async () => {
     const seen: string[] = []
     const mcp = {
       "feishu-mcp-pro_doc_read": fakeMcpTool(async (args) => {
@@ -1042,7 +1042,16 @@ describe("exec MCP dispatch", () => {
         return { output: "read: " + args.document_id, metadata: {}, attachments: [] }
       }),
     }
-    const result = await runToolScript(
+    const exact = await runToolScript(
+      `const r = await tools["feishu-mcp-pro_doc_read"]({ document_id: "exact" }); return r.output`,
+      [],
+      undefined,
+      { mcp },
+    )
+    expect(exact.metadata.status).toBe("completed")
+    expect(exact.output).toContain("read: exact")
+
+    const aliased = await runToolScript(
       `const dashed = await tools["mcp__feishu-mcp-pro__doc_read"]({ document_id: "dash" });
        const underscored = await tools["mcp__feishu_mcp_pro__doc_read"]({ document_id: "underscore" });
        return [dashed.output, underscored.output]`,
@@ -1050,11 +1059,8 @@ describe("exec MCP dispatch", () => {
       undefined,
       { mcp },
     )
-
-    expect(result.metadata.status).toBe("completed")
-    expect(result.output).toContain("read: dash")
-    expect(result.output).toContain("read: underscore")
-    expect(seen).toEqual(["dash", "underscore"])
+    expect(aliased.output.toLowerCase()).toContain("unknown tool")
+    expect(seen).toEqual(["exact"])
   }, 15_000)
 
   test("structuredContent crosses into the guest as parsed `structured`", async () => {
@@ -1092,6 +1098,27 @@ describe("exec MCP dispatch", () => {
     )
     expect(result.metadata.status).toBe("completed")
     expect(result.output).toContain("caught: srv_fail: server exploded")
+  })
+
+  test("MCP progress updates the nested exec subpart", async () => {
+    const mcp = {
+      srv_progress: fakeMcpTool(async (_args: any, options: any) => {
+        await options.experimental_context.onMcpToolProgress({
+          "sleepy/toolSurface": { kind: "browserUse", browserId: "iab" },
+        })
+        return { output: "done", metadata: {}, attachments: [] }
+      }),
+    }
+    const result = await runToolScript(
+      `const r = await tools.srv_progress({}); return r.output`,
+      [],
+      undefined,
+      { mcp },
+    )
+    const subparts = result.metadata.sub_parts as ExecSubPartSnapshot[]
+    expect(subparts[0]?.state.metadata).toEqual({
+      mcp: { _meta: { "sleepy/toolSurface": { kind: "browserUse", browserId: "iab" } } },
+    })
   })
 
   test("builtin id wins on collision with an MCP tool", async () => {

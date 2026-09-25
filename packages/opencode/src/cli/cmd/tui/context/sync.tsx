@@ -21,6 +21,11 @@ import type {
   VcsInfo,
 } from "@sleepy-ai/sdk/v2"
 import { createStore, produce, reconcile } from "solid-js/store"
+import {
+  shouldClearRecoveryActiveOnError,
+  shouldClearRecoveryActiveOnIdle,
+} from "../routes/session/recover-flow"
+import { mergeSessionTitle } from "../util/session-title"
 import { useProject } from "@tui/context/project"
 import { useEvent } from "@tui/context/event"
 import { useSDK } from "@tui/context/sdk"
@@ -124,7 +129,7 @@ export type ActorEntry = {
   actor_id: string
   session_id: string
   mode: "subagent" | "peer" | "main"
-  status: "pending" | "running" | "completed" | "failed" | "cancelled" | "unknown"
+  status: "pending" | "running" | "completed" | "failed" | "cancelled" | "stopped" | "unknown"
   agent: string
   description: string
   parent_actor_id: string | null
@@ -134,15 +139,23 @@ export type ActorEntry = {
   last_turn_time: number | null
 }
 
-function actorStatusFromEvent(
-  s: "pending" | "running" | "idle",
-  outcome: "success" | "failure" | "cancelled" | undefined,
-): ActorEntry["status"] {
-  if (s === "pending") return "pending"
-  if (s === "running") return "running"
-  if (outcome === "success") return "completed"
-  if (outcome === "failure") return "failed"
-  if (outcome === "cancelled") return "cancelled"
+export function actorStatusFromEvent(input: {
+  status: "pending" | "running" | "idle"
+  lastOutcome?: "success" | "failure" | "cancelled"
+  executionState?: "running" | "stopped" | "completed" | "failed" | "cancelled"
+  executionActive?: boolean
+}): ActorEntry["status"] {
+  // Runtime activity wins over an outcome left by a previous turn.
+  if (input.executionActive === true) return "running"
+  if (input.executionState) return input.executionState
+  if (input.executionActive !== false) {
+    if (input.status === "pending") return "pending"
+    if (input.status === "running") return "running"
+  }
+  if (input.lastOutcome === "success") return "completed"
+  if (input.lastOutcome === "failure") return "failed"
+  if (input.lastOutcome === "cancelled") return "cancelled"
+  if (input.status === "idle" || input.executionActive === false) return "stopped"
   return "unknown"
 }
 
@@ -188,7 +201,7 @@ export function nextSessionStatus(status: SessionStatus) {
 // transcript. Everything that still reaches it is a session the product has
 // already decided to show. Measured on the live DB, the 1313 sessions this arm
 // serves split 1302 checkpoint-writer hosts (refused upstream, never arrive
-// here) and 11 `session ask` fork-query hosts whose buckets are build-1 ×7,
+// here) and 11 HTTP `/ask` fork-query hosts whose buckets are build-1 ×7,
 // compose-1 ×3, general-1 ×1 — those 11 are model-spawned read-only transcripts
 // and a blank pane for them is the original bug (#1964). Those counts are one
 // read-only local-DB snapshot and they drift — this arm's population grew
@@ -350,6 +363,30 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     }
 
     const fullSyncedSessions = new Set<string>()
+    const deletedSessions = new Set<string>()
+    const titleReads = new Set<string>()
+    function mergedSession(incoming: Session) {
+      const known = store.session.find(item => item.id === incoming.id)
+      return mergeSessionTitle(known, incoming, () => {
+        const key = `${incoming.id}:${incoming.titleRevision}`
+        if (titleReads.has(key)) return
+        titleReads.add(key)
+        Log.Default.error("title revision protocol mismatch", { sessionID: incoming.id })
+        void sdk.client.session.get({ sessionID: incoming.id }, { throwOnError: true }).then(response => {
+          if (response.data) applySession(response.data)
+        }).catch(() => {})
+      })
+    }
+    function applySession(incoming: Session) {
+      if (deletedSessions.has(incoming.id)) return
+      const next = mergedSession(incoming)
+      const found = Binary.search(store.session, incoming.id, item => item.id)
+      if (found.found) setStore("session", found.index, reconcile(next))
+      else setStore("session", produce(draft => { draft.splice(found.index, 0, next) }))
+    }
+    function applySessions(incoming: Session[]) {
+      setStore("session", reconcile(incoming.filter(item => !deletedSessions.has(item.id)).map(mergedSession)))
+    }
     let syncedWorkspace = project.workspace.current()
     let syncedDirectory = sdk.directory
 
@@ -484,6 +521,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
         case "session.deleted": {
           const sid = event.properties.info.id
+          deletedSessions.add(sid)
           const result = Binary.search(store.session, sid, (s) => s.id)
           if (result.found) {
             setStore(
@@ -519,25 +557,25 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           break
         }
         case "session.updated": {
-          const result = Binary.search(store.session, event.properties.info.id, (s) => s.id)
-          if (result.found) {
-            setStore("session", result.index, reconcile(event.properties.info))
-            break
-          }
-          setStore(
-            "session",
-            produce((draft) => {
-              draft.splice(result.index, 0, event.properties.info)
-            }),
-          )
+          applySession(event.properties.info)
           break
         }
 
         case "session.status": {
           setStore("session_status", event.properties.sessionID, nextSessionStatus(event.properties.status))
-          if (event.properties.status.type === "idle") {
+          if (shouldClearRecoveryActiveOnIdle(event.properties.status)) {
             setStore("session_recovery_active", event.properties.sessionID, undefined)
             refreshRecovery(event.properties.sessionID)
+          }
+          break
+        }
+        case "session.error": {
+          // Clear recovery-active only when not busy/retry/notice (async resume reject while idle).
+          // Mid-turn errors must not wipe a live recovery badge.
+          const errSid = event.properties.sessionID
+          if (!errSid) break
+          if (shouldClearRecoveryActiveOnError(store.session_status[errSid])) {
+            setStore("session_recovery_active", errSid, undefined)
           }
           break
         }
@@ -736,10 +774,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           const idx = list.findIndex((a) => a.actor_id === event.properties.actorID)
           if (idx === -1) break
           setStore("actor", sid, idx, {
-            status: actorStatusFromEvent(
-              event.properties.status,
-              event.properties.lastOutcome,
-            ),
+            status: actorStatusFromEvent(event.properties),
             turn_count: event.properties.turnCount,
             last_turn_time: event.properties.lastTurnTime,
             time_updated: Date.now(),
@@ -869,7 +904,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               setStore("console_state", reconcile(consoleState))
               setStore("agent", reconcile(agents))
               setStore("config", reconcile(config))
-              if (sessions !== undefined) setStore("session", reconcile(sessions))
+              if (sessions !== undefined) applySessions(sessions)
             })
           })
         })
@@ -880,7 +915,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           void Promise.all([
             ...(args.continue
               ? []
-              : [guard(sessionListPromise, (sessions) => setStore("session", reconcile(sessions)))]),
+              : [guard(sessionListPromise, (sessions) => applySessions(sessions))]),
             guard(consoleStatePromise, (consoleState) => setStore("console_state", reconcile(consoleState))),
             guard(sdk.client.command.list({ workspace }), (x) => setStore("command", reconcile(x.data ?? []))),
             guard(sdk.client.lsp.status({ workspace }), (x) => setStore("lsp", reconcile(x.data ?? []))),
@@ -942,6 +977,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         return project.instance.path()
       },
       session: {
+        apply: applySession,
         get(sessionID: string) {
           const match = Binary.search(store.session, sessionID, (s) => s.id)
           if (match.found) return store.session[match.index]
@@ -952,26 +988,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           const list = await sdk.client.session
             .list({ start, roots: true })
             .then((x) => (x.data ?? []).toSorted((a, b) => a.id.localeCompare(b.id)))
-          setStore("session", reconcile(list))
-        },
-        // Resolve THE root session of the directory the client currently talks
-        // to, creating one only when the server really has none.
-        //
-        // Reading store.session for this is a race: bootstrap issues session.list
-        // as a NON-BLOCKING request (it only joins blockingRequests for
-        // `--continue`), so `await bootstrap()` resolves BEFORE the list lands. A
-        // caller that reads the store right after it sees an empty (or pre-switch)
-        // list, concludes there is no root, and mints another one — entering
-        // Orchestrator three times produced three roots. Refreshing from the
-        // server first makes the decision depend on data instead of on timing.
-        async resolveRoot() {
-          await result.session.refresh()
-          const existing = store.session
-            .filter((x) => x.parentID === undefined)
-            .toSorted((a, b) => b.time.updated - a.time.updated)
-            .at(0)
-          if (existing) return { id: existing.id, created: false }
-          return { id: (await sdk.client.session.create({})).data?.id, created: true }
+          applySessions(list)
         },
         status(sessionID: string) {
           const current = store.session_status[sessionID]
@@ -1009,21 +1026,16 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             // session dialog can show the current session's child sessions.
             // visible: true returns only peer children, dropping the two other
             // kinds of child session that exist — the checkpoint-writer host
-            // (session/checkpoint.ts:851) and the `session ask` fork-query host
+            // (session/checkpoint.ts:851) and the HTTP `/ask` fork-query host
             // (tool/session.ts:128). See Session.children for why "workflow
             // subagent sessions" is not a third kind.
             sdk.client.session.children({ sessionID, visible: true }).catch(() => undefined),
           ])
+          if (deletedSessions.has(sessionID)) return
+          applySession(session.data!)
+          for (const child of children?.data ?? []) applySession(child)
           setStore(
             produce((draft) => {
-              const match = Binary.search(draft.session, sessionID, (s) => s.id)
-              if (match.found) draft.session[match.index] = session.data!
-              if (!match.found) draft.session.splice(match.index, 0, session.data!)
-              for (const child of children?.data ?? []) {
-                const childMatch = Binary.search(draft.session, child.id, (s) => s.id)
-                if (childMatch.found) draft.session[childMatch.index] = child
-                if (!childMatch.found) draft.session.splice(childMatch.index, 0, child)
-              }
               draft.todo[sessionID] = todo.data ?? []
               draft.session_recovery[sessionID] = recovery.data ?? []
               draft.task[sessionID] = task.data ?? []
@@ -1038,7 +1050,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
                 actor_id: row.actorID,
                 session_id: row.sessionID,
                 mode: row.mode,
-                status: actorStatusFromEvent(row.status, row.lastOutcome),
+                status: actorStatusFromEvent(row),
                 agent: row.agent,
                 description: row.description,
                 parent_actor_id: row.parentActorID ?? null,
