@@ -218,7 +218,74 @@ const report = async (ref: string) => {
         console.log(`    ${l.file}\n      -> ${[l.target!, ...l.ambiguous].slice(0, 4).join("\n      -> ")}`)
     }
 
-    return { ref, ...buckets, hosted: sum(hosted), orphan: sum(orphan), generated: sum(gen), totalCost }
+    return {
+      ref,
+      ...buckets,
+      hosted: sum(hosted),
+      orphan: sum(orphan),
+      generated: sum(gen),
+      totalCost,
+      landings,
+      byPath,
+      blobMap,
+    }
+  } finally {
+    useUpstream(previous.id)
+  }
+}
+
+/**
+ * What it costs to go A -> B, i.e. to stage the migration rather than jump.
+ *
+ * Per-candidate cost answers "how much work is each base". It cannot answer "is staging
+ * worth it", because that is a question about paying twice: port onto A, then redo the
+ * move to B later. The second bill is the CONTENT DRIFT between A and B for exactly the
+ * files we would own after the first port - diff `rebrand(A's host)` against
+ * `rebrand(B's host)` for each file, at whichever path each candidate puts it.
+ *
+ * Path moves are what the diff deliberately ignores, so a low number here means "B is
+ * mostly the same code in different directories" - the staircase is then nearly free and
+ * the only cost is re-typing the moves, which a script can do. A high number means the
+ * candidates disagree about what the code IS, and staging would be a false economy: the
+ * first port's work would be thrown away rather than carried.
+ */
+async function staircase(a: Awaited<ReturnType<typeof report>>, b: Awaited<ReturnType<typeof report>>) {
+  const previous = useUpstream("opencode")
+  try {
+    const byFile = new Map(b.landings.map((l) => [l.file, l]))
+    const rows: Array<{ file: string; cost: number; from: string; to: string }> = []
+    let bothHosted = 0
+
+    for (const la of a.landings) {
+      const lb = byFile.get(la.file)
+      if (la.generated || !la.target || !lb?.target) continue
+      const bufA = a.blobMap.get(a.byPath.get(la.target)!)
+      const bufB = b.blobMap.get(b.byPath.get(lb.target)!)
+      if (!bufA || !bufB) continue
+      bothHosted++
+      rows.push({
+        file: la.file,
+        cost: await diffLines(rebrand(bufA.toString("utf8")), rebrand(bufB.toString("utf8")), la.file),
+        from: la.target,
+        to: lb.target,
+      })
+    }
+
+    const total = rows.reduce((n, r) => n + r.cost, 0)
+    const same = rows.filter((r) => r.from === r.to).length
+    const row = (label: string, n: string | number) => `  ${label.padEnd(44)}${String(n).padStart(5)}`
+    console.log(
+      `\n${"=".repeat(78)}\nSTAIRCASE  ${a.ref} -> ${b.ref}\n` +
+        `  content drift across the ${bothHosted} files BOTH candidates host\n` +
+        row("path unchanged in both", same) +
+        "\n" +
+        row("path differs (move only, no content change)", bothHosted - same) +
+        "\n" +
+        `  ${"DRIFT TO REDO ONCE STAGED".padEnd(44)}${total.toLocaleString().padStart(5)} lines`,
+    )
+    for (const r of rows.sort((x, y) => y.cost - x.cost).slice(0, 12))
+      console.log(`    ${String(r.cost).padStart(7)}  ${r.file}\n                ${r.from}\n             -> ${r.to}`)
+    return total
   } finally {
     useUpstream(previous.id)
   }
@@ -236,4 +303,22 @@ if (results.length > 1) {
     console.log(
       `  ${r.ref.padEnd(16)}${String(r["same-path"]).padStart(11)}${String(r.relocated).padStart(11)}${String(r.absent).padStart(9)}${r.hosted.toLocaleString().padStart(12)}${r.orphan.toLocaleString().padStart(12)}${r.generated.toLocaleString().padStart(11)}`,
     )
+
+  // The decision, in one place: jump straight to the last candidate, or stage through the
+  // first and pay the drift again later. Both routes end at the same place, so the totals
+  // are directly comparable - which is the only way to tell a cheaper base from a cheaper
+  // ROUTE. A candidate that is cheaper to port to but expensive to move on from is the
+  // trap this line exists to make visible.
+  const [a, b] = results
+  if (a && b) {
+    const drift = await staircase(a, b)
+    const direct = b.hosted + b.orphan
+    const staged = a.hosted + a.orphan + drift
+    const verdict = staged <= direct ? "STAGE (cheaper overall)" : "JUMP (staging pays twice)"
+    console.log(
+      `\n  route A - ${a.ref} only ................. ${(a.hosted + a.orphan).toLocaleString().padStart(9)} lines, stops short of the main line` +
+        `\n  route B - ${b.ref} directly ............ ${direct.toLocaleString().padStart(9)} lines` +
+        `\n  route C - ${a.ref}, then ${b.ref} ....... ${staged.toLocaleString().padStart(9)} lines   ${verdict}`,
+    )
+  }
 }
