@@ -63,10 +63,51 @@ export interface UpstreamProfile {
    * data rather than derived from `map`: `map`'s LHS is a rename table, not a tokenizer,
    * and inferring one from it changed which strings get flagged (91 of 209 tracked files
    * that mention the token reported differently). Keep it literal.
+   *
+   * Match the CORE only - no surrounding boundary characters. Token edges are expanded by
+   * {@link scanTokens}, because a single pattern carrying both a leading and a trailing
+   * boundary class backtracks catastrophically on input that does not contain the token:
+   * 64s to scan 200KB of a large JSON fixture, where core-plus-expand does the whole file
+   * in 1ms.
    */
   readonly scan: RegExp
   /** Paths upstream ships that the fork renames. */
   readonly pathMap: ReadonlyArray<readonly [from: string, to: string]>
+}
+
+/** Characters that may sit inside an identifier. Mirrors the boundary class the scan used to inline. */
+const TOKEN_EDGE = /[A-Za-z0-9_@:./+-]/
+
+/**
+ * Every distinct upstream-branded token in `text`, with its occurrence count.
+ *
+ * Reproduces the leftmost-longest, non-overlapping scan of the boundary-inclusive regex it
+ * replaces - `opencode.ai` yields `opencode.ai`, `x-opencode-directory` yields
+ * `x-opencode-directory`, and `opencode-opencode` yields that single token ONCE rather than
+ * twice - but in linear time. A core starting inside a span an earlier match already claimed
+ * is skipped, and that is what makes the counts match the old scanner.
+ */
+export function scanTokenCounts(text: string, profile: UpstreamProfile = active): Map<string, number> {
+  const found = new Map<string, number>()
+  const core = new RegExp(profile.scan.source, "g")
+  let claimed = 0
+  for (const m of text.matchAll(core)) {
+    const at = m.index ?? 0
+    if (at < claimed) continue
+    let start = at
+    let end = at + m[0].length
+    while (start > 0 && TOKEN_EDGE.test(text[start - 1]!)) start--
+    while (end < text.length && TOKEN_EDGE.test(text[end]!)) end++
+    claimed = end
+    const tok = text.slice(start, end)
+    found.set(tok, (found.get(tok) ?? 0) + 1)
+  }
+  return found
+}
+
+/** Distinct tokens only, for callers that care which names appear and not how often. */
+export function scanTokens(text: string, profile: UpstreamProfile = active): Set<string> {
+  return new Set(scanTokenCounts(text, profile).keys())
 }
 
 /**
@@ -153,7 +194,7 @@ const MIMO: UpstreamProfile = {
     // Spanish prose that merely contains the substring "mimo".
     /asumimos/i,
   ],
-  scan: /[A-Za-z0-9_@:./+-]*[Mm]imo[A-Za-z0-9_@:./+-]*/g,
+  scan: /[Mm]imo/g,
   pathMap: [
     ["packages/opencode/bin/mimo", "packages/opencode/bin/sleepy"],
     ["packages/opencode/src/plugin/mimo.ts", "packages/opencode/src/plugin/sleepy.ts"],
@@ -214,6 +255,11 @@ const OPENCODE: UpstreamProfile = {
     // product name - case-preserving, so the map stays injective
     ["OpenCode", "SleepyCode"],
     ["Opencode", "Sleepycode"],
+    // camelCase. Upstream ships this casing too (openCodeUserAgent, openCodeOrganization),
+    // and it is the ONLY variant the probe found the map missing, so it earns its slot by
+    // measurement rather than by symmetry. Does not shadow the two above: neither "OpenCode"
+    // nor "Opencode" contains "openCode" as a substring.
+    ["openCode", "sleepyCode"],
     ["opencode", "sleepycode"],
     ["OPENCODE", "SLEEPYCODE"],
   ],
@@ -222,7 +268,7 @@ const OPENCODE: UpstreamProfile = {
     // these re-points live network calls (2224 refs in `opencode/v1`).
     /opencode\.ai/,
   ],
-  scan: /[A-Za-z0-9_@:./+-]*[Oo]pen[Cc]ode[A-Za-z0-9_@:./+-]*/g,
+  scan: /[Oo]pen[Cc]ode/g,
   pathMap: [],
 }
 
@@ -351,11 +397,9 @@ export function mapCollisions(profile: UpstreamProfile = active): Array<{ to: st
  */
 export function audit(text: string, profile: UpstreamProfile = active): string[] {
   const found = new Map<string, number>()
-  for (const m of text.matchAll(profile.scan)) {
-    const tok = m[0]
-    if (!tok) continue
+  for (const [tok, n] of scanTokenCounts(text, profile)) {
     if (profile.protect.some((re) => new RegExp(re.source, "i").test(tok))) continue
-    found.set(tok, (found.get(tok) ?? 0) + 1)
+    found.set(tok, (found.get(tok) ?? 0) + n)
   }
   return [...found.entries()]
     .sort((a, b) => b[1] - a[1])
