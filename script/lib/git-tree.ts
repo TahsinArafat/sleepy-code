@@ -1,0 +1,102 @@
+/**
+ * Read-only git object-store plumbing shared by the re-parent scripts.
+ *
+ * Every measurement here runs against the OBJECT STORE, never a working tree. That is
+ * deliberate: probing a candidate must not require checking it out, installing it, or
+ * creating a branch, so that "have we looked at this yet?" can never become "have we
+ * half-migrated to this?". It also matters on disk - a second full checkout of a
+ * candidate plus its own dependency install is gigabytes we usually do not have.
+ */
+
+export async function git(args: string[]): Promise<Buffer> {
+  const p = Bun.spawn(["git", ...args], { stdout: "pipe", stderr: "pipe" })
+  const out = Buffer.from(await new Response(p.stdout).arrayBuffer())
+  const err = Buffer.from(await new Response(p.stderr).arrayBuffer()).toString("utf8")
+  if ((await p.exited) !== 0) throw new Error(`git ${args.join(" ")}: ${err.trim()}`)
+  return out
+}
+
+export const gitText = async (args: string[]) => (await git(args)).toString("utf8")
+
+/**
+ * Commit counts are meaningless on a shallow clone - a depth-1 fetch reports "1 commit in
+ * 12 weeks" for a branch that actually takes hundreds, which is exactly the kind of number
+ * that invites a strategic decision it cannot support. Detect the case, do not print one.
+ */
+export async function shallowWarning(ref: string): Promise<string | null> {
+  const isShallow = (await gitText(["rev-parse", "--is-shallow-repository"]).catch(() => "")).trim()
+  if (isShallow !== "true") return null
+  const sha = (await gitText(["rev-parse", ref]).catch(() => "")).trim()
+  const boundary = await gitText(["cat-file", "-p", "shallow"]).catch(() => "")
+  if (!boundary.includes(sha)) return null
+  return `SHALLOW: ${ref} sits at a depth boundary - commit counts below are NOT trustworthy. Deepen with: git fetch --deepen=600 opencode ${ref.replace("opencode/", "")}`
+}
+
+export type Entry = { mode: string; type: string; sha: string; path: string }
+
+export async function listTree(ref: string): Promise<Entry[]> {
+  const buf = await git(["ls-tree", "-r", "-z", ref])
+  const out: Entry[] = []
+  let off = 0
+  while (off < buf.length) {
+    const nul = buf.indexOf(0, off)
+    const rec = buf.subarray(off, nul === -1 ? buf.length : nul).toString("utf8")
+    off = nul === -1 ? buf.length : nul + 1
+    if (!rec) continue
+    const tab = rec.indexOf("\t")
+    const [mode, type, sha] = rec.slice(0, tab).split(" ")
+    if (!mode || !type || !sha) continue
+    out.push({ mode, type, sha, path: rec.slice(tab + 1) })
+  }
+  return out
+}
+
+// Batched: a candidate tree can hold gigabytes of blobs, so never hold more
+// than one chunk's worth in memory at a time.
+export const BLOB_BATCH = 4000
+
+export async function readBlobBatch(shas: string[]): Promise<Map<string, Buffer>> {
+  const map = new Map<string, Buffer>()
+  if (!shas.length) return map
+  const p = Bun.spawn(["git", "cat-file", "--batch"], {
+    stdin: new Blob([Buffer.from(shas.map((s) => `${s}\n`).join(""), "utf8")]),
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const raw = Buffer.from(await new Response(p.stdout).arrayBuffer())
+  let off = 0
+  for (const sha of shas) {
+    const nl = raw.indexOf(10, off)
+    if (nl === -1) break
+    const size = Number(raw.subarray(off, nl).toString("utf8").split(" ")[2])
+    if (!Number.isFinite(size)) break
+    map.set(sha, raw.subarray(nl + 1, nl + 1 + size))
+    off = nl + 1 + size + 1
+  }
+  await p.exited
+  return map
+}
+
+/**
+ * Diff size between two texts, in changed lines.
+ *
+ * The re-parent questions are all "how much has to be reconciled?", and a line count is
+ * the honest unit for that. `git diff --no-index` is used rather than a hand-rolled LCS
+ * because it is the same algorithm a reviewer will run when they actually apply the port -
+ * so the number printed here is the number they will meet.
+ */
+export async function diffLines(a: string, b: string, label: string): Promise<number> {
+  const dir = `/tmp/opencode-port-map/${label.replace(/[^A-Za-z0-9._-]/g, "_")}`
+  await Bun.$`mkdir -p ${dir}`.quiet()
+  await Bun.write(`${dir}/a`, a).catch(() => {})
+  await Bun.write(`${dir}/b`, b).catch(() => {})
+  const p = Bun.spawn(["git", "diff", "--no-index", "--numstat", `${dir}/a`, `${dir}/b`], {
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const out = Buffer.from(await new Response(p.stdout).arrayBuffer()).toString("utf8")
+  await p.exited
+  // `--numstat` prints "adds\tdels\tpath"; a binary file prints "-\t-\tpath" instead.
+  const [adds, dels] = out.trim().split(/\s+/).map((n) => Number(n))
+  return (adds && Number.isFinite(adds) ? adds : 0) + (dels && Number.isFinite(dels) ? dels : 0)
+}
