@@ -15,8 +15,13 @@
  * A file with no landing has no base to diff against, so its cost is its own size - it is a
  * hand-port by definition. Reporting that separately keeps "cheap" from hiding "absent".
  *
- * Usage: bun run script/port-map.ts opencode/v1
- *        bun run script/port-map.ts opencode/v1 opencode/dev
+ * Usage: bun run script/port-map.ts refs/remotes/opencode/v1
+ *        bun run script/port-map.ts refs/remotes/opencode/v1 refs/remotes/opencode/dev
+ *
+ * Pass FULL refnames. `opencode/dev` is not safe: a stray tag of the same name makes git
+ * resolve the shorthand to whatever that tag points at, and every number below would then
+ * describe our own tree instead of the candidate's - confidently and wrongly. `resolveRef`
+ * in ./lib/git-tree.ts refuses an ambiguous ref rather than guessing between them.
  */
 
 import { rebrand, useUpstream } from "./lib/branding"

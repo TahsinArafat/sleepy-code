@@ -19,6 +19,38 @@ export async function git(args: string[]): Promise<Buffer> {
 export const gitText = async (args: string[]) => (await git(args)).toString("utf8")
 
 /**
+ * Resolve a ref to exactly one full refname, or refuse to measure anything.
+ *
+ * This exists because of a silent failure that would have poisoned the whole migration plan.
+ * A `git fetch --deepen=600 opencode dev v1` left behind a loose tag `refs/tags/opencode/dev`
+ * pointing at one of OUR commits. Git resolves an ambiguous shorthand **tags first**, so from
+ * that moment every `opencode/dev` in these scripts meant our own tree - 5,513 files - instead
+ * of the candidate's 8,592. Nothing errors. `ls-tree` succeeds, the numbers print, and they are
+ * confident and wrong: a port map built that way would claim our files already exist upstream
+ * and size the job at nothing.
+ *
+ * Git only warns on stderr, which a spawned child throws away. So check explicitly.
+ * `git show-ref <pattern>` matches on the literal pattern or on a tail starting at a slash, so
+ * a qualified `refs/remotes/opencode/dev` matches exactly one ref while the bare shorthand
+ * matches both the tag and the branch. One match is the answer; two is a stop.
+ */
+export async function resolveRef(ref: string): Promise<string> {
+  const out = await gitText(["show-ref", ref]).catch(() => "")
+  const matches = out
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => l.split(" ").slice(1).join(" "))
+  if (matches.length === 1) return matches[0]!
+  if (matches.length === 0) throw new Error(`unknown ref: ${ref}`)
+  throw new Error(
+    `ambiguous ref ${ref} matches ${matches.length} refs:\n` +
+      matches.map((m) => `    ${m}`).join("\n") +
+      `\n  git would silently pick one of these. Re-run with the full refname.`,
+  )
+}
+
+/**
  * Commit counts are meaningless on a shallow clone - a depth-1 fetch reports "1 commit in
  * 12 weeks" for a branch that actually takes hundreds, which is exactly the kind of number
  * that invites a strategic decision it cannot support. Detect the case, do not print one.
@@ -35,7 +67,7 @@ export async function shallowWarning(ref: string): Promise<string | null> {
 export type Entry = { mode: string; type: string; sha: string; path: string }
 
 export async function listTree(ref: string): Promise<Entry[]> {
-  const buf = await git(["ls-tree", "-r", "-z", ref])
+  const buf = await git(["ls-tree", "-r", "-z", await resolveRef(ref)])
   const out: Entry[] = []
   let off = 0
   while (off < buf.length) {
