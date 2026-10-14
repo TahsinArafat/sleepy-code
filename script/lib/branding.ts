@@ -294,6 +294,16 @@ const OPENCODE: UpstreamProfile = {
     // `-beta`, `-sdk-js` - plus release, issue and pull-request URLs that must keep
     // resolving to the upstream project rather than to a sleepy-code that does not exist.
     /anomalyco\/opencode/,
+    // Native PTY binaries, published by opencode on npm under the `opencode-ai` scope and
+    // pulled in by `packages/cli` for all six platforms. They are not ours to re-scope:
+    // `@sleepy-ai/pty-linux-x64-gnu` is an unresolvable dependency, so renaming them breaks
+    // `bun ci` at install time rather than at build time. Note the scope is `opencode-ai`,
+    // not `opencode`, so the `@opencode-ai` rule above cannot tell them apart from the
+    // doc references to the v1-era `@opencode-ai/plugin` and `@opencode-ai/sdk`, which SHOULD
+    // rename - only the package.json dependency list tells the two apart.
+    /@opencode-ai\/pty/,
+    // Third-party vite plugin whose published name happens to embed the token.
+    /@brendonovich\/vite-plugin-opencode/,
   ],
   scan: /[Oo]pen[Cc]ode/g,
   pathMap: [],
@@ -442,6 +452,10 @@ export const SKIP_CONTENT: ReadonlyArray<RegExp> = [
   /\.(png|jpe?g|gif|ico|webp|avif|woff2?|ttf|eot|pdf|zip|gz|br|so|dylib|exe|node)$/,
   // Vendored capture of a third-party API response: the ids in it are not ours.
   /test\/tool\/fixtures\/models-api\.json$/,
+  // Architectural records and migration tooling measure and map the ancestor;
+  // rewriting their text would destroy the profiles, references, and records they declare.
+  /^docs\/architecture\//,
+  /^script\/(?:lib\/(?:branding|git-tree)|apply-branding|brand-classify|fork-delta|port-map|reparent-probe)\.ts$/,
 ]
 
 export function shouldSkipContent(path: string): boolean {
