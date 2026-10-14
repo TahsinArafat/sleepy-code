@@ -73,6 +73,18 @@ export interface UpstreamProfile {
   readonly scan: RegExp
   /** Paths upstream ships that the fork renames. */
   readonly pathMap: ReadonlyArray<readonly [from: string, to: string]>
+  /**
+   * Whether `pathMap` is the WHOLE story for paths, or paths additionally carry the token
+   * and must go through `map` too.
+   *
+   * This has to be per-profile because the two ancestors disagree, and getting it wrong is
+   * silent. mimo ships a `.mimocode/` config dir whose paths carry the token, but the fork
+   * never moved it, so `mapPath` must leave those paths alone: projecting them into
+   * `.sleepycode/` is what made `sync-upstream verify` score those files "renamed by fork"
+   * and drop upstream's edits to them from every merge (see the note on MIMO.pathMap).
+   * opencode's token-carrying paths are all ours to move, so the fallback is on there.
+   */
+  readonly mapPathTokens: boolean
 }
 
 /** Characters that may sit inside an identifier. Mirrors the boundary class the scan used to inline. */
@@ -215,6 +227,7 @@ const MIMO: UpstreamProfile = {
     // hiding them from the soundness measurement. Do not re-add it without actually
     // renaming the directory in the fork first.
   ],
+  mapPathTokens: false,
 }
 
 /**
@@ -231,17 +244,24 @@ const MIMO: UpstreamProfile = {
  * tidiness would reintroduce the mimo hazard, so do not "tidy" it without re-running
  * `bun run script/lib/branding.ts`.
  *
- * Not yet wired to a working port: PROTECT carries only the one externally-owned host
- * confirmed to be load-bearing (`opencode.ai`, 2224 refs in `opencode/v1`). Anything else
- * upstream contains must be classified before this profile is used for a real sync -
- * `audit()` is what surfaces the leftovers.
+ * Not yet wired to a working port: PROTECT is still incomplete. `audit()` and
+ * `script/brand-classify.ts` are what surface the leftovers, and the port target
+ * (`refs/remotes/opencode/dev`) is what the profile has actually been measured against -
+ * not `v1`, whose `@opencode-ai/*` scope this profile used to assume.
  */
 const OPENCODE: UpstreamProfile = {
   id: "opencode",
   label: "anomalyco/opencode",
   map: [
-    // npm scope
+    // npm scope. Two shapes, and only the first survives contact with `opencode/dev`:
+    // `v1` used `@opencode-ai/*`, but `dev` re-scoped every one of its 30 packages to
+    // `@opencode/*` - and the generic `opencode` rule at the bottom of this list would have
+    // turned those into `@sleepycode/*`, a scope the fork has never published under. Zero
+    // residual either way, so the probe could not see it: only reading the mapped result
+    // against the packages actually on npm did. Both rules are kept so the profile works
+    // on either ancestor.
     ["@opencode-ai", "@sleepy-ai"],
+    ["@opencode/", "@sleepy-ai/"],
     ["opencode-ai", "sleepy-ai"],
     // config dir + files
     [".opencode", ".sleepycode"],
@@ -267,9 +287,17 @@ const OPENCODE: UpstreamProfile = {
     // Real service host behind the config endpoint and the Zen gateway. Renaming any of
     // these re-points live network calls (2224 refs in `opencode/v1`).
     /opencode\.ai/,
+    // The ancestor we fork from, and the thing `install` fetches the CLI from. Same role as
+    // MIMO's `XiaomiMiMo\/MiMo-Code` guard, and it has to be a prefix rather than an exact
+    // match: beyond the repo itself, the same org owns the sibling repos the tree installs
+    // from and links to - `anomalyco/opencode/github@latest` (92), `-pty`, `-drive`,
+    // `-beta`, `-sdk-js` - plus release, issue and pull-request URLs that must keep
+    // resolving to the upstream project rather than to a sleepy-code that does not exist.
+    /anomalyco\/opencode/,
   ],
   scan: /[Oo]pen[Cc]ode/g,
   pathMap: [],
+  mapPathTokens: true,
 }
 
 export const UPSTREAMS: ReadonlyArray<UpstreamProfile> = [MIMO, OPENCODE]
@@ -425,7 +453,8 @@ export function mapPath(path: string, profile: UpstreamProfile = active): string
     if (path === from) return to
     if (path.startsWith(from + "/")) return to + path.slice(from.length)
   }
-  return path
+  // Only for ancestors whose PATHS carry the token. See `mapPathTokens`.
+  return profile.mapPathTokens ? rebrandWith(path, profile) : path
 }
 
 /**
