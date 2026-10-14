@@ -253,14 +253,10 @@ const OPENCODE: UpstreamProfile = {
   id: "opencode",
   label: "anomalyco/opencode",
   map: [
-    // npm scope. Two shapes, and only the first survives contact with `opencode/dev`:
-    // `v1` used `@opencode-ai/*`, but `dev` re-scoped every one of its 30 packages to
-    // `@opencode/*` - and the generic `opencode` rule at the bottom of this list would have
-    // turned those into `@sleepycode/*`, a scope the fork has never published under. Zero
-    // residual either way, so the probe could not see it: only reading the mapped result
-    // against the packages actually on npm did. Both rules are kept so the profile works
-    // on either ancestor.
-    ["@opencode-ai", "@sleepy-ai"],
+    // npm scope. In `dev`, every monorepo package is scoped to `@opencode/*`, which
+    // re-brands to `@sleepy-ai/*`. The older `@opencode-ai/*` scope is NOT a workspace package;
+    // it is the upstream published package org on npmjs.org (@opencode-ai/pty, @opencode-ai/sdk, etc.).
+    // It must remain protected so published dependencies resolve and do not collide in bun.lock.
     ["@opencode/", "@sleepy-ai/"],
     ["opencode-ai", "sleepy-ai"],
     // config dir + files
@@ -294,14 +290,10 @@ const OPENCODE: UpstreamProfile = {
     // `-beta`, `-sdk-js` - plus release, issue and pull-request URLs that must keep
     // resolving to the upstream project rather than to a sleepy-code that does not exist.
     /anomalyco\/opencode/,
-    // Native PTY binaries, published by opencode on npm under the `opencode-ai` scope and
-    // pulled in by `packages/cli` for all six platforms. They are not ours to re-scope:
-    // `@sleepy-ai/pty-linux-x64-gnu` is an unresolvable dependency, so renaming them breaks
-    // `bun ci` at install time rather than at build time. Note the scope is `opencode-ai`,
-    // not `opencode`, so the `@opencode-ai` rule above cannot tell them apart from the
-    // doc references to the v1-era `@opencode-ai/plugin` and `@opencode-ai/sdk`, which SHOULD
-    // rename - only the package.json dependency list tells the two apart.
-    /@opencode-ai\/pty/,
+    // Published packages on npm under the `opencode-ai` org (@opencode-ai/pty, @opencode-ai/sdk, etc.).
+    // They are not ours to re-scope: `@sleepy-ai/*` does not exist on npm, and rewriting them
+    // also collides with `@sleepy-ai/*` workspace packages in bun.lock.
+    /@opencode-ai/,
     // Third-party vite plugin whose published name happens to embed the token.
     /@brendonovich\/vite-plugin-opencode/,
   ],
