@@ -18,6 +18,9 @@ export async function git(args: string[]): Promise<Buffer> {
 
 export const gitText = async (args: string[]) => (await git(args)).toString("utf8")
 
+/** Refs git resolves by name rather than by the shorthand search order, so they are never ambiguous. */
+const PSEUDO_REFS = new Set(["HEAD", "FETCH_HEAD", "ORIG_HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD"])
+
 /**
  * Resolve a ref to exactly one full refname, or refuse to measure anything.
  *
@@ -32,21 +35,42 @@ export const gitText = async (args: string[]) => (await git(args)).toString("utf
  * Git only warns on stderr, which a spawned child throws away. So check explicitly.
  * `git show-ref <pattern>` matches on the literal pattern or on a tail starting at a slash, so
  * a qualified `refs/remotes/opencode/dev` matches exactly one ref while the bare shorthand
- * matches both the tag and the branch. One match is the answer; two is a stop.
+ * matches both the tag and the branch.
+ *
+ * Not every multi-match is a trap, so only the dangerous one is refused. Git resolves
+ * `refs/heads/` before `refs/remotes/`, so a branch matching its own remote-tracking copy is
+ * documented and harmless - and refusing it would break `--ours=sync/upstream-2026-09` in
+ * every repo that has pushed. A tag is the opposite: `refs/tags/` wins, so a tag shadows the
+ * branch you meant and the only safe move is to refuse.
+ *
+ * `HEAD` is exempt. It is a pseudo-ref, not a shorthand, so it is never subject to the
+ * resolution order above, and the fact that `git show-ref HEAD` also matches the symbolic
+ * HEAD of each remote says nothing about it. Without the exemption the check rejects `HEAD`
+ * in any repo with more than one remote, which is most repos, and would have made the
+ * default in port-map unusable.
  */
 export async function resolveRef(ref: string): Promise<string> {
+  if (PSEUDO_REFS.has(ref)) {
+    await gitText(["rev-parse", "--verify", `${ref}^{commit}`])
+    return ref
+  }
   const out = await gitText(["show-ref", ref]).catch(() => "")
   const matches = out
     .trim()
     .split("\n")
     .filter(Boolean)
     .map((l) => l.split(" ").slice(1).join(" "))
-  if (matches.length === 1) return matches[0]!
   if (matches.length === 0) throw new Error(`unknown ref: ${ref}`)
+  if (matches.length === 1) return matches[0]!
+  // Git's documented order for a multi-match shorthand is heads before remotes.
+  const picked = matches.find((m) => m.startsWith("refs/heads/")) ?? matches[0]!
+  if (!matches.some((m) => m.startsWith("refs/tags/")))
+    return picked
   throw new Error(
-    `ambiguous ref ${ref} matches ${matches.length} refs:\n` +
+    `ambiguous ref ${ref}: a TAG shadows the branch, and git prefers the tag.\n` +
       matches.map((m) => `    ${m}`).join("\n") +
-      `\n  git would silently pick one of these. Re-run with the full refname.`,
+      `\n  Measuring "${picked}" instead of the branch would silently size this wrong.\n` +
+      `  Re-run with the full refname, e.g. refs/remotes/opencode/dev.`,
   )
 }
 
