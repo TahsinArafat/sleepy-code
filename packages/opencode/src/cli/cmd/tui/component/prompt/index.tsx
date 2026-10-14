@@ -280,8 +280,8 @@ export function Prompt(props: PromptProps) {
       const vars = { provider: initialCreds.providerID, model: initialCreds.model }
       const msg = !voiceConfig ? t("tui.voice.error.no_auth")
         : initialCreds.error === "not_found" ? t("tui.voice.error.provider_not_found", vars)
-        : initialCreds.error === "no_url" ? t("tui.voice.error.no_url", vars)
-        : t("tui.voice.error.no_auth_provider", vars)
+          : initialCreds.error === "no_url" ? t("tui.voice.error.no_url", vars)
+            : t("tui.voice.error.no_auth_provider", vars)
       toast.show({ message: msg, variant: "error" })
       return
     }
@@ -363,7 +363,7 @@ export function Prompt(props: PromptProps) {
                 av.setState(av.pending > 0 ? "processing" : "listening")
               if (!activeVoice && av.pending <= 0) av.setState("idle")
             }
-          }).catch(() => {})
+          }).catch(() => { })
         } else {
           const asrSnap = av.getSnapshot()
           Voice.transcribeAudio({
@@ -1186,164 +1186,164 @@ export function Prompt(props: PromptProps) {
     submitLock = true
     try {
 
-    let sessionID = props.sessionID
-    if (sessionID == null) {
-      const res = await sdk.client.session.create({ workspace: props.workspaceID })
+      let sessionID = props.sessionID
+      if (sessionID == null) {
+        const res = await sdk.client.session.create({ workspace: props.workspaceID })
 
-      if (res.error) {
-        console.log("Creating a session failed:", res.error)
+        if (res.error) {
+          console.log("Creating a session failed:", res.error)
 
-        toast.show({
-          message: "Creating a session failed. Open console for more details.",
-          variant: "error",
-        })
-
-        return true
-      }
-
-      sessionID = res.data.id
-    }
-
-    const messageID = MessageID.ascending()
-
-    // Expand pasted text inline before submitting. Extmark offsets are
-    // display-width based while plainText is UTF-16, so expandPlaceholders
-    // bridges the two coordinate systems (otherwise CJK content desyncs them).
-    const marks = input.extmarks
-      .getAllForTypeId(promptPartTypeId)
-      .flatMap((extmark: { id: number; start: number; end: number }) => {
-        const partIndex = store.extmarkToPartIndex.get(extmark.id)
-        if (partIndex === undefined) return []
-        const part = store.prompt.parts[partIndex]
-        if (part?.type !== "text" || !part.text) return []
-        return [{ start: extmark.start, end: extmark.end, text: part.text }]
-      })
-    const inputText = expandPlaceholders(store.prompt.input, marks)
-
-    // Filter out text parts (pasted content) since they're now expanded inline
-    const nonTextParts = store.prompt.parts.filter((part) => part.type !== "text")
-
-    // Capture mode before it gets reset
-    const currentMode = store.mode
-    const variant = local.model.variant.current()
-
-    const clientSlash = inputText.startsWith("/")
-      ? command.slashes().find((s) => s.display === inputText.trim())
-      : undefined
-    const serverSlash = resolvePromptCommand(inputText, sync.data.command, t, pickedSkill)
-
-    if (store.mode === "shell") {
-      void sdk.client.session.shell({
-        sessionID,
-        agent: agent.name,
-        model: {
-          providerID: selectedModel.providerID,
-          modelID: selectedModel.modelID,
-        },
-        command: inputText,
-      })
-      setStore("mode", "normal")
-    } else if (inputText.startsWith("/btw ")) {
-      // Inline side-question form: `/btw <question>` on the prompt line. Client
-      // slashes match the exact `/btw` token and drop args, so handle the
-      // arg-bearing form here. Show a busy/spinner dialog immediately for
-      // instant feedback across the blocking fork-query, then swap in the
-      // answer. READ-ONLY + EPHEMERAL: render the answer in a dismissible
-      // dialog, never inject it into the conversation.
-      const question = inputText.slice("/btw ".length).trim()
-      if (question)
-        void DialogPrompt.busy(
-          dialog,
-          "/btw",
-          question,
-          (active) =>
-            sdk.client.session
-              .ask({
-                sessionID,
-                question,
-                providerID: selectedModel.providerID,
-                modelID: selectedModel.modelID,
-              })
-              .then((res) => {
-                if (!active()) return
-                return DialogAlert.show(dialog, "/btw", res.data?.answer ?? "(no answer)")
-              })
-              .catch((err) => {
-                if (!active()) return
-                dialog.clear()
-                toast.show({
-                  message: err instanceof Error ? err.message : "Failed to ask side question",
-                  variant: "error",
-                })
-              }),
-          { busyText: t("tui.command.session.ask.busy") },
-        )
-    } else if (clientSlash) {
-      clientSlash.onSelect?.()
-    } else if (serverSlash) {
-      void sdk.client.session.command({
-        sessionID,
-        ...serverSlash,
-        agent: agent.name,
-        model: `${selectedModel.providerID}/${selectedModel.modelID}`,
-        titleLocale: language.intl(),
-        messageID,
-        variant,
-        parts: nonTextParts
-          .filter((x) => x.type === "file")
-          .map((x) => ({
-            id: PartID.ascending(),
-            ...x,
-          })),
-      })
-    } else {
-      sdk.client.session
-        .promptAsync({
-          sessionID,
-          ...selectedModel,
-          messageID,
-          agent: agent.name,
-          model: selectedModel,
-          titleLocale: language.intl(),
-          variant,
-          parts: [
-            {
-              id: PartID.ascending(),
-              type: "text",
-              text: inputText,
-            },
-            ...nonTextParts.map(assign),
-          ],
-        })
-        .catch((err) => {
           toast.show({
-            message: err instanceof Error ? err.message : "Failed to send message",
+            message: "Creating a session failed. Open console for more details.",
             variant: "error",
           })
-        })
-    }
-    history.append({
-      ...store.prompt,
-      mode: currentMode,
-    })
-    input.extmarks.clear()
-    setStore("prompt", {
-      input: "",
-      parts: [],
-    })
-    setStore("extmarkToPartIndex", new Map())
-    props.onSubmit?.()
 
-    // temporary hack to make sure the message is sent
-    if (!props.sessionID)
-      setTimeout(() => {
-        route.navigate({
-          type: "session",
-          sessionID,
+          return true
+        }
+
+        sessionID = res.data.id
+      }
+
+      const messageID = MessageID.ascending()
+
+      // Expand pasted text inline before submitting. Extmark offsets are
+      // display-width based while plainText is UTF-16, so expandPlaceholders
+      // bridges the two coordinate systems (otherwise CJK content desyncs them).
+      const marks = input.extmarks
+        .getAllForTypeId(promptPartTypeId)
+        .flatMap((extmark: { id: number; start: number; end: number }) => {
+          const partIndex = store.extmarkToPartIndex.get(extmark.id)
+          if (partIndex === undefined) return []
+          const part = store.prompt.parts[partIndex]
+          if (part?.type !== "text" || !part.text) return []
+          return [{ start: extmark.start, end: extmark.end, text: part.text }]
         })
-      }, 50)
-    input.clear()
-    return true
+      const inputText = expandPlaceholders(store.prompt.input, marks)
+
+      // Filter out text parts (pasted content) since they're now expanded inline
+      const nonTextParts = store.prompt.parts.filter((part) => part.type !== "text")
+
+      // Capture mode before it gets reset
+      const currentMode = store.mode
+      const variant = local.model.variant.current()
+
+      const clientSlash = inputText.startsWith("/")
+        ? command.slashes().find((s) => s.display === inputText.trim())
+        : undefined
+      const serverSlash = resolvePromptCommand(inputText, sync.data.command, t, pickedSkill)
+
+      if (store.mode === "shell") {
+        void sdk.client.session.shell({
+          sessionID,
+          agent: agent.name,
+          model: {
+            providerID: selectedModel.providerID,
+            modelID: selectedModel.modelID,
+          },
+          command: inputText,
+        })
+        setStore("mode", "normal")
+      } else if (inputText.startsWith("/btw ")) {
+        // Inline side-question form: `/btw <question>` on the prompt line. Client
+        // slashes match the exact `/btw` token and drop args, so handle the
+        // arg-bearing form here. Show a busy/spinner dialog immediately for
+        // instant feedback across the blocking fork-query, then swap in the
+        // answer. READ-ONLY + EPHEMERAL: render the answer in a dismissible
+        // dialog, never inject it into the conversation.
+        const question = inputText.slice("/btw ".length).trim()
+        if (question)
+          void DialogPrompt.busy(
+            dialog,
+            "/btw",
+            question,
+            (active) =>
+              sdk.client.session
+                .ask({
+                  sessionID,
+                  question,
+                  providerID: selectedModel.providerID,
+                  modelID: selectedModel.modelID,
+                })
+                .then((res) => {
+                  if (!active()) return
+                  return DialogAlert.show(dialog, "/btw", res.data?.answer ?? "(no answer)")
+                })
+                .catch((err) => {
+                  if (!active()) return
+                  dialog.clear()
+                  toast.show({
+                    message: err instanceof Error ? err.message : "Failed to ask side question",
+                    variant: "error",
+                  })
+                }),
+            { busyText: t("tui.command.session.ask.busy") },
+          )
+      } else if (clientSlash) {
+        clientSlash.onSelect?.()
+      } else if (serverSlash) {
+        void sdk.client.session.command({
+          sessionID,
+          ...serverSlash,
+          agent: agent.name,
+          model: `${selectedModel.providerID}/${selectedModel.modelID}`,
+          titleLocale: language.intl(),
+          messageID,
+          variant,
+          parts: nonTextParts
+            .filter((x) => x.type === "file")
+            .map((x) => ({
+              id: PartID.ascending(),
+              ...x,
+            })),
+        })
+      } else {
+        sdk.client.session
+          .promptAsync({
+            sessionID,
+            ...selectedModel,
+            messageID,
+            agent: agent.name,
+            model: selectedModel,
+            titleLocale: language.intl(),
+            variant,
+            parts: [
+              {
+                id: PartID.ascending(),
+                type: "text",
+                text: inputText,
+              },
+              ...nonTextParts.map(assign),
+            ],
+          })
+          .catch((err) => {
+            toast.show({
+              message: err instanceof Error ? err.message : "Failed to send message",
+              variant: "error",
+            })
+          })
+      }
+      history.append({
+        ...store.prompt,
+        mode: currentMode,
+      })
+      input.extmarks.clear()
+      setStore("prompt", {
+        input: "",
+        parts: [],
+      })
+      setStore("extmarkToPartIndex", new Map())
+      props.onSubmit?.()
+
+      // temporary hack to make sure the message is sent
+      if (!props.sessionID)
+        setTimeout(() => {
+          route.navigate({
+            type: "session",
+            sessionID,
+          })
+        }, 50)
+      input.clear()
+      return true
 
     } finally {
       submitLock = false
@@ -1394,7 +1394,7 @@ export function Prompt(props: PromptProps) {
       if (raw.startsWith("file://")) {
         try {
           return fileURLToPath(raw)
-        } catch {}
+        } catch { }
       }
       if (process.platform === "win32") return raw
       return raw.replace(/\\(.)/g, "$1")
@@ -1406,7 +1406,7 @@ export function Prompt(props: PromptProps) {
         const filename = path.basename(filepath)
         // Handle SVG as raw text content, not as base64 image
         if (mime === "image/svg+xml") {
-          const content = await Filesystem.readText(filepath).catch(() => {})
+          const content = await Filesystem.readText(filepath).catch(() => { })
           if (content) {
             pasteText(content, `[SVG: ${filename ?? "image"}]`)
             return
@@ -1420,7 +1420,7 @@ export function Prompt(props: PromptProps) {
           }
           const content = await Filesystem.readArrayBuffer(filepath)
             .then((buffer) => Buffer.from(buffer).toString("base64"))
-            .catch(() => {})
+            .catch(() => { })
           if (content) {
             await pasteAttachment({
               filename,
@@ -1431,7 +1431,7 @@ export function Prompt(props: PromptProps) {
             return
           }
         }
-      } catch {}
+      } catch { }
     }
 
     const lineCount = (pastedContent.match(/\n/g)?.length ?? 0) + 1
@@ -1600,22 +1600,34 @@ export function Prompt(props: PromptProps) {
     return {
       frames: createFrames({
         color,
-        style: "plane",
-        width: 14,
-        holdStart: 8,
-        holdEnd: 8,
-        inactiveFactor: 0.6,
-        // enableFading: false,
-        minAlpha: 0.3,
+        style: "pacman",
+        // Pacing at the footer's 40ms tick: the head parks on each cell for
+        // moveEvery ticks (120ms/dot → 2.4s to cross 20 cells), chomps once
+        // per 960ms, and holds 480ms at each edge so the turnaround reads.
+        width: 20,
+        holdStart: 12,
+        holdEnd: 12,
+        moveEvery: 3,
+        chompFrames: 12,
+        // Food side leads: vivid gradient dots in front of his mouth
+        // (1.0 head / 0.9 / 0.65 / 0.42) settling to a stable 0.4 floor far
+        // out. enableFading off so the field never dips to near-invisible at
+        // sweep start, and the head stays pinned bright through the holds.
+        trailSide: "ahead",
+        trailSteps: 4,
+        inactiveFactor: 0.4,
+        enableFading: false,
       }),
       color: createColors({
         color,
-        style: "plane",
-        holdStart: 8,
-        holdEnd: 8,
-        inactiveFactor: 0.6,
-        // enableFading: false,
-        minAlpha: 0.3,
+        style: "pacman",
+        holdStart: 12,
+        holdEnd: 12,
+        moveEvery: 3,
+        trailSide: "ahead",
+        trailSteps: 4,
+        inactiveFactor: 0.4,
+        enableFading: false,
       }),
     }
   })
@@ -1837,8 +1849,8 @@ export function Prompt(props: PromptProps) {
                           >
                             {local.model.parsed().model}
                           </text>
-          {/* Hide provider label for sleepy-auto since model name already contains "Sleepy" */}
-          <Show when={!(local.model.current()?.providerID === "sleepy" && local.model.current()?.modelID === "sleepy-auto")}>
+                          {/* Hide provider label for sleepy-auto since model name already contains "Sleepy" */}
+                          <Show when={!(local.model.current()?.providerID === "sleepy" && local.model.current()?.modelID === "sleepy-auto")}>
                             <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>
                               {currentProviderLabel()}
                             </text>
@@ -1913,13 +1925,13 @@ export function Prompt(props: PromptProps) {
             customBorderChars={
               theme.backgroundElement.a !== 0
                 ? {
-                    ...EmptyBorder,
-                    horizontal: "▀",
-                  }
+                  ...EmptyBorder,
+                  horizontal: "▀",
+                }
                 : {
-                    ...EmptyBorder,
-                    horizontal: " ",
-                  }
+                  ...EmptyBorder,
+                  horizontal: " ",
+                }
             }
           />
         </box>

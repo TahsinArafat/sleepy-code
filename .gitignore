@@ -40,6 +40,14 @@ script/.sync-*.txt
 *.pid
 .sleepy-worktrees
 .sleepycde
+.omo/
+
+# Runtime lockfile written by the cron scheduler (pid + start time)
+.sleepycode/.cron-lock
+
+# Stray editor/sync backups. These shadow a real source file, so committing one
+# leaves a .bak-sync next to the .ts it was derived from.
+*.bak-sync
 
 # experiment run artifacts (regenerated per run, not source)
 experiment/*.log

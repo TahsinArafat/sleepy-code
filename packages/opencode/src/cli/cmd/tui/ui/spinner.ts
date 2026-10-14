@@ -10,6 +10,12 @@ interface AdvancedGradientOptions {
   holdFrames?: { start?: number; end?: number }
   enableFading?: boolean
   minAlpha?: number
+  /** Which side of the head the color trail lights up. `"ahead"` leads the
+   * animation (pacman's food side); default `"behind"` trails it. */
+  trailSide?: "behind" | "ahead"
+  /** Frames the head stays on each cell before advancing (default: 1).
+   * Higher values slow the sweep without slowing the tick rate. */
+  moveEvery?: number
 }
 
 interface ScannerState {
@@ -25,19 +31,20 @@ interface ScannerState {
 function getScannerState(
   frameIndex: number,
   totalChars: number,
-  options: Pick<AdvancedGradientOptions, "direction" | "holdFrames">,
+  options: Pick<AdvancedGradientOptions, "direction" | "holdFrames" | "moveEvery">,
 ): ScannerState {
-  const { direction = "forward", holdFrames = {} } = options
+  const { direction = "forward", holdFrames = {}, moveEvery = 1 } = options
+  const every = Math.max(1, Math.floor(moveEvery))
 
   if (direction === "bidirectional") {
-    const forwardFrames = totalChars
+    const forwardFrames = totalChars * every
     const holdEndFrames = holdFrames.end ?? 0
-    const backwardFrames = totalChars - 1
+    const backwardFrames = (totalChars - 1) * every
 
     if (frameIndex < forwardFrames) {
       // Moving forward
       return {
-        activePosition: frameIndex,
+        activePosition: Math.min(Math.floor(frameIndex / every), totalChars - 1),
         isHolding: false,
         holdProgress: 0,
         holdTotal: 0,
@@ -60,7 +67,7 @@ function getScannerState(
       // Moving backward
       const backwardIndex = frameIndex - forwardFrames - holdEndFrames
       return {
-        activePosition: totalChars - 2 - backwardIndex,
+        activePosition: totalChars - 2 - Math.min(Math.floor(backwardIndex / every), totalChars - 2),
         isHolding: false,
         holdProgress: 0,
         holdTotal: 0,
@@ -81,46 +88,63 @@ function getScannerState(
       }
     }
   } else if (direction === "backward") {
+    const step = Math.floor(frameIndex / every) % totalChars
     return {
-      activePosition: totalChars - 1 - (frameIndex % totalChars),
+      activePosition: totalChars - 1 - step,
       isHolding: false,
       holdProgress: 0,
       holdTotal: 0,
-      movementProgress: frameIndex % totalChars,
+      movementProgress: step,
       movementTotal: totalChars,
       isMovingForward: false,
     }
   } else {
+    const step = Math.floor(frameIndex / every) % totalChars
     return {
-      activePosition: frameIndex % totalChars,
+      activePosition: step,
       isHolding: false,
       holdProgress: 0,
       holdTotal: 0,
-      movementProgress: frameIndex % totalChars,
+      movementProgress: step,
       movementTotal: totalChars,
       isMovingForward: true,
     }
   }
 }
 
+/**
+ * Which way the animation leads — and which way pacman faces. Normally the
+ * direction of travel, but when parked at an edge with no cells ahead he turns
+ * around so there is always a dot field in front of him (shared by frames and
+ * colors so the two never disagree).
+ */
+function leadForward(state: ScannerState, totalChars: number): boolean {
+  const cellsAhead = state.isMovingForward ? totalChars - 1 - state.activePosition : state.activePosition
+  return cellsAhead > 0 ? state.isMovingForward : !state.isMovingForward
+}
+
 function calculateColorIndex(
   frameIndex: number,
   charIndex: number,
   totalChars: number,
-  options: Pick<AdvancedGradientOptions, "direction" | "holdFrames" | "trailLength">,
+  options: Pick<AdvancedGradientOptions, "direction" | "holdFrames" | "trailLength" | "trailSide" | "moveEvery">,
   state?: ScannerState,
 ): number {
-  const { trailLength } = options
-  const { activePosition, isHolding, holdProgress, isMovingForward } =
-    state ?? getScannerState(frameIndex, totalChars, options)
+  const { trailLength, trailSide = "behind" } = options
+  const scanner = state ?? getScannerState(frameIndex, totalChars, options)
+  const { activePosition, isHolding, holdProgress, isMovingForward } = scanner
 
-  // Calculate directional distance (positive means trailing behind)
-  const directionalDistance = isMovingForward
-    ? activePosition - charIndex // For forward: trail is to the left (lower indices)
-    : charIndex - activePosition // For backward: trail is to the right (higher indices)
+  // With trailSide "ahead" the gradient leads the head (pacman's food side),
+  // using the same edge-flip as the frames so dots and colors stay in sync.
+  const forward = trailSide === "ahead" ? leadForward(scanner, totalChars) : isMovingForward
+  const behindDistance = forward ? activePosition - charIndex : charIndex - activePosition
+  const directionalDistance = trailSide === "ahead" ? -behindDistance : behindDistance
 
   // Handle hold frame fading: keep the lead bright, fade the trail
   if (isHolding) {
+    // Pin the head to the brightest color — otherwise the hold-slide pushes its
+    // index past the palette and the spinner itself blinks out mid-hold.
+    if (directionalDistance === 0) return 0
     // Shift the color index by how long we've been holding
     return directionalDistance + holdProgress
   }
@@ -243,7 +267,7 @@ export function deriveInactiveColor(brightColor: ColorInput, factor: number = 0.
   return RGBA.fromValues(baseRgba.r, baseRgba.g, baseRgba.b, factor)
 }
 
-export type KnightRiderStyle = "blocks" | "diamonds" | "plane"
+export type KnightRiderStyle = "blocks" | "diamonds" | "plane" | "pacman"
 
 export interface KnightRiderOptions {
   width?: number
@@ -262,6 +286,15 @@ export interface KnightRiderOptions {
   enableFading?: boolean
   /** Minimum alpha value when fading (default: 0, range: 0-1) */
   minAlpha?: number
+  /** Which side of the head the color trail lights up. `"ahead"` leads the
+   * animation (pacman's food side); default `"behind"` trails it. */
+  trailSide?: "behind" | "ahead"
+  /** Frames the head stays on each cell before advancing (default: 1).
+   * Higher values slow the sweep without slowing the tick rate. */
+  moveEvery?: number
+  /** Frames per chomp phase for the pacman mouth (default: 8 — open and
+   * closed each last this long). Raise it to slow the mouth flap. */
+  chompFrames?: number
 }
 
 /**
@@ -280,13 +313,13 @@ export function createFrames(options: KnightRiderOptions = {}): string[] {
     (options.color
       ? deriveTrailColors(options.color, options.trailSteps)
       : [
-          RGBA.fromHex("#ff0000"), // Brightest Red (Center)
-          RGBA.fromHex("#ff5555"), // Glare/Bloom
-          RGBA.fromHex("#dd0000"), // Trail 1
-          RGBA.fromHex("#aa0000"), // Trail 2
-          RGBA.fromHex("#770000"), // Trail 3
-          RGBA.fromHex("#440000"), // Trail 4
-        ])
+        RGBA.fromHex("#ff0000"), // Brightest Red (Center)
+        RGBA.fromHex("#ff5555"), // Glare/Bloom
+        RGBA.fromHex("#dd0000"), // Trail 1
+        RGBA.fromHex("#aa0000"), // Trail 2
+        RGBA.fromHex("#770000"), // Trail 3
+        RGBA.fromHex("#440000"), // Trail 4
+      ])
 
   const defaultColor =
     options.defaultColor ??
@@ -300,10 +333,14 @@ export function createFrames(options: KnightRiderOptions = {}): string[] {
     holdFrames: { start: holdStart, end: holdEnd },
     enableFading: options.enableFading,
     minAlpha: options.minAlpha,
+    trailSide: options.trailSide,
+    moveEvery: options.moveEvery,
   }
 
-  // Bidirectional cycle: Forward (width) + Hold End + Backward (width-1) + Hold Start
-  const totalFrames = width + holdEnd + (width - 1) + holdStart
+  // Bidirectional cycle: Forward (width) + Hold End + Backward (width-1) + Hold
+  // Start — each cell occupies moveEvery ticks, so the cycle scales with it.
+  const every = Math.max(1, Math.floor(options.moveEvery ?? 1))
+  const totalFrames = width * every + holdEnd + (width - 1) * every + holdStart
 
   // Generate dynamic frames where inactive pixels are dots and active ones are blocks
   const frames = Array.from({ length: totalFrames }, (_, frameIndex) => {
@@ -316,6 +353,26 @@ export function createFrames(options: KnightRiderOptions = {}): string[] {
           return ["·", "∙", "˙"][(frameIndex + dd) % 3]!
         }
         return " "
+      }
+
+      if (style === "pacman") {
+        // Pac-Man game-style loader: dots only exist AHEAD of him (the food
+        // he is about to eat) — everything behind is already eaten (empty), so
+        // the row visibly shrinks as he chomps across the field. leadForward
+        // turns him around at the edges so the field is always in front, using
+        // the same flip as the trailSide:"ahead" colors.
+        const forward = leadForward(state, width)
+        if (charIndex === state.activePosition) {
+          // One flap per chompFrames×2 ticks. At the footer's 40ms tick,
+          // 12 frames per phase = 960ms/cycle (~1 flap/sec) — slow enough to
+          // actually watch him eat.
+          const phase = Math.max(1, options.chompFrames ?? 8)
+          const open = Math.floor(frameIndex / phase) % 2 === 0
+          if (!open) return "●" // mouth closed
+          return forward ? "◐" : "◑" // mouth opens toward the dots
+        }
+        const ahead = forward ? charIndex - state.activePosition : state.activePosition - charIndex
+        return ahead > 0 ? "·" : " " // food ahead, eaten field behind
       }
 
       const index = calculateColorIndex(frameIndex, charIndex, width, trailOptions, state)
@@ -352,13 +409,13 @@ export function createColors(options: KnightRiderOptions = {}): ColorGenerator {
     (options.color
       ? deriveTrailColors(options.color, options.trailSteps)
       : [
-          RGBA.fromHex("#ff0000"), // Brightest Red (Center)
-          RGBA.fromHex("#ff5555"), // Glare/Bloom
-          RGBA.fromHex("#dd0000"), // Trail 1
-          RGBA.fromHex("#aa0000"), // Trail 2
-          RGBA.fromHex("#770000"), // Trail 3
-          RGBA.fromHex("#440000"), // Trail 4
-        ])
+        RGBA.fromHex("#ff0000"), // Brightest Red (Center)
+        RGBA.fromHex("#ff5555"), // Glare/Bloom
+        RGBA.fromHex("#dd0000"), // Trail 1
+        RGBA.fromHex("#aa0000"), // Trail 2
+        RGBA.fromHex("#770000"), // Trail 3
+        RGBA.fromHex("#440000"), // Trail 4
+      ])
 
   const defaultColor =
     options.defaultColor ??
@@ -372,6 +429,8 @@ export function createColors(options: KnightRiderOptions = {}): ColorGenerator {
     holdFrames: { start: holdStart, end: holdEnd },
     enableFading: options.enableFading,
     minAlpha: options.minAlpha,
+    trailSide: options.trailSide,
+    moveEvery: options.moveEvery,
   }
 
   return createKnightRiderTrail(trailOptions)

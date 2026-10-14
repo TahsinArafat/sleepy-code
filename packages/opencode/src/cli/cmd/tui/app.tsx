@@ -23,6 +23,8 @@ import { isSystemSession } from "@/session/auto-dream"
 import semver from "semver"
 import { DialogProvider, useDialog } from "@tui/ui/dialog"
 import { DialogSleepyLogin } from "@tui/component/dialog-sleepy-login"
+import { DialogProvider as DialogProviderConnect } from "@tui/component/dialog-provider"
+import { connectDialog } from "@tui/util/connect"
 import { ErrorComponent } from "@tui/component/error-component"
 
 import { PluginRouteMissing } from "@tui/component/plugin-route-missing"
@@ -713,7 +715,9 @@ export function App(props: { onSnapshot?: () => Promise<string[]> }) {
         name: "connect",
       },
       onSelect: () => {
-        dialog.replace(() => <DialogSleepyLogin />)
+        dialog.replace(() =>
+          connectDialog(isAuthenticated()) === "providers" ? <DialogProviderConnect /> : <DialogSleepyLogin />,
+        )
       },
       category: "provider",
     },
@@ -1096,16 +1100,16 @@ export function App(props: { onSnapshot?: () => Promise<string[]> }) {
       detection.reason === "edit_repeat"
         ? detection.evidence.path
           ? t("tui.dialog.try_best.reason.edit_repeat_path", {
-              count: detection.evidence.count,
-              path: detection.evidence.path,
-            })
+            count: detection.evidence.count,
+            path: detection.evidence.path,
+          })
           : t("tui.dialog.try_best.reason.edit_repeat", { count: detection.evidence.count })
         : detection.reason === "bash_retry"
           ? t("tui.dialog.try_best.reason.bash_retry", { count: detection.evidence.count })
           : t("tui.dialog.try_best.reason.action_streak", {
-              count: detection.evidence.count,
-              action: t(`tui.dialog.try_best.action.${detection.evidence.action ?? "same_kind"}`),
-            })
+            count: detection.evidence.count,
+            action: t(`tui.dialog.try_best.action.${detection.evidence.action ?? "same_kind"}`),
+          })
     const modelDetail =
       detection.reason === "edit_repeat"
         ? `Near-identical edits repeated ${detection.evidence.count} times${detection.evidence.path ? ` in ${detection.evidence.path}` : ""}.`

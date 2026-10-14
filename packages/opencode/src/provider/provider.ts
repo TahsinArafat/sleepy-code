@@ -245,17 +245,108 @@ interface GatewayModel {
   cacheWritePrice?: number
 }
 
+const NON_CHAT_TYPES = new Set([
+  "image", "video", "tts", "stt", "audio", "speech", "asr", "voice",
+  "embedding", "embeddings", "moderation", "rerank", "transcription",
+  "speechtotext", "texttospeech", "imagegeneration", "text2img", "text2video",
+  "dalle", "imagen", "flux", "sora", "veo", "midjourney", "stablediffusion",
+])
+const CHAT_TYPES = new Set([
+  "chat", "chatcompletion", "text", "textchat", "llm", "language",
+  "code", "completion", "textgeneration", "texttotext", "anthropicresponses",
+  "chat-completion", "anthropic-responses",
+])
+const NON_CHAT_ID = /(?:^|[^a-z0-9])(?:image|video|tts|stt|audio|speech|voice|asr|whisper|transcri|embed(?:dings?)?|rerank|moderation|dall-?e|flux|sora|veo|midjourney|stable-diffusion)(?:[^a-z0-9]|$)/i
+
+function normalizedSignal(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "")
+}
+
+/**
+ * Keep only models the gateway can actually run a chat turn on.
+ *
+ * `GET /api/v1/models` lists every metered modality (image, TTS, embeddings,
+ * ...). Injecting those as provider models poisons the picker: the CLI's
+ * `defaultModelIDs` takes the A-Z-first model as the provider default, so an
+ * entry like "gpt-image-2" sorts ahead of "claude-sonnet-4.6-thinking" and every
+ * unspecified send resolved to a model that can only generate images. The
+ * extension's picker applies the same filter, so the CLI must match it or the
+ * extension's selected model never exists in the CLI's catalog and falls back.
+ */
+function isChatGatewayModel(model: Record<string, unknown>, id: string): boolean {
+  const typeValues: string[] = []
+  for (const key of ["type", "modelType", "model_type", "category", "kind"]) {
+    const value = model[key]
+    if (typeof value === "string") typeValues.push(value)
+  }
+  if (typeValues.length) {
+    const normalized = typeValues.map(normalizedSignal)
+    if (normalized.some((n) => NON_CHAT_TYPES.has(n))) return false
+    return normalized.every((n) => CHAT_TYPES.has(n) || n.includes("chat"))
+  }
+  return !NON_CHAT_ID.test(id)
+}
+
+function parseGatewayModels(json: unknown): GatewayModel[] {
+  const data =
+    json && typeof json === "object" && Array.isArray((json as Record<string, unknown>).data)
+      ? ((json as Record<string, unknown>).data as unknown[])
+      : Array.isArray(json)
+        ? (json as unknown[])
+        : []
+  const out: GatewayModel[] = []
+  for (const raw of data) {
+    if (!raw || typeof raw !== "object") continue
+    const model = raw as Record<string, unknown>
+    const rawId = model.omniRouteModelId || model.modelId || model.id
+    if (typeof rawId !== "string" || !rawId) continue
+    const modelId = rawId.replace(/^models\//, "")
+    if (!modelId || !isChatGatewayModel(model, modelId)) continue
+    const name = typeof model.name === "string" && model.name ? model.name : modelId
+    const num = (value: unknown): number | undefined =>
+      typeof value === "number" && Number.isFinite(value)
+        ? value
+        : typeof value === "string" && value.trim() && Number.isFinite(Number(value))
+          ? Number(value)
+          : undefined
+    out.push({
+      modelId,
+      name,
+      omniRouteModelId: typeof model.omniRouteModelId === "string" ? model.omniRouteModelId : undefined,
+      contextWindow: num(model.contextWindow ?? model.context_window ?? model.context_length),
+      maxOutputLimit: num(model.maxOutputLimit ?? model.max_output_limit ?? model.max_output_tokens),
+      inputPrice: num(model.inputPrice ?? model.input_price),
+      outputPrice: num(model.outputPrice ?? model.output_price),
+      cacheReadPrice: num(model.cacheReadPrice ?? model.cache_read_price),
+      cacheWritePrice: num(model.cacheWritePrice ?? model.cache_write_price),
+    })
+  }
+  return out
+}
+
 async function fetchModels(endpoint: string, token: string): Promise<GatewayModel[]> {
+  const headers = { Authorization: `Bearer ${token}` }
   try {
     const res = await fetch(`${endpoint}/api/v1/models`, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers,
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (res.ok) {
+      const json = await res.json().catch(() => undefined)
+      const parsed = parseGatewayModels(json)
+      if (parsed.length) return parsed
+    }
+  } catch {}
+  // Same fallback path the extension uses: some deployments expose the list
+  // only at /api/models, and a partial failure there beats an empty picker.
+  try {
+    const res = await fetch(`${endpoint}/api/models`, {
+      headers,
+      signal: AbortSignal.timeout(10_000),
     })
     if (!res.ok) return []
-    const json = await res.json()
-    if (json && json.data && Array.isArray(json.data)) {
-      return json.data as GatewayModel[]
-    }
-    return []
+    const json = await res.json().catch(() => undefined)
+    return parseGatewayModels(json)
   } catch {
     return []
   }
