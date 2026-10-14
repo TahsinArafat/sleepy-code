@@ -2,7 +2,12 @@
 
 > **Decision.** SleepyCode re-parents onto **`opencode/dev`** (opencode **2.0.29**, released 2026-10-14) in a single jump. Not `opencode/v1` first, and not a merge.
 >
-> Every number below is reproduced by `bun run script/port-map.ts opencode/v1 opencode/dev`. Nothing here is estimated.
+> Every number below is reproduced by `bun run script/port-map.ts refs/remotes/opencode/v1 refs/remotes/opencode/dev`. Nothing here is estimated.
+>
+> **Pass full refnames.** `opencode/dev` is unsafe as a shorthand: a stray
+> `refs/tags/opencode/dev` tag pointing at one of our own commits makes git resolve the
+> shorthand tags-first, so the script would measure our tree as though it were the
+> candidate. `resolveRef` now refuses an ambiguous ref rather than silently picking one.
 
 SleepyCode is currently a fork of **MiMo-Code**, which is itself a fork of **opencode** — so the stated goal ("be a direct opencode fork") was never actually true of the git graph. `git merge-base HEAD opencode/v1` and `git merge-base HEAD opencode/dev` both return **empty**; MiMo's root commit `8e5cc8a8` has no parents. Git can never auto-merge across that boundary. Any re-parent is a manual port, and the only real question is **onto what**.
 
@@ -88,7 +93,7 @@ The one commit that appeared to touch all 19 packages at once, `34d8ded0c5`, is 
 
 ## What it does not change
 
-- **Branding is not a risk.** `bun run script/reparent-probe.ts opencode/v1 opencode/dev` reports **0 residual tokens and 0 path collisions** on both. The `OPENCODE` profile in `script/lib/branding.ts` rebrands 100% of non-protected tokens, and its map is **injective** — unlike the mimo map, whose collisions make `debrand()` unsound and unusable in a merge.
+- **Branding is not a risk.** `bun run script/reparent-probe.ts refs/remotes/opencode/v1 refs/remotes/opencode/dev` reports **0 residual tokens and 0 path collisions** on both. The `OPENCODE` profile in `script/lib/branding.ts` rebrands 100% of non-protected tokens, and its map is **injective** — unlike the mimo map, whose collisions make `debrand()` unsound and unusable in a merge.
 - **The TUI port is mechanical and identical for both candidates.** Upstream lifted `cli/cmd/tui/` to `packages/tui/src/` in both v1 and dev, so this decision does not make the TUI any harder. 15 of our 25 TUI fork-logic files land at `packages/tui/src/<same relative path>`.
 - **Tier 3 stays blocked either way.** `src/actor/*` and `src/llm-server/` are absent from *both* candidates, so the orchestrator, fleet, cron and audio-e2e features need reimplementation regardless of which base is chosen.
 
